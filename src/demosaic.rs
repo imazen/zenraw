@@ -1,0 +1,528 @@
+//! Bayer pattern demosaicing algorithms.
+//!
+//! Converts single-channel Bayer CFA (color filter array) sensor data into
+//! full RGB images. Implements bilinear interpolation as the baseline algorithm,
+//! and Malvar-He-Cutler high-quality interpolation.
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+/// CFA color indices (matching rawloader convention).
+const R: usize = 0;
+const G: usize = 1;
+const B: usize = 2;
+
+/// Demosaicing algorithm selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DemosaicMethod {
+    /// Bilinear interpolation — fast, simple, slight color fringing.
+    Bilinear,
+    /// Malvar-He-Cutler (2004) gradient-corrected interpolation.
+    /// Good balance of quality and speed.
+    #[default]
+    MalvarHeCutler,
+}
+
+/// Demosaic Bayer CFA data to RGB f32 pixels.
+///
+/// Input: single-channel f32 data (already normalized to 0.0..1.0),
+/// width, height, and CFA pattern from rawloader.
+///
+/// Output: interleaved RGB f32 data with 3 components per pixel.
+pub fn demosaic_to_rgb_f32(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &rawloader::CFA,
+    method: DemosaicMethod,
+) -> Vec<f32> {
+    match method {
+        DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa),
+        DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa),
+    }
+}
+
+/// Bilinear interpolation demosaicing.
+fn demosaic_bilinear(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
+    let mut rgb = vec![0.0f32; width * height * 3];
+
+    for row in 0..height {
+        for col in 0..width {
+            let color = cfa.color_at(row, col);
+            let val = data[row * width + col];
+            let out_idx = (row * width + col) * 3;
+
+            match color {
+                R => {
+                    rgb[out_idx] = val;
+                    rgb[out_idx + 1] = green_at_rb_bilinear(data, width, height, row, col);
+                    rgb[out_idx + 2] = opposite_at_rb_bilinear(data, width, height, row, col, cfa);
+                }
+                G => {
+                    let (r, b) = rb_at_green_bilinear(data, width, height, row, col, cfa);
+                    rgb[out_idx] = r;
+                    rgb[out_idx + 1] = val;
+                    rgb[out_idx + 2] = b;
+                }
+                B => {
+                    rgb[out_idx] = opposite_at_rb_bilinear(data, width, height, row, col, cfa);
+                    rgb[out_idx + 1] = green_at_rb_bilinear(data, width, height, row, col);
+                    rgb[out_idx + 2] = val;
+                }
+                _ => {
+                    // E channel or unknown — treat as green
+                    rgb[out_idx + 1] = val;
+                }
+            }
+        }
+    }
+
+    rgb
+}
+
+/// Green at a red or blue site: average of 4 neighbors (cross pattern).
+fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
+    let mut sum = 0.0f32;
+    let mut count = 0u32;
+
+    if row > 0 {
+        sum += data[(row - 1) * width + col];
+        count += 1;
+    }
+    if row + 1 < height {
+        sum += data[(row + 1) * width + col];
+        count += 1;
+    }
+    if col > 0 {
+        sum += data[row * width + col - 1];
+        count += 1;
+    }
+    if col + 1 < width {
+        sum += data[row * width + col + 1];
+        count += 1;
+    }
+
+    if count > 0 { sum / count as f32 } else { 0.0 }
+}
+
+/// R/B at a green site: average of 2 horizontal or 2 vertical neighbors.
+fn rb_at_green_bilinear(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    cfa: &rawloader::CFA,
+) -> (f32, f32) {
+    // Determine which neighbors are R and which are B.
+    // At a green site, the horizontal neighbors are one color
+    // and the vertical neighbors are the other.
+    let h_color = if col > 0 {
+        cfa.color_at(row, col - 1)
+    } else {
+        cfa.color_at(row, col + 1)
+    };
+
+    let h_avg = avg_horizontal(data, width, row, col);
+    let v_avg = avg_vertical(data, height, width, row, col);
+
+    if h_color == R {
+        (h_avg, v_avg)
+    } else {
+        (v_avg, h_avg)
+    }
+}
+
+/// Opposite color at an R or B site (R at B, or B at R): average of 4 diagonal neighbors.
+fn opposite_at_rb_bilinear(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    cfa: &rawloader::CFA,
+) -> f32 {
+    let _ = cfa; // CFA not needed for diagonal average
+    let mut sum = 0.0f32;
+    let mut count = 0u32;
+
+    if row > 0 && col > 0 {
+        sum += data[(row - 1) * width + col - 1];
+        count += 1;
+    }
+    if row > 0 && col + 1 < width {
+        sum += data[(row - 1) * width + col + 1];
+        count += 1;
+    }
+    if row + 1 < height && col > 0 {
+        sum += data[(row + 1) * width + col - 1];
+        count += 1;
+    }
+    if row + 1 < height && col + 1 < width {
+        sum += data[(row + 1) * width + col + 1];
+        count += 1;
+    }
+
+    if count > 0 { sum / count as f32 } else { 0.0 }
+}
+
+fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
+    let left = if col > 0 {
+        data[row * width + col - 1]
+    } else {
+        0.0
+    };
+    let right = if col + 1 < width {
+        data[row * width + col + 1]
+    } else {
+        0.0
+    };
+    let count = (col > 0) as u32 + (col + 1 < width) as u32;
+    if count > 0 {
+        (left + right) / count as f32
+    } else {
+        0.0
+    }
+}
+
+fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usize) -> f32 {
+    let top = if row > 0 {
+        data[(row - 1) * width + col]
+    } else {
+        0.0
+    };
+    let bottom = if row + 1 < height {
+        data[(row + 1) * width + col]
+    } else {
+        0.0
+    };
+    let count = (row > 0) as u32 + (row + 1 < height) as u32;
+    if count > 0 {
+        (top + bottom) / count as f32
+    } else {
+        0.0
+    }
+}
+
+// ── Malvar-He-Cutler (2004) demosaicing ────────────────────────────────
+
+/// Malvar-He-Cutler gradient-corrected interpolation.
+///
+/// Uses 5x5 kernels that combine same-color averages with Laplacian
+/// correction terms from the known channel at each site. Produces
+/// significantly fewer color artifacts than bilinear.
+///
+/// Reference: Malvar, He, Cutler. "High-Quality Linear Interpolation for
+/// Demosaicing of Bayer-Patterned Color Images" (2004).
+fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
+    let mut rgb = vec![0.0f32; width * height * 3];
+
+    for row in 0..height {
+        for col in 0..width {
+            let color = cfa.color_at(row, col);
+            let val = data[row * width + col];
+            let out_idx = (row * width + col) * 3;
+
+            match color {
+                R => {
+                    rgb[out_idx] = val;
+                    rgb[out_idx + 1] = malvar_green_at_rb(data, width, height, row, col);
+                    rgb[out_idx + 2] = malvar_opposite_at_rb(data, width, height, row, col, cfa);
+                }
+                G => {
+                    let (r, b) = malvar_rb_at_green(data, width, height, row, col, cfa);
+                    rgb[out_idx] = r;
+                    rgb[out_idx + 1] = val;
+                    rgb[out_idx + 2] = b;
+                }
+                B => {
+                    rgb[out_idx] = malvar_opposite_at_rb(data, width, height, row, col, cfa);
+                    rgb[out_idx + 1] = malvar_green_at_rb(data, width, height, row, col);
+                    rgb[out_idx + 2] = val;
+                }
+                _ => {
+                    rgb[out_idx + 1] = val;
+                }
+            }
+        }
+    }
+
+    rgb
+}
+
+/// Safe pixel fetch with border clamping.
+#[inline]
+fn px(data: &[f32], width: usize, height: usize, row: isize, col: isize) -> f32 {
+    let r = row.clamp(0, height as isize - 1) as usize;
+    let c = col.clamp(0, width as isize - 1) as usize;
+    data[r * width + c]
+}
+
+/// Green at R or B site using Malvar-He-Cutler kernel:
+/// G = (4*Gc + 2*Laplacian_cross) / 8
+/// where Gc = sum of 4 green cross neighbors
+/// and Laplacian_cross = 4*center - top2 - bottom2 - left2 - right2
+fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
+    let r = row as isize;
+    let c = col as isize;
+
+    // Kernel coefficients from Malvar et al. (Table 1, Equation 1):
+    //        0  0 -1  0  0
+    //        0  0  2  0  0
+    //       -1  2  4  2 -1
+    //        0  0  2  0  0
+    //        0  0 -1  0  0
+    // Divide by 8
+    let center = px(data, width, height, r, c);
+    let n = px(data, width, height, r - 1, c);
+    let s = px(data, width, height, r + 1, c);
+    let e = px(data, width, height, r, c + 1);
+    let w = px(data, width, height, r, c - 1);
+    let n2 = px(data, width, height, r - 2, c);
+    let s2 = px(data, width, height, r + 2, c);
+    let e2 = px(data, width, height, r, c + 2);
+    let w2 = px(data, width, height, r, c - 2);
+
+    let val = (4.0 * center + 2.0 * (n + s + e + w) - (n2 + s2 + e2 + w2)) / 8.0;
+    val.max(0.0)
+}
+
+/// R or B at opposite-color (B or R) site using Malvar-He-Cutler diagonal kernel:
+///        0  0 -3/2  0  0
+///        0  2   0   2  0
+///      -3/2 0   6   0 -3/2
+///        0  2   0   2  0
+///        0  0 -3/2  0  0
+/// Divide by 8
+fn malvar_opposite_at_rb(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    cfa: &rawloader::CFA,
+) -> f32 {
+    let _ = cfa;
+    let r = row as isize;
+    let c = col as isize;
+
+    let center = px(data, width, height, r, c);
+    let ne = px(data, width, height, r - 1, c + 1);
+    let nw = px(data, width, height, r - 1, c - 1);
+    let se = px(data, width, height, r + 1, c + 1);
+    let sw = px(data, width, height, r + 1, c - 1);
+    let n2 = px(data, width, height, r - 2, c);
+    let s2 = px(data, width, height, r + 2, c);
+    let e2 = px(data, width, height, r, c + 2);
+    let w2 = px(data, width, height, r, c - 2);
+
+    let val = (6.0 * center + 2.0 * (ne + nw + se + sw) - 1.5 * (n2 + s2 + e2 + w2)) / 8.0;
+    val.max(0.0)
+}
+
+/// R and B at a green site. Uses directional kernels depending on
+/// whether the row has R or B horizontal neighbors.
+fn malvar_rb_at_green(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    cfa: &rawloader::CFA,
+) -> (f32, f32) {
+    let r = row as isize;
+    let c = col as isize;
+
+    let center = px(data, width, height, r, c);
+
+    // Horizontal kernel (for the color that's in horizontal neighbors):
+    //    0   0  1/2  0   0
+    //    0  -1   0  -1   0
+    //   -1   4   5   4  -1
+    //    0  -1   0  -1   0
+    //    0   0  1/2  0   0
+    // Divide by 8
+    let n = px(data, width, height, r - 1, c);
+    let s = px(data, width, height, r + 1, c);
+    let e = px(data, width, height, r, c + 1);
+    let w = px(data, width, height, r, c - 1);
+    let ne = px(data, width, height, r - 1, c + 1);
+    let nw = px(data, width, height, r - 1, c - 1);
+    let se = px(data, width, height, r + 1, c + 1);
+    let sw = px(data, width, height, r + 1, c - 1);
+    let n2 = px(data, width, height, r - 2, c);
+    let s2 = px(data, width, height, r + 2, c);
+    let e2 = px(data, width, height, r, c + 2);
+    let w2 = px(data, width, height, r, c - 2);
+
+    let h_val =
+        (5.0 * center + 4.0 * (e + w) - (ne + nw + se + sw) - (e2 + w2) + 0.5 * (n2 + s2)) / 8.0;
+    let v_val =
+        (5.0 * center + 4.0 * (n + s) - (ne + nw + se + sw) - (n2 + s2) + 0.5 * (e2 + w2)) / 8.0;
+
+    let h_color = if col > 0 {
+        cfa.color_at(row, col - 1)
+    } else {
+        cfa.color_at(row, col + 1)
+    };
+
+    if h_color == R {
+        (h_val.max(0.0), v_val.max(0.0))
+    } else {
+        (v_val.max(0.0), h_val.max(0.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a simple 4x4 RGGB Bayer pattern with known values.
+    fn make_test_bayer() -> (Vec<f32>, usize, usize, rawloader::CFA) {
+        // RGGB pattern:
+        // R G R G
+        // G B G B
+        // R G R G
+        // G B G B
+        let cfa = rawloader::CFA::new("RGGB");
+        let width = 4;
+        let height = 4;
+
+        // Fill with checkerboard values:
+        // R sites = 0.8, G sites = 0.5, B sites = 0.3
+        let mut data = vec![0.0f32; width * height];
+        for row in 0..height {
+            for col in 0..width {
+                let color = cfa.color_at(row, col);
+                data[row * width + col] = match color {
+                    R => 0.8,
+                    G => 0.5,
+                    B => 0.3,
+                    _ => 0.0,
+                };
+            }
+        }
+
+        (data, width, height, cfa)
+    }
+
+    #[test]
+    fn bilinear_produces_correct_dimensions() {
+        let (data, width, height, cfa) = make_test_bayer();
+        let rgb = demosaic_bilinear(&data, width, height, &cfa);
+        assert_eq!(rgb.len(), width * height * 3);
+    }
+
+    #[test]
+    fn malvar_produces_correct_dimensions() {
+        let (data, width, height, cfa) = make_test_bayer();
+        let rgb = demosaic_malvar(&data, width, height, &cfa);
+        assert_eq!(rgb.len(), width * height * 3);
+    }
+
+    #[test]
+    fn bilinear_known_channel_preserved() {
+        let (data, width, height, cfa) = make_test_bayer();
+        let rgb = demosaic_bilinear(&data, width, height, &cfa);
+
+        // At R sites, the red channel should be the original value
+        for row in 0..height {
+            for col in 0..width {
+                let color = cfa.color_at(row, col);
+                let idx = (row * width + col) * 3;
+                match color {
+                    R => assert!((rgb[idx] - 0.8).abs() < 1e-6, "R at ({row},{col})"),
+                    G => assert!((rgb[idx + 1] - 0.5).abs() < 1e-6, "G at ({row},{col})"),
+                    B => assert!((rgb[idx + 2] - 0.3).abs() < 1e-6, "B at ({row},{col})"),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malvar_known_channel_preserved() {
+        let (data, width, height, cfa) = make_test_bayer();
+        let rgb = demosaic_malvar(&data, width, height, &cfa);
+
+        for row in 0..height {
+            for col in 0..width {
+                let color = cfa.color_at(row, col);
+                let idx = (row * width + col) * 3;
+                match color {
+                    R => assert!((rgb[idx] - 0.8).abs() < 1e-6, "R at ({row},{col})"),
+                    G => assert!((rgb[idx + 1] - 0.5).abs() < 1e-6, "G at ({row},{col})"),
+                    B => assert!((rgb[idx + 2] - 0.3).abs() < 1e-6, "B at ({row},{col})"),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bilinear_output_non_negative() {
+        let (data, width, height, cfa) = make_test_bayer();
+        let rgb = demosaic_bilinear(&data, width, height, &cfa);
+        for val in &rgb {
+            assert!(*val >= 0.0, "Bilinear produced negative value: {val}");
+        }
+    }
+
+    #[test]
+    fn malvar_output_non_negative() {
+        let (data, width, height, cfa) = make_test_bayer();
+        let rgb = demosaic_malvar(&data, width, height, &cfa);
+        for val in &rgb {
+            assert!(*val >= 0.0, "Malvar produced negative value: {val}");
+        }
+    }
+
+    #[test]
+    fn uniform_input_produces_uniform_output() {
+        // If all Bayer values are the same, all RGB outputs should be the same
+        let cfa = rawloader::CFA::new("RGGB");
+        let width = 8;
+        let height = 8;
+        let data = vec![0.5f32; width * height];
+
+        let rgb_bilinear = demosaic_bilinear(&data, width, height, &cfa);
+        let rgb_malvar = demosaic_malvar(&data, width, height, &cfa);
+
+        // Interior pixels should be very close to 0.5 for all channels
+        for row in 2..height - 2 {
+            for col in 2..width - 2 {
+                let idx = (row * width + col) * 3;
+                for ch in 0..3 {
+                    assert!(
+                        (rgb_bilinear[idx + ch] - 0.5).abs() < 1e-4,
+                        "Bilinear interior not uniform at ({row},{col}) ch={ch}: {}",
+                        rgb_bilinear[idx + ch]
+                    );
+                    assert!(
+                        (rgb_malvar[idx + ch] - 0.5).abs() < 1e-4,
+                        "Malvar interior not uniform at ({row},{col}) ch={ch}: {}",
+                        rgb_malvar[idx + ch]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn different_cfa_patterns() {
+        let width = 8;
+        let height = 8;
+        let data = vec![0.5f32; width * height];
+
+        for pattern in &["RGGB", "BGGR", "GRBG", "GBRG"] {
+            let cfa = rawloader::CFA::new(pattern);
+            let rgb = demosaic_to_rgb_f32(&data, width, height, &cfa, DemosaicMethod::Bilinear);
+            assert_eq!(rgb.len(), width * height * 3, "Pattern {pattern}");
+
+            let rgb =
+                demosaic_to_rgb_f32(&data, width, height, &cfa, DemosaicMethod::MalvarHeCutler);
+            assert_eq!(rgb.len(), width * height * 3, "Pattern {pattern}");
+        }
+    }
+}
