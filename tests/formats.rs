@@ -470,7 +470,8 @@ fn all_formats_probe_consistency() {
             continue;
         };
 
-        let info = zenraw::probe(&data, &Unstoppable).unwrap_or_else(|e| panic!("probe {name}: {e}"));
+        let info =
+            zenraw::probe(&data, &Unstoppable).unwrap_or_else(|e| panic!("probe {name}: {e}"));
 
         // All should have valid dimensions
         assert!(
