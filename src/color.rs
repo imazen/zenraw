@@ -8,6 +8,8 @@
 //!
 //! This module performs steps 1-4 in a single pass over the pixel data.
 
+use archmage::prelude::*;
+
 /// Apply the full color pipeline to demosaiced camera RGB data in-place.
 ///
 /// Transforms camera RGB → white-balanced camera RGB → XYZ → linear sRGB.
@@ -16,12 +18,15 @@
 /// `wb_coeffs`: white balance multipliers [R, G, B, E] from rawloader
 /// `xyz_to_cam`: 4×3 matrix (XYZ→camera) from rawloader — we invert it
 pub fn apply_color_pipeline(rgb: &mut [f32], wb_coeffs: [f32; 4], xyz_to_cam: [[f32; 3]; 4]) {
-    // Step 1: Compute the combined camera-RGB → linear-sRGB matrix
     let cam_to_srgb = compute_cam_to_srgb_matrix(wb_coeffs, xyz_to_cam);
+    apply_color_matrix(rgb, cam_to_srgb);
+}
 
-    // Step 2: Apply matrix + clamp in one pass
-    // The compiler auto-vectorizes this loop well — manual SIMD with
-    // deinterleave/reinterleave overhead is actually slower.
+/// Apply a 3×3 color matrix to interleaved RGB data with clamping.
+///
+/// Autoversioned: compiles for AVX2/NEON/scalar and dispatches at runtime.
+#[autoversion]
+fn apply_color_matrix(_token: SimdToken, rgb: &mut [f32], mat: [[f32; 3]; 3]) {
     let pixel_count = rgb.len() / 3;
     for i in 0..pixel_count {
         let idx = i * 3;
@@ -29,9 +34,9 @@ pub fn apply_color_pipeline(rgb: &mut [f32], wb_coeffs: [f32; 4], xyz_to_cam: [[
         let g = rgb[idx + 1];
         let b = rgb[idx + 2];
 
-        let sr = cam_to_srgb[0][0] * r + cam_to_srgb[0][1] * g + cam_to_srgb[0][2] * b;
-        let sg = cam_to_srgb[1][0] * r + cam_to_srgb[1][1] * g + cam_to_srgb[1][2] * b;
-        let sb = cam_to_srgb[2][0] * r + cam_to_srgb[2][1] * g + cam_to_srgb[2][2] * b;
+        let sr = mat[0][0] * r + mat[0][1] * g + mat[0][2] * b;
+        let sg = mat[1][0] * r + mat[1][1] * g + mat[1][2] * b;
+        let sb = mat[2][0] * r + mat[2][1] * g + mat[2][2] * b;
 
         rgb[idx] = sr.clamp(0.0, 1.0);
         rgb[idx + 1] = sg.clamp(0.0, 1.0);
@@ -172,6 +177,11 @@ pub fn apply_srgb_gamma(rgb: &mut [f32]) {
 
 /// Convert f32 \[0,1\] RGB data to u8 \[0,255\] sRGB data.
 pub fn f32_to_u8_srgb(src: &[f32]) -> alloc::vec::Vec<u8> {
+    f32_to_u8_inner(src)
+}
+
+#[autoversion]
+fn f32_to_u8_inner(_token: SimdToken, src: &[f32]) -> alloc::vec::Vec<u8> {
     src.iter()
         .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
         .collect()

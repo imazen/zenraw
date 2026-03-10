@@ -47,6 +47,7 @@
 //! 7. Optionally apply crop from camera metadata
 
 #![forbid(unsafe_code)]
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 

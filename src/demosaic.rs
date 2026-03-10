@@ -7,6 +7,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use archmage::prelude::*;
+
 /// CFA color indices (matching rawloader convention).
 const R: usize = 0;
 const G: usize = 1;
@@ -271,6 +273,26 @@ fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::C
     }
 
     // ── Interior pixels: direct indexing, no boundary checks ──
+    malvar_interior(data, &mut rgb, width, height, cfa_tile, gh);
+
+    rgb
+}
+
+/// Interior Malvar demosaic loop — autoversioned for AVX2/NEON dispatch.
+///
+/// Processes all pixels with row ∈ [2, height-2) and col ∈ [2, width-2)
+/// using direct array indexing (no boundary clamping).
+#[autoversion]
+fn malvar_interior(
+    _token: SimdToken,
+    data: &[f32],
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    cfa_tile: [[usize; 2]; 2],
+    gh: [[usize; 2]; 2],
+) {
+    const BORDER: usize = 2;
     let w = width;
     for row in BORDER..(height - BORDER) {
         let rp = row & 1;
@@ -281,7 +303,6 @@ fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::C
             let out = idx * 3;
             let val = data[idx];
 
-            // Fetch all 12 neighbors directly (guaranteed in-bounds)
             let n = data[idx - w];
             let s = data[idx + w];
             let e = data[idx + 1];
@@ -340,8 +361,6 @@ fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::C
             }
         }
     }
-
-    rgb
 }
 
 /// Process a single pixel using the safe clamped `px()` access pattern.
