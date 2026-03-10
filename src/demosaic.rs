@@ -218,37 +218,168 @@ fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usiz
 fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
     let mut rgb = vec![0.0f32; width * height * 3];
 
-    for row in 0..height {
+    // The 5×5 Malvar kernels need a 2-pixel border with clamped access.
+    // For images too small to have an interior region, use the safe path.
+    const BORDER: usize = 2;
+    if width <= 2 * BORDER || height <= 2 * BORDER {
+        for row in 0..height {
+            for col in 0..width {
+                malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
+            }
+        }
+        return rgb;
+    }
+
+    // Precompute CFA 2×2 tile colors (Bayer patterns repeat every 2 rows/cols)
+    let cfa_tile = [
+        [cfa.color_at(0, 0), cfa.color_at(0, 1)],
+        [cfa.color_at(1, 0), cfa.color_at(1, 1)],
+    ];
+
+    // For green sites, precompute whether horizontal neighbors are R or B.
+    // gh[rp][cp] is only meaningful when cfa_tile[rp][cp] == G.
+    let mut gh = [[0usize; 2]; 2];
+    for rp in 0..2 {
+        for cp in 0..2 {
+            if cfa_tile[rp][cp] == G {
+                gh[rp][cp] = cfa_tile[rp][1 - cp];
+            }
+        }
+    }
+
+    // ── Border pixels: safe clamped access ──
+    // Top 2 rows
+    for row in 0..BORDER {
         for col in 0..width {
-            let color = cfa.color_at(row, col);
-            let val = data[row * width + col];
-            let out_idx = (row * width + col) * 3;
+            malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
+        }
+    }
+    // Bottom 2 rows
+    for row in (height - BORDER)..height {
+        for col in 0..width {
+            malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
+        }
+    }
+    // Left/right 2 columns of interior rows
+    for row in BORDER..(height - BORDER) {
+        for col in 0..BORDER {
+            malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
+        }
+        for col in (width - BORDER)..width {
+            malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
+        }
+    }
+
+    // ── Interior pixels: direct indexing, no boundary checks ──
+    let w = width;
+    for row in BORDER..(height - BORDER) {
+        let rp = row & 1;
+        for col in BORDER..(width - BORDER) {
+            let cp = col & 1;
+            let color = cfa_tile[rp][cp];
+            let idx = row * w + col;
+            let out = idx * 3;
+            let val = data[idx];
+
+            // Fetch all 12 neighbors directly (guaranteed in-bounds)
+            let n = data[idx - w];
+            let s = data[idx + w];
+            let e = data[idx + 1];
+            let we = data[idx - 1];
+            let n2 = data[idx - 2 * w];
+            let s2 = data[idx + 2 * w];
+            let e2 = data[idx + 2];
+            let w2 = data[idx - 2];
+            let ne = data[idx - w + 1];
+            let nw = data[idx - w - 1];
+            let se = data[idx + w + 1];
+            let sw = data[idx + w - 1];
 
             match color {
                 R => {
-                    rgb[out_idx] = val;
-                    rgb[out_idx + 1] = malvar_green_at_rb(data, width, height, row, col);
-                    rgb[out_idx + 2] = malvar_opposite_at_rb(data, width, height, row, col, cfa);
+                    rgb[out] = val;
+                    rgb[out + 1] = ((4.0 * val + 2.0 * (n + s + e + we)
+                        - (n2 + s2 + e2 + w2))
+                        / 8.0)
+                        .max(0.0);
+                    rgb[out + 2] = ((6.0 * val + 2.0 * (ne + nw + se + sw)
+                        - 1.5 * (n2 + s2 + e2 + w2))
+                        / 8.0)
+                        .max(0.0);
                 }
                 G => {
-                    let (r, b) = malvar_rb_at_green(data, width, height, row, col, cfa);
-                    rgb[out_idx] = r;
-                    rgb[out_idx + 1] = val;
-                    rgb[out_idx + 2] = b;
+                    let h = (5.0 * val + 4.0 * (e + we) - (ne + nw + se + sw) - (e2 + w2)
+                        + 0.5 * (n2 + s2))
+                        / 8.0;
+                    let v = (5.0 * val + 4.0 * (n + s) - (ne + nw + se + sw) - (n2 + s2)
+                        + 0.5 * (e2 + w2))
+                        / 8.0;
+                    rgb[out + 1] = val;
+                    if gh[rp][cp] == R {
+                        rgb[out] = h.max(0.0);
+                        rgb[out + 2] = v.max(0.0);
+                    } else {
+                        rgb[out] = v.max(0.0);
+                        rgb[out + 2] = h.max(0.0);
+                    }
                 }
                 B => {
-                    rgb[out_idx] = malvar_opposite_at_rb(data, width, height, row, col, cfa);
-                    rgb[out_idx + 1] = malvar_green_at_rb(data, width, height, row, col);
-                    rgb[out_idx + 2] = val;
+                    rgb[out] = ((6.0 * val + 2.0 * (ne + nw + se + sw)
+                        - 1.5 * (n2 + s2 + e2 + w2))
+                        / 8.0)
+                        .max(0.0);
+                    rgb[out + 1] = ((4.0 * val + 2.0 * (n + s + e + we)
+                        - (n2 + s2 + e2 + w2))
+                        / 8.0)
+                        .max(0.0);
+                    rgb[out + 2] = val;
                 }
                 _ => {
-                    rgb[out_idx + 1] = val;
+                    rgb[out + 1] = val;
                 }
             }
         }
     }
 
     rgb
+}
+
+/// Process a single pixel using the safe clamped `px()` access pattern.
+/// Used for border pixels where 5×5 kernel neighbors may be out of bounds.
+fn malvar_pixel_clamped(
+    data: &[f32],
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    cfa: &rawloader::CFA,
+) {
+    let color = cfa.color_at(row, col);
+    let val = data[row * width + col];
+    let out_idx = (row * width + col) * 3;
+
+    match color {
+        R => {
+            rgb[out_idx] = val;
+            rgb[out_idx + 1] = malvar_green_at_rb(data, width, height, row, col);
+            rgb[out_idx + 2] = malvar_opposite_at_rb(data, width, height, row, col, cfa);
+        }
+        G => {
+            let (r, b) = malvar_rb_at_green(data, width, height, row, col, cfa);
+            rgb[out_idx] = r;
+            rgb[out_idx + 1] = val;
+            rgb[out_idx + 2] = b;
+        }
+        B => {
+            rgb[out_idx] = malvar_opposite_at_rb(data, width, height, row, col, cfa);
+            rgb[out_idx + 1] = malvar_green_at_rb(data, width, height, row, col);
+            rgb[out_idx + 2] = val;
+        }
+        _ => {
+            rgb[out_idx + 1] = val;
+        }
+    }
 }
 
 /// Safe pixel fetch with border clamping.
