@@ -64,6 +64,9 @@ mod rawler_backend;
 #[cfg(feature = "darktable")]
 pub mod darktable;
 
+#[cfg(feature = "exif")]
+pub mod exif;
+
 #[cfg(feature = "zencodec")]
 mod zencodec_impl;
 #[cfg(feature = "zencodec")]
