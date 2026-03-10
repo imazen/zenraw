@@ -47,6 +47,7 @@ jobs:
             -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
+          printf '\n[patch."https://github.com/imazen/zencodec"]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Test (default features)
@@ -78,6 +79,7 @@ jobs:
             -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
+          printf '\n[patch."https://github.com/imazen/zencodec"]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Clippy (all features)
@@ -117,6 +119,7 @@ jobs:
             -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
+          printf '\n[patch."https://github.com/imazen/zencodec"]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Check MSRV
