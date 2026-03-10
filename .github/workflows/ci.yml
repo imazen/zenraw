@@ -44,7 +44,7 @@ jobs:
           sed \
             -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
-            -e 's|path = "\.\./zensim/zensim"|git = "https://github.com/imazen/zensim"|g' \
+            -e '/zensim/d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
@@ -74,7 +74,7 @@ jobs:
           sed \
             -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
-            -e 's|path = "\.\./zensim/zensim"|git = "https://github.com/imazen/zensim"|g' \
+            -e '/zensim/d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
@@ -112,7 +112,7 @@ jobs:
           sed \
             -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
-            -e 's|path = "\.\./zensim/zensim"|git = "https://github.com/imazen/zensim"|g' \
+            -e '/zensim/d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
