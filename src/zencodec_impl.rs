@@ -12,7 +12,7 @@ use zencodec::Unsupported;
 use zencodec::decode::{
     Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, OutputInfo, SinkError,
 };
-use zencodec::{ImageFormat, ImageFormatDefinition, ImageInfo, Orientation, ResourceLimits};
+use zencodec::{ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, ResourceLimits};
 use zenpixels::PixelDescriptor;
 
 use crate::decode::{self, RawDecodeConfig};
@@ -86,7 +86,7 @@ fn build_image_info(data: &[u8], raw_info: &decode::RawInfo) -> ImageInfo {
     let orientation = Orientation::from_exif(raw_info.orientation);
 
     let mut info = ImageInfo::new(raw_info.width, raw_info.height, format)
-        .with_frame_count(1)
+        .with_sequence(ImageSequence::Single)
         .with_orientation(orientation);
 
     if let Some(bd) = raw_info.bit_depth {
