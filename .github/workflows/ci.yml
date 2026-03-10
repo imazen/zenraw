@@ -39,8 +39,8 @@ jobs:
           # Use crates.io for published deps, remove unpublished ones
           sed \
             -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
+            -e 's|, path = "\.\./zensim/zensim"||g' \
             -e '/zencodec/d' \
-            -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
