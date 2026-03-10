@@ -45,6 +45,7 @@ jobs:
             -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
             -e '/zensim/d' \
+            -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
@@ -75,6 +76,7 @@ jobs:
             -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
             -e '/zensim/d' \
+            -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
@@ -113,6 +115,7 @@ jobs:
             -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
             -e '/zensim/d' \
+            -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
