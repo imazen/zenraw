@@ -42,7 +42,7 @@ fetch-samples:
         ["nikon_d40.nef"]="https://raw.pixls.us/data/Nikon/D40/DSC_1842.NEF"
         ["olympus_c5050z.orf"]="https://raw.pixls.us/data/Olympus/C5050Z/RAW_OLYMPUS_C5050Z.ORF"
         ["canon_eosr_craw.cr3"]="https://raw.pixls.us/data/Canon/EOS%20R/Canon_EOS_R_CRAW_ISO_100_crop_nodual.CR3"
-        ["pentax_istds.pef"]="https://raw.pixls.us/data/Pentax/%2Aist%20DS/IMGP2333.pef"
+        ["pentax_k5.pef"]="https://raw.pixls.us/data/Pentax/K-5/IMGP8063.PEF"
         ["canon_350d.cr2"]="https://raw.pixls.us/data/Canon/EOS%20350D/IMG_1707.CR2"
         ["panasonic_gf1.rw2"]="https://raw.pixls.us/data/Panasonic/DMC-GF1/panasonic_16-9.RW2"
         ["sony_nex3.arw"]="https://raw.pixls.us/data/Sony/NEX-3/RAW_SONY_NEX3.ARW"
