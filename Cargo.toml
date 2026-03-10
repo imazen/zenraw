@@ -23,6 +23,7 @@ zencodec = { version = "0.1", path = "../zencodec", optional = true }
 default = ["std"]
 std = ["enough/std", "whereat/std"]
 zencodec = ["dep:zencodec"]
+darktable = ["std"]
 
 [profile.test]
 opt-level = 2
