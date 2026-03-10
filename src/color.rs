@@ -20,6 +20,8 @@ pub fn apply_color_pipeline(rgb: &mut [f32], wb_coeffs: [f32; 4], xyz_to_cam: [[
     let cam_to_srgb = compute_cam_to_srgb_matrix(wb_coeffs, xyz_to_cam);
 
     // Step 2: Apply matrix + clamp in one pass
+    // The compiler auto-vectorizes this loop well — manual SIMD with
+    // deinterleave/reinterleave overhead is actually slower.
     let pixel_count = rgb.len() / 3;
     for i in 0..pixel_count {
         let idx = i * 3;
@@ -27,7 +29,6 @@ pub fn apply_color_pipeline(rgb: &mut [f32], wb_coeffs: [f32; 4], xyz_to_cam: [[
         let g = rgb[idx + 1];
         let b = rgb[idx + 2];
 
-        // White balance + cam_to_srgb matrix in one multiply
         let sr = cam_to_srgb[0][0] * r + cam_to_srgb[0][1] * g + cam_to_srgb[0][2] * b;
         let sg = cam_to_srgb[1][0] * r + cam_to_srgb[1][1] * g + cam_to_srgb[1][2] * b;
         let sb = cam_to_srgb[2][0] * r + cam_to_srgb[2][1] * g + cam_to_srgb[2][2] * b;
@@ -165,17 +166,7 @@ fn invert_3x3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 /// Operates on interleaved RGB f32 data (values should be in \[0, 1\]).
 pub fn apply_srgb_gamma(rgb: &mut [f32]) {
     for val in rgb.iter_mut() {
-        *val = linear_to_srgb(*val);
-    }
-}
-
-/// Linear to sRGB transfer function.
-#[inline]
-fn linear_to_srgb(x: f32) -> f32 {
-    if x <= 0.0031308 {
-        x * 12.92
-    } else {
-        1.055 * x.powf(1.0 / 2.4) - 0.055
+        *val = crate::simd::linear_to_srgb(*val);
     }
 }
 
@@ -247,12 +238,12 @@ mod tests {
 
     #[test]
     fn srgb_gamma_boundaries() {
-        assert!((linear_to_srgb(0.0) - 0.0).abs() < 1e-6);
-        assert!((linear_to_srgb(1.0) - 1.0).abs() < 1e-4);
+        assert!((crate::simd::linear_to_srgb(0.0) - 0.0).abs() < 1e-6);
+        assert!((crate::simd::linear_to_srgb(1.0) - 1.0).abs() < 1e-4);
         // Linear segment
-        assert!((linear_to_srgb(0.001) - 0.001 * 12.92).abs() < 1e-6);
+        assert!((crate::simd::linear_to_srgb(0.001) - 0.001 * 12.92).abs() < 1e-6);
         // Transition point
-        let at_transition = linear_to_srgb(0.0031308);
+        let at_transition = crate::simd::linear_to_srgb(0.0031308);
         assert!(at_transition > 0.03 && at_transition < 0.05);
     }
 
@@ -261,7 +252,7 @@ mod tests {
         let mut prev = 0.0f32;
         for i in 0..=1000 {
             let x = i as f32 / 1000.0;
-            let y = linear_to_srgb(x);
+            let y = crate::simd::linear_to_srgb(x);
             assert!(y >= prev, "sRGB gamma not monotonic at x={x}: {y} < {prev}");
             prev = y;
         }

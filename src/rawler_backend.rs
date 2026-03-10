@@ -234,24 +234,37 @@ fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, 
                 )));
             }
 
-            let mut out = Vec::with_capacity(total);
-            for (i, &sample) in data.iter().enumerate().take(total) {
-                let ch = if cpp == 1 {
-                    if let Some(cfa) = cfa_opt {
-                        cfa.color_at(i / width, i % width)
-                    } else {
-                        0
-                    }
-                } else {
-                    i % cpp
-                };
-                let bl = black[ch.min(3)];
-                let wl = white[ch.min(3)];
+            // Fast path: uniform black/white levels (non-CFA or all channels same)
+            let uniform_bw = cpp > 1
+                || (black[0] == black[1] && black[1] == black[2]
+                    && white[0] == white[1] && white[1] == white[2]);
+
+            if uniform_bw {
+                let bl = black[0];
+                let wl = white[0];
                 let range = (wl - bl).max(1.0);
-                let val = (sample - bl) / range;
-                out.push(val.clamp(0.0, 1.0));
+                let inv_range = 1.0 / range;
+                Ok(crate::simd::normalize_uniform(&data[..total], bl, inv_range))
+            } else {
+                let mut out = Vec::with_capacity(total);
+                for (i, &sample) in data.iter().enumerate().take(total) {
+                    let ch = if cpp == 1 {
+                        if let Some(cfa) = cfa_opt {
+                            cfa.color_at(i / width, i % width)
+                        } else {
+                            0
+                        }
+                    } else {
+                        i % cpp
+                    };
+                    let bl = black[ch.min(3)];
+                    let wl = white[ch.min(3)];
+                    let range = (wl - bl).max(1.0);
+                    let val = (sample - bl) / range;
+                    out.push(val.clamp(0.0, 1.0));
+                }
+                Ok(out)
             }
-            Ok(out)
         }
     }
 }
@@ -303,25 +316,7 @@ fn decode_non_bayer(
     let height = raw.height;
     let cpp = raw.cpp;
 
-    let mut rgb = Vec::with_capacity(width * height * 3);
-    for i in 0..width * height {
-        let base = i * cpp;
-        rgb.push(if base < normalized.len() {
-            normalized[base]
-        } else {
-            0.0
-        });
-        rgb.push(if base + 1 < normalized.len() {
-            normalized[base + 1]
-        } else {
-            0.0
-        });
-        rgb.push(if base + 2 < normalized.len() {
-            normalized[base + 2]
-        } else {
-            0.0
-        });
-    }
+    let mut rgb = crate::simd::extract_rgb_from_cpp(&normalized, width * height, cpp);
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -400,7 +395,7 @@ fn build_output(
 
         Ok(RawDecodeOutput { pixels: buf, info })
     } else {
-        let byte_data: Vec<u8> = rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&rgb).to_vec();
 
         let buf = PixelBuffer::from_vec(
             byte_data,

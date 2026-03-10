@@ -271,7 +271,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
         Ok(RawDecodeOutput { pixels: buf, info })
     } else {
-        let byte_data: Vec<u8> = final_rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
 
         let buf = PixelBuffer::from_vec(
             byte_data,
@@ -371,7 +371,7 @@ fn decode_non_bayer(
 
         Ok(RawDecodeOutput { pixels: buf, info })
     } else {
-        let byte_data: Vec<u8> = final_rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
 
         let buf = PixelBuffer::from_vec(
             byte_data,

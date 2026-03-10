@@ -58,6 +58,7 @@ pub mod decode;
 pub mod demosaic;
 mod error;
 mod orient;
+mod simd;
 
 #[cfg(feature = "rawler")]
 mod rawler_backend;

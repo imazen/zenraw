@@ -31,6 +31,10 @@ lint:
 fmt:
     cargo fmt
 
+# Run benchmarks (requires raw samples in /mnt/v/input/raw-samples/)
+bench:
+    cargo bench --features rawler
+
 # Local CI sanity check
 ci: fmt lint test
 
