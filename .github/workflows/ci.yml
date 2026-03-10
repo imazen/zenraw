@@ -12,7 +12,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   CI: true
 
 jobs:
@@ -31,59 +30,50 @@ jobs:
           - windows-11-arm
     steps:
       - uses: actions/checkout@v6
-      - name: Configure git
-        run: |
-          git config --global submodule.recurse false
-          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps to git refs
+      - name: Patch path deps for CI
         shell: bash
         run: |
+          # Use crates.io for published deps, remove unpublished ones
           sed \
-            -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
-            -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
+            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
+            -e '/zencodec/d' \
             -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          printf '\n[patch."https://github.com/imazen/zencodec"]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Test (default features)
         run: cargo test
 
       - name: Test (rawler + extras)
-        run: cargo test --features "rawler,exif,xmp,zencodec"
+        run: cargo test --features "rawler,exif,xmp"
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Configure git
-        run: |
-          git config --global submodule.recurse false
-          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps to git refs
+      - name: Patch path deps for CI
         shell: bash
         run: |
           sed \
-            -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
-            -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
+            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
+            -e '/zencodec/d' \
             -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          printf '\n[patch."https://github.com/imazen/zencodec"]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Clippy (all features)
-        run: cargo clippy --all-targets --features "rawler,exif,xmp,zencodec" -- -D warnings
+        run: cargo clippy --all-targets --features "rawler,exif,xmp" -- -D warnings
 
   fmt:
     name: Format
@@ -102,24 +92,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Configure git
-        run: |
-          git config --global submodule.recurse false
-          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps to git refs
+      - name: Patch path deps for CI
         shell: bash
         run: |
           sed \
-            -e 's|path = "\.\./zenpixels/zenpixels"|git = "https://github.com/imazen/zenpixels"|g' \
-            -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
+            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
+            -e '/zencodec/d' \
             -e '/zensim/d' \
             -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          printf '\n[patch."https://github.com/imazen/zencodec"]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Check MSRV
