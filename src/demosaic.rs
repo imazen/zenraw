@@ -374,6 +374,108 @@ fn malvar_rb_at_green(
     }
 }
 
+// ── Generic CFA pattern + X-Trans demosaicing ─────────────────────────
+
+/// Generic CFA pattern for arbitrary array sizes (X-Trans 6x6, etc.).
+///
+/// Stores the repeating color pattern and provides `color_at(row, col)`.
+pub(crate) struct CfaPattern {
+    colors: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+impl CfaPattern {
+    /// Create from a flat color array with the given tile dimensions.
+    ///
+    /// Colors: 0=R, 1=G, 2=B (matching rawloader convention).
+    pub fn new(colors: Vec<u8>, width: usize, height: usize) -> Self {
+        debug_assert_eq!(colors.len(), width * height);
+        Self {
+            colors,
+            width,
+            height,
+        }
+    }
+
+    /// Color index at (row, col), wrapping by the tile dimensions.
+    #[inline]
+    pub fn color_at(&self, row: usize, col: usize) -> usize {
+        let r = row % self.height;
+        let c = col % self.width;
+        self.colors[r * self.width + c] as usize
+    }
+}
+
+/// Bilinear demosaic for X-Trans and other non-Bayer CFA patterns.
+///
+/// For each pixel, the known channel is preserved and missing channels
+/// are interpolated by averaging same-color neighbors in a 5×5 window.
+/// This is a baseline quality algorithm — sufficient for previews and
+/// testing but not as sharp as frequency-domain X-Trans algorithms.
+pub(crate) fn demosaic_xtrans_bilinear(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &CfaPattern,
+) -> Vec<f32> {
+    let mut rgb = vec![0.0f32; width * height * 3];
+
+    for row in 0..height {
+        for col in 0..width {
+            let known = cfa.color_at(row, col);
+            let out_idx = (row * width + col) * 3;
+
+            // Preserve known channel
+            rgb[out_idx + known] = data[row * width + col];
+
+            // Interpolate missing channels
+            for ch in 0..3 {
+                if ch == known {
+                    continue;
+                }
+                rgb[out_idx + ch] =
+                    interpolate_channel_xtrans(data, width, height, row, col, ch, cfa);
+            }
+        }
+    }
+
+    rgb
+}
+
+/// Average same-color neighbors within a 5×5 window.
+fn interpolate_channel_xtrans(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    target_ch: usize,
+    cfa: &CfaPattern,
+) -> f32 {
+    let mut sum = 0.0f32;
+    let mut count = 0u32;
+
+    let r_start = row.saturating_sub(2);
+    let r_end = (row + 3).min(height);
+    let c_start = col.saturating_sub(2);
+    let c_end = (col + 3).min(width);
+
+    for nr in r_start..r_end {
+        for nc in c_start..c_end {
+            if nr == row && nc == col {
+                continue;
+            }
+            if cfa.color_at(nr, nc) == target_ch {
+                sum += data[nr * width + nc];
+                count += 1;
+            }
+        }
+    }
+
+    if count > 0 { sum / count as f32 } else { 0.0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +625,107 @@ mod tests {
             let rgb =
                 demosaic_to_rgb_f32(&data, width, height, &cfa, DemosaicMethod::MalvarHeCutler);
             assert_eq!(rgb.len(), width * height * 3, "Pattern {pattern}");
+        }
+    }
+
+    /// Standard Fuji X-Trans 6x6 CFA pattern.
+    fn make_xtrans_cfa() -> CfaPattern {
+        // Typical X-Trans II/III pattern
+        #[rustfmt::skip]
+        let colors: Vec<u8> = vec![
+            G, B, G, G, R, G,
+            R, G, R, B, G, B,
+            G, B, G, G, R, G,
+            G, R, G, G, B, G,
+            B, G, B, R, G, R,
+            G, R, G, G, B, G,
+        ].into_iter().map(|c| c as u8).collect();
+        CfaPattern::new(colors, 6, 6)
+    }
+
+    #[test]
+    fn xtrans_bilinear_dimensions() {
+        let cfa = make_xtrans_cfa();
+        let width = 24;
+        let height = 24;
+        let data = vec![0.5f32; width * height];
+        let rgb = demosaic_xtrans_bilinear(&data, width, height, &cfa);
+        assert_eq!(rgb.len(), width * height * 3);
+    }
+
+    #[test]
+    fn xtrans_bilinear_known_channel_preserved() {
+        let cfa = make_xtrans_cfa();
+        let width = 12;
+        let height = 12;
+        // Fill each sensor site with a known value based on its color
+        let mut data = vec![0.0f32; width * height];
+        for row in 0..height {
+            for col in 0..width {
+                data[row * width + col] = match cfa.color_at(row, col) {
+                    R => 0.8,
+                    G => 0.5,
+                    B => 0.3,
+                    _ => 0.0,
+                };
+            }
+        }
+
+        let rgb = demosaic_xtrans_bilinear(&data, width, height, &cfa);
+        for row in 0..height {
+            for col in 0..width {
+                let known = cfa.color_at(row, col);
+                let idx = (row * width + col) * 3;
+                let expected = match known {
+                    R => 0.8,
+                    G => 0.5,
+                    B => 0.3,
+                    _ => 0.0,
+                };
+                assert!(
+                    (rgb[idx + known] - expected).abs() < 1e-6,
+                    "Known channel not preserved at ({row},{col})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn xtrans_bilinear_uniform_input() {
+        let cfa = make_xtrans_cfa();
+        let width = 24;
+        let height = 24;
+        let data = vec![0.5f32; width * height];
+        let rgb = demosaic_xtrans_bilinear(&data, width, height, &cfa);
+
+        // Interior pixels should be close to 0.5 for all channels
+        for row in 3..height - 3 {
+            for col in 3..width - 3 {
+                let idx = (row * width + col) * 3;
+                for ch in 0..3 {
+                    assert!(
+                        (rgb[idx + ch] - 0.5).abs() < 1e-4,
+                        "X-Trans interior not uniform at ({row},{col}) ch={ch}: {}",
+                        rgb[idx + ch]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn xtrans_bilinear_non_negative() {
+        let cfa = make_xtrans_cfa();
+        let width = 12;
+        let height = 12;
+        let mut data = vec![0.0f32; width * height];
+        // Random-ish pattern
+        for (i, v) in data.iter_mut().enumerate() {
+            *v = ((i * 37 + 13) % 100) as f32 / 100.0;
+        }
+        let rgb = demosaic_xtrans_bilinear(&data, width, height, &cfa);
+        for val in &rgb {
+            assert!(*val >= 0.0, "X-Trans produced negative value: {val}");
         }
     }
 }

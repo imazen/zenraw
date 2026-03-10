@@ -405,8 +405,7 @@ fn format_fuji_raf_xtrans() {
         return;
     };
 
-    // X-Trans sensor — probe should work but decode will fail
-    // (our demosaic only handles 2x2 Bayer)
+    // X-Trans sensor — both probe and decode should work
     let info = zenraw::probe(&data, &Unstoppable).expect("probe RAF");
     assert!(!info.is_dng);
     eprintln!(
@@ -414,22 +413,13 @@ fn format_fuji_raf_xtrans() {
         info.width, info.height, info.make, info.model, info.cfa_pattern
     );
 
-    // Decode should fail with Unsupported for X-Trans
+    // Decode X-Trans with bilinear demosaic
     let config = RawDecodeConfig::default();
-    let result = zenraw::decode(&data, &config, &Unstoppable);
-    match result {
-        Err(e) => {
-            eprintln!("RAF decode correctly rejected: {e}");
-            // Should be Unsupported, not a panic
-        }
-        Ok(output) => {
-            // If rawler managed to decode it (non-Bayer path), that's fine too
-            eprintln!(
-                "RAF decoded (unexpected success): {}x{}",
-                output.info.width, output.info.height
-            );
-        }
-    }
+    let output = zenraw::decode(&data, &config, &Unstoppable).expect("decode RAF X-Trans");
+    eprintln!(
+        "RAF decoded: {}x{} orient={}",
+        output.info.width, output.info.height, output.info.orientation
+    );
 }
 
 #[test]

@@ -18,7 +18,7 @@ use zenpixels::{PixelBuffer, PixelDescriptor};
 
 use crate::color;
 use crate::decode::{RawDecodeConfig, RawDecodeOutput, RawInfo};
-use crate::demosaic::demosaic_to_rgb_f32;
+use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
 use crate::error::{RawError, Result};
 
 /// Probe a RAW/DNG file for metadata without decoding pixels.
@@ -99,18 +99,31 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
         }
     };
 
-    // Convert rawler CFA to rawloader CFA for our demosaic functions
+    // Convert CFA and demosaic
     let cfa_str = cfa.to_string();
 
-    // Check for X-Trans (6x6) — our demosaic only handles 2x2 Bayer
-    if cfa_str.len() > 4 {
-        return Err(at!(RawError::Unsupported(format!(
-            "X-Trans/non-Bayer CFA not yet supported: {cfa_str}"
-        ))));
-    }
-
-    let rl_cfa = rawloader::CFA::new(&cfa_str);
-    let mut rgb = demosaic_to_rgb_f32(&normalized, width, height, &rl_cfa, config.demosaic);
+    let mut rgb = if cfa_str.len() > 4 {
+        // X-Trans (6x6) or other non-Bayer CFA — use generic demosaic
+        let pattern_size = (cfa_str.len() as f64).sqrt() as usize;
+        if pattern_size * pattern_size != cfa_str.len() {
+            return Err(at!(RawError::Unsupported(format!(
+                "non-square CFA pattern not supported: len={}",
+                cfa_str.len()
+            ))));
+        }
+        let mut colors = Vec::with_capacity(cfa_str.len());
+        for r in 0..pattern_size {
+            for c in 0..pattern_size {
+                colors.push(cfa.color_at(r, c) as u8);
+            }
+        }
+        let cfa_pattern = CfaPattern::new(colors, pattern_size, pattern_size);
+        demosaic_xtrans_bilinear(&normalized, width, height, &cfa_pattern)
+    } else {
+        // Standard 2x2 Bayer
+        let rl_cfa = rawloader::CFA::new(&cfa_str);
+        demosaic_to_rgb_f32(&normalized, width, height, &rl_cfa, config.demosaic)
+    };
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -130,8 +143,28 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     let is_dng = crate::decode::is_dng_data(data);
 
-    // Step 6: Convert to output format
-    build_output(cropped_rgb, out_w, out_h, config, &raw, is_dng)
+    // Step 6: Apply EXIF orientation
+    let raw_orient = orientation_to_u16(&raw.orientation);
+    let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
+    {
+        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        (data, w, h, 1u16)
+    } else {
+        (cropped_rgb, out_w, out_h, raw_orient)
+    };
+
+    stop.check().map_err(|r| at!(RawError::from(r)))?;
+
+    // Step 7: Convert to output format
+    build_output(
+        final_rgb,
+        final_w,
+        final_h,
+        config,
+        &raw,
+        is_dng,
+        final_orient,
+    )
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
@@ -301,7 +334,25 @@ fn decode_non_bayer(
 
     let is_dng = crate::decode::is_dng_data(original_data);
 
-    build_output(cropped_rgb, out_w, out_h, config, &raw, is_dng)
+    // Apply EXIF orientation
+    let raw_orient = orientation_to_u16(&raw.orientation);
+    let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
+    {
+        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        (data, w, h, 1u16)
+    } else {
+        (cropped_rgb, out_w, out_h, raw_orient)
+    };
+
+    build_output(
+        final_rgb,
+        final_w,
+        final_h,
+        config,
+        &raw,
+        is_dng,
+        final_orient,
+    )
 }
 
 /// Build final output from processed RGB data.
@@ -312,6 +363,7 @@ fn build_output(
     config: &RawDecodeConfig,
     raw: &rawler::RawImage,
     is_dng: bool,
+    orientation: u16,
 ) -> Result<RawDecodeOutput> {
     let cfa_pattern = extract_cfa_pattern(raw);
 
@@ -324,7 +376,7 @@ fn build_output(
         sensor_height: raw.height as u32,
         cfa_pattern,
         is_dng,
-        orientation: orientation_to_u16(&raw.orientation),
+        orientation,
     };
 
     if config.apply_gamma {

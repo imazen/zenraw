@@ -37,6 +37,12 @@ pub struct RawDecodeConfig {
     pub apply_gamma: bool,
     /// Whether to apply the crop specified in the RAW metadata.
     pub apply_crop: bool,
+    /// Whether to apply EXIF orientation (rotation/flip) to the output.
+    ///
+    /// When true (default), the decoded image is rotated/flipped to match
+    /// display orientation, and `RawInfo::orientation` is set to 1.
+    /// When false, the raw sensor orientation is preserved.
+    pub apply_orientation: bool,
 }
 
 impl Default for RawDecodeConfig {
@@ -46,6 +52,7 @@ impl Default for RawDecodeConfig {
             max_pixels: 200_000_000, // 200 megapixels
             apply_gamma: false,
             apply_crop: true,
+            apply_orientation: true,
         }
     }
 }
@@ -84,6 +91,16 @@ impl RawDecodeConfig {
     #[must_use]
     pub fn with_crop(mut self, apply: bool) -> Self {
         self.apply_crop = apply;
+        self
+    }
+
+    /// Set whether to apply EXIF orientation transform (default: true).
+    ///
+    /// When enabled, the output image matches display orientation and
+    /// width/height reflect the rotated dimensions.
+    #[must_use]
+    pub fn with_orientation(mut self, apply: bool) -> Self {
+        self.apply_orientation = apply;
         self
     }
 }
@@ -210,53 +227,57 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     let is_dng = is_dng_data(data);
 
-    // Step 6: Convert to output format
+    // Step 6: Apply EXIF orientation
+    let raw_orient = orientation_to_u16(&raw.orientation);
+    let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
+    {
+        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        (data, w, h, 1u16)
+    } else {
+        (cropped_rgb, out_w, out_h, raw_orient)
+    };
+
+    stop.check().map_err(|r| at!(RawError::from(r)))?;
+
+    // Step 7: Convert to output format
+    let info = RawInfo {
+        width: final_w as u32,
+        height: final_h as u32,
+        make: raw.clean_make.clone(),
+        model: raw.clean_model.clone(),
+        sensor_width: raw.width as u32,
+        sensor_height: raw.height as u32,
+        cfa_pattern: raw.cfa.to_string(),
+        is_dng,
+        orientation: final_orient,
+    };
+
     if config.apply_gamma {
-        // Apply sRGB gamma and convert to u8
-        let mut gamma_rgb = cropped_rgb;
+        let mut gamma_rgb = final_rgb;
         color::apply_srgb_gamma(&mut gamma_rgb);
         let u8_data = color::f32_to_u8_srgb(&gamma_rgb);
 
-        let descriptor = PixelDescriptor::RGB8_SRGB;
-        let buf = PixelBuffer::from_vec(u8_data, out_w as u32, out_h as u32, descriptor)
-            .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        let buf = PixelBuffer::from_vec(
+            u8_data,
+            final_w as u32,
+            final_h as u32,
+            PixelDescriptor::RGB8_SRGB,
+        )
+        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
 
-        Ok(RawDecodeOutput {
-            pixels: buf,
-            info: RawInfo {
-                width: out_w as u32,
-                height: out_h as u32,
-                make: raw.clean_make.clone(),
-                model: raw.clean_model.clone(),
-                sensor_width: raw.width as u32,
-                sensor_height: raw.height as u32,
-                cfa_pattern: raw.cfa.to_string(),
-                is_dng,
-                orientation: orientation_to_u16(&raw.orientation),
-            },
-        })
+        Ok(RawDecodeOutput { pixels: buf, info })
     } else {
-        // Linear f32 output
-        let byte_data: Vec<u8> = cropped_rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let byte_data: Vec<u8> = final_rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
 
-        let descriptor = PixelDescriptor::RGBF32_LINEAR;
-        let buf = PixelBuffer::from_vec(byte_data, out_w as u32, out_h as u32, descriptor)
-            .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        let buf = PixelBuffer::from_vec(
+            byte_data,
+            final_w as u32,
+            final_h as u32,
+            PixelDescriptor::RGBF32_LINEAR,
+        )
+        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
 
-        Ok(RawDecodeOutput {
-            pixels: buf,
-            info: RawInfo {
-                width: out_w as u32,
-                height: out_h as u32,
-                make: raw.clean_make.clone(),
-                model: raw.clean_model.clone(),
-                sensor_width: raw.width as u32,
-                sensor_height: raw.height as u32,
-                cfa_pattern: raw.cfa.to_string(),
-                is_dng,
-                orientation: orientation_to_u16(&raw.orientation),
-            },
-        })
+        Ok(RawDecodeOutput { pixels: buf, info })
     }
 }
 
@@ -308,58 +329,54 @@ fn decode_non_bayer(
 
     let is_dng = false; // Can't easily check without original data here
 
+    // Apply EXIF orientation
+    let raw_orient = orientation_to_u16(&raw.orientation);
+    let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
+    {
+        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        (data, w, h, 1u16)
+    } else {
+        (cropped_rgb, out_w, out_h, raw_orient)
+    };
+
+    let info = RawInfo {
+        width: final_w as u32,
+        height: final_h as u32,
+        make: raw.clean_make,
+        model: raw.clean_model,
+        sensor_width: raw.width as u32,
+        sensor_height: raw.height as u32,
+        cfa_pattern: raw.cfa.to_string(),
+        is_dng,
+        orientation: final_orient,
+    };
+
     if config.apply_gamma {
-        let mut gamma_rgb = cropped_rgb;
+        let mut gamma_rgb = final_rgb;
         color::apply_srgb_gamma(&mut gamma_rgb);
         let u8_data = color::f32_to_u8_srgb(&gamma_rgb);
 
         let buf = PixelBuffer::from_vec(
             u8_data,
-            out_w as u32,
-            out_h as u32,
+            final_w as u32,
+            final_h as u32,
             PixelDescriptor::RGB8_SRGB,
         )
         .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
 
-        Ok(RawDecodeOutput {
-            pixels: buf,
-            info: RawInfo {
-                width: out_w as u32,
-                height: out_h as u32,
-                make: raw.clean_make,
-                model: raw.clean_model,
-                sensor_width: raw.width as u32,
-                sensor_height: raw.height as u32,
-                cfa_pattern: raw.cfa.to_string(),
-                is_dng,
-                orientation: orientation_to_u16(&raw.orientation),
-            },
-        })
+        Ok(RawDecodeOutput { pixels: buf, info })
     } else {
-        let byte_data: Vec<u8> = cropped_rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let byte_data: Vec<u8> = final_rgb.iter().flat_map(|&v| v.to_ne_bytes()).collect();
 
         let buf = PixelBuffer::from_vec(
             byte_data,
-            out_w as u32,
-            out_h as u32,
+            final_w as u32,
+            final_h as u32,
             PixelDescriptor::RGBF32_LINEAR,
         )
         .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
 
-        Ok(RawDecodeOutput {
-            pixels: buf,
-            info: RawInfo {
-                width: out_w as u32,
-                height: out_h as u32,
-                make: raw.clean_make,
-                model: raw.clean_model,
-                sensor_width: raw.width as u32,
-                sensor_height: raw.height as u32,
-                cfa_pattern: raw.cfa.to_string(),
-                is_dng,
-                orientation: orientation_to_u16(&raw.orientation),
-            },
-        })
+        Ok(RawDecodeOutput { pixels: buf, info })
     }
 }
 

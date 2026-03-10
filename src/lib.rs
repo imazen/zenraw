@@ -57,6 +57,7 @@ pub mod color;
 pub mod decode;
 pub mod demosaic;
 mod error;
+mod orient;
 
 #[cfg(feature = "rawler")]
 mod rawler_backend;
