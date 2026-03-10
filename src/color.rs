@@ -305,7 +305,7 @@ mod tests {
         ];
         apply_color_pipeline(&mut rgb, wb, xtc);
         for &v in &rgb {
-            assert!(v >= 0.0 && v <= 1.0, "Out of range: {v}");
+            assert!((0.0..=1.0).contains(&v), "Out of range: {v}");
         }
     }
 }
