@@ -252,6 +252,109 @@ fn format_dng_iphone() {
 }
 
 #[test]
+fn format_apple_proraw_batch() {
+    // Test all Apple ProRAW DNGs from /mnt/v/heic/
+    let dir = "/mnt/v/heic/";
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        eprintln!("Skipping: /mnt/v/heic/ not found");
+        return;
+    };
+
+    let mut tested = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+        {
+            continue;
+        }
+
+        let Ok(data) = std::fs::read(&path) else {
+            continue;
+        };
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+
+        // Skip tiny stubs
+        if data.len() < 1024 {
+            eprintln!("{name}: skipping (only {} bytes)", data.len());
+            continue;
+        }
+
+        // Check if it's actually a TIFF-based DNG (not JPEG-wrapped AMPF)
+        if !zenraw::is_raw_file(&data) {
+            eprintln!("{name}: not a RAW/DNG file (JPEG wrapper?)");
+            continue;
+        }
+
+        // Probe
+        match zenraw::probe(&data, &Unstoppable) {
+            Ok(info) => {
+                assert!(info.is_dng, "{name}: expected DNG");
+                eprintln!(
+                    "{name}: {}x{} {} {} (sensor={}x{}, orient={})",
+                    info.width,
+                    info.height,
+                    info.make,
+                    info.model,
+                    info.sensor_width,
+                    info.sensor_height,
+                    info.orientation
+                );
+
+                // Full decode
+                let output = decode_linear(&data);
+                verify_output(&output, &name);
+                verify_linear_stats(&output, &name);
+
+                // sRGB decode
+                let srgb = decode_srgb(&data);
+                verify_srgb_output(&srgb, &name);
+
+                tested += 1;
+            }
+            Err(e) => {
+                eprintln!("{name}: probe failed: {e}");
+            }
+        }
+    }
+
+    if tested == 0 {
+        eprintln!("Skipping: no decodable Apple ProRAW DNGs found");
+    } else {
+        eprintln!("Decoded {tested} Apple ProRAW DNGs successfully");
+    }
+}
+
+#[test]
+fn format_android_dng() {
+    let path = std::path::Path::new("/mnt/v/heic/android/20260220_093521.dng");
+    let Ok(data) = std::fs::read(path) else {
+        eprintln!("Skipping: Android DNG not found");
+        return;
+    };
+
+    if !zenraw::is_raw_file(&data) {
+        eprintln!("Skipping: not a RAW file");
+        return;
+    }
+
+    let info = zenraw::probe(&data, &Unstoppable).expect("probe Android DNG");
+    assert!(info.is_dng);
+    eprintln!(
+        "Android DNG: {}x{} {} {}",
+        info.width, info.height, info.make, info.model
+    );
+
+    let output = decode_linear(&data);
+    verify_output(&output, "Android DNG");
+    verify_linear_stats(&output, "Android DNG");
+
+    let srgb = decode_srgb(&data);
+    verify_srgb_output(&srgb, "Android DNG");
+}
+
+#[test]
 fn format_fivek_dng() {
     // Test with a FiveK corpus DNG
     let dirs = ["/mnt/v/input/fivek/dng/"];
@@ -627,6 +730,61 @@ mod exif_tests {
             "  GPS: lat={:?} lon={:?}",
             meta.gps_latitude, meta.gps_longitude
         );
+    }
+
+    #[test]
+    fn exif_apple_proraw() {
+        let dir = "/mnt/v/heic/";
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            eprintln!("Skipping: /mnt/v/heic/ not found");
+            return;
+        };
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+            {
+                continue;
+            }
+
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+
+            if data.len() < 1024 || !zenraw::is_raw_file(&data) {
+                continue;
+            }
+
+            match zenraw::exif::read_metadata(&data) {
+                Some(meta) => {
+                    assert!(meta.make.is_some());
+                    let make = meta.make.as_deref().unwrap_or("");
+                    assert!(
+                        make.to_lowercase().contains("apple"),
+                        "{name}: expected Apple make, got: {make}"
+                    );
+                    assert!(meta.dng_version.is_some(), "{name}: expected DNG version");
+                    eprintln!(
+                        "{name}: make={:?} model={:?} DNG={:?}",
+                        meta.make, meta.model, meta.dng_version
+                    );
+                    eprintln!(
+                        "  GPS: lat={:?} lon={:?} alt={:?}",
+                        meta.gps_latitude, meta.gps_longitude, meta.gps_altitude
+                    );
+                    eprintln!(
+                        "  ISO={:?} focal={:?} f_number={:?}",
+                        meta.iso, meta.focal_length, meta.f_number
+                    );
+                }
+                None => {
+                    eprintln!("{name}: EXIF extraction failed");
+                }
+            }
+        }
     }
 
     #[test]
