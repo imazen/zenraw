@@ -2,7 +2,7 @@
 
 # Run all tests with all features
 test:
-    cargo test --features rawler,darktable
+    cargo test --features rawler,darktable,exif,xmp
 
 # Run regression tests (requires darktable-cli + test files)
 regress:
@@ -19,11 +19,13 @@ check:
     cargo check --features darktable
     cargo check --features rawler,darktable
     cargo check --features zencodec
+    cargo check --features exif
+    cargo check --features xmp
     cargo check --no-default-features --features std
 
 # Clippy all features
 lint:
-    cargo clippy --features rawler,darktable,exif
+    cargo clippy --features rawler,darktable,exif,xmp
 
 # Format
 fmt:

@@ -67,6 +67,9 @@ pub mod darktable;
 #[cfg(feature = "exif")]
 pub mod exif;
 
+#[cfg(feature = "xmp")]
+pub mod xmp;
+
 #[cfg(feature = "zencodec")]
 mod zencodec_impl;
 #[cfg(feature = "zencodec")]
