@@ -32,6 +32,7 @@ pub enum DemosaicMethod {
 /// width, height, and CFA pattern from rawloader.
 ///
 /// Output: interleaved RGB f32 data with 3 components per pixel.
+#[cfg(feature = "rawloader")]
 pub fn demosaic_to_rgb_f32(
     data: &[f32],
     width: usize,
@@ -46,6 +47,7 @@ pub fn demosaic_to_rgb_f32(
 }
 
 /// Bilinear interpolation demosaicing.
+#[cfg(feature = "rawloader")]
 fn demosaic_bilinear(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
     let mut rgb = vec![0.0f32; width * height * 3];
 
@@ -84,6 +86,7 @@ fn demosaic_bilinear(data: &[f32], width: usize, height: usize, cfa: &rawloader:
 }
 
 /// Green at a red or blue site: average of 4 neighbors (cross pattern).
+#[cfg(feature = "rawloader")]
 fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
     let mut sum = 0.0f32;
     let mut count = 0u32;
@@ -109,6 +112,7 @@ fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, c
 }
 
 /// R/B at a green site: average of 2 horizontal or 2 vertical neighbors.
+#[cfg(feature = "rawloader")]
 fn rb_at_green_bilinear(
     data: &[f32],
     width: usize,
@@ -137,6 +141,7 @@ fn rb_at_green_bilinear(
 }
 
 /// Opposite color at an R or B site (R at B, or B at R): average of 4 diagonal neighbors.
+#[cfg(feature = "rawloader")]
 fn opposite_at_rb_bilinear(
     data: &[f32],
     width: usize,
@@ -169,6 +174,7 @@ fn opposite_at_rb_bilinear(
     if count > 0 { sum / count as f32 } else { 0.0 }
 }
 
+#[cfg(feature = "rawloader")]
 fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
     let left = if col > 0 {
         data[row * width + col - 1]
@@ -188,6 +194,7 @@ fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
     }
 }
 
+#[cfg(feature = "rawloader")]
 fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usize) -> f32 {
     let top = if row > 0 {
         data[(row - 1) * width + col]
@@ -217,6 +224,7 @@ fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usiz
 ///
 /// Reference: Malvar, He, Cutler. "High-Quality Linear Interpolation for
 /// Demosaicing of Bayer-Patterned Color Images" (2004).
+#[cfg(feature = "rawloader")]
 fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
     let mut rgb = vec![0.0f32; width * height * 3];
 
@@ -282,6 +290,7 @@ fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::C
 ///
 /// Processes all pixels with row ∈ [2, height-2) and col ∈ [2, width-2)
 /// using direct array indexing (no boundary clamping).
+#[cfg(feature = "rawloader")]
 #[autoversion]
 fn malvar_interior(
     _token: SimdToken,
@@ -359,6 +368,7 @@ fn malvar_interior(
 
 /// Process a single pixel using the safe clamped `px()` access pattern.
 /// Used for border pixels where 5×5 kernel neighbors may be out of bounds.
+#[cfg(feature = "rawloader")]
 fn malvar_pixel_clamped(
     data: &[f32],
     rgb: &mut [f32],
@@ -396,6 +406,7 @@ fn malvar_pixel_clamped(
 }
 
 /// Safe pixel fetch with border clamping.
+#[cfg(feature = "rawloader")]
 #[inline]
 fn px(data: &[f32], width: usize, height: usize, row: isize, col: isize) -> f32 {
     let r = row.clamp(0, height as isize - 1) as usize;
@@ -407,6 +418,7 @@ fn px(data: &[f32], width: usize, height: usize, row: isize, col: isize) -> f32 
 /// G = (4*Gc + 2*Laplacian_cross) / 8
 /// where Gc = sum of 4 green cross neighbors
 /// and Laplacian_cross = 4*center - top2 - bottom2 - left2 - right2
+#[cfg(feature = "rawloader")]
 fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
     let r = row as isize;
     let c = col as isize;
@@ -439,6 +451,7 @@ fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col
 ///        0  2   0   2  0
 ///        0  0 -3/2  0  0
 /// Divide by 8
+#[cfg(feature = "rawloader")]
 fn malvar_opposite_at_rb(
     data: &[f32],
     width: usize,
@@ -467,6 +480,7 @@ fn malvar_opposite_at_rb(
 
 /// R and B at a green site. Uses directional kernels depending on
 /// whether the row has R or B horizontal neighbors.
+#[cfg(feature = "rawloader")]
 fn malvar_rb_at_green(
     data: &[f32],
     width: usize,
@@ -624,7 +638,7 @@ fn interpolate_channel_xtrans(
     if count > 0 { sum / count as f32 } else { 0.0 }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rawloader"))]
 mod tests {
     use super::*;
 

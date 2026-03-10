@@ -6,22 +6,28 @@
 //! By default, output is **scene-referred linear f32** (`RGBF32_LINEAR`).
 //! Set `apply_gamma(true)` for display-referred sRGB u8 output.
 
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
 extern crate std;
 
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
 use alloc::vec::Vec;
 
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
 use enough::Stop;
 #[cfg(feature = "rawloader")]
 use whereat::at;
+use zenpixels::PixelBuffer;
 #[cfg(feature = "rawloader")]
-use zenpixels::{PixelBuffer, PixelDescriptor};
+use zenpixels::PixelDescriptor;
 
 #[cfg(feature = "rawloader")]
 use crate::color;
 #[cfg(feature = "rawloader")]
-use crate::demosaic::{DemosaicMethod, demosaic_to_rgb_f32};
+use crate::demosaic::demosaic_to_rgb_f32;
+use crate::demosaic::DemosaicMethod;
 #[cfg(feature = "rawloader")]
 use crate::error::IntoBufferError;
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
 use crate::error::{RawError, Result};
 
 /// Configuration for RAW/DNG decoding.
