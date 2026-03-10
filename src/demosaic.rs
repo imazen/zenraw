@@ -319,14 +319,11 @@ fn malvar_interior(
             match color {
                 R => {
                     rgb[out] = val;
-                    rgb[out + 1] = ((4.0 * val + 2.0 * (n + s + e + we)
-                        - (n2 + s2 + e2 + w2))
-                        / 8.0)
-                        .max(0.0);
-                    rgb[out + 2] = ((6.0 * val + 2.0 * (ne + nw + se + sw)
-                        - 1.5 * (n2 + s2 + e2 + w2))
-                        / 8.0)
-                        .max(0.0);
+                    rgb[out + 1] =
+                        ((4.0 * val + 2.0 * (n + s + e + we) - (n2 + s2 + e2 + w2)) / 8.0).max(0.0);
+                    rgb[out + 2] =
+                        ((6.0 * val + 2.0 * (ne + nw + se + sw) - 1.5 * (n2 + s2 + e2 + w2)) / 8.0)
+                            .max(0.0);
                 }
                 G => {
                     let h = (5.0 * val + 4.0 * (e + we) - (ne + nw + se + sw) - (e2 + w2)
@@ -345,14 +342,11 @@ fn malvar_interior(
                     }
                 }
                 B => {
-                    rgb[out] = ((6.0 * val + 2.0 * (ne + nw + se + sw)
-                        - 1.5 * (n2 + s2 + e2 + w2))
-                        / 8.0)
-                        .max(0.0);
-                    rgb[out + 1] = ((4.0 * val + 2.0 * (n + s + e + we)
-                        - (n2 + s2 + e2 + w2))
-                        / 8.0)
-                        .max(0.0);
+                    rgb[out] =
+                        ((6.0 * val + 2.0 * (ne + nw + se + sw) - 1.5 * (n2 + s2 + e2 + w2)) / 8.0)
+                            .max(0.0);
+                    rgb[out + 1] =
+                        ((4.0 * val + 2.0 * (n + s + e + we) - (n2 + s2 + e2 + w2)) / 8.0).max(0.0);
                     rgb[out + 2] = val;
                 }
                 _ => {

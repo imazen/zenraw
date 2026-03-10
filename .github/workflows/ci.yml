@@ -41,7 +41,6 @@ jobs:
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
             -e 's|path = "\.\./zensim/zensim"|git = "https://github.com/imazen/zensim"|g' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          printf '\n[patch.crates-io]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\nzensim = { git = "https://github.com/imazen/zensim" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Test (default features)
@@ -68,7 +67,6 @@ jobs:
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
             -e 's|path = "\.\./zensim/zensim"|git = "https://github.com/imazen/zensim"|g' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          printf '\n[patch.crates-io]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\nzensim = { git = "https://github.com/imazen/zensim" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Clippy (all features)
@@ -103,7 +101,6 @@ jobs:
             -e 's|path = "\.\./zencodec"|git = "https://github.com/imazen/zencodec"|g' \
             -e 's|path = "\.\./zensim/zensim"|git = "https://github.com/imazen/zensim"|g' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          printf '\n[patch.crates-io]\nzenpixels = { git = "https://github.com/imazen/zenpixels" }\nzensim = { git = "https://github.com/imazen/zensim" }\n' >> Cargo.toml
           rm -f Cargo.lock
 
       - name: Check MSRV

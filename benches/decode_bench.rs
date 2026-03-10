@@ -18,12 +18,30 @@ struct Sample {
 }
 
 const SAMPLES: &[Sample] = &[
-    Sample { name: "DNG/iPhone12", file: "iphone12pro.dng" },
-    Sample { name: "CR2/Canon350D", file: "canon_350d.cr2" },
-    Sample { name: "NEF/NikonD40", file: "nikon_d40.nef" },
-    Sample { name: "ARW/SonyNEX3", file: "sony_nex3.arw" },
-    Sample { name: "RW2/PanasonicGF1", file: "panasonic_gf1.rw2" },
-    Sample { name: "ORF/OlympusC5050", file: "olympus_c5050z.orf" },
+    Sample {
+        name: "DNG/iPhone12",
+        file: "iphone12pro.dng",
+    },
+    Sample {
+        name: "CR2/Canon350D",
+        file: "canon_350d.cr2",
+    },
+    Sample {
+        name: "NEF/NikonD40",
+        file: "nikon_d40.nef",
+    },
+    Sample {
+        name: "ARW/SonyNEX3",
+        file: "sony_nex3.arw",
+    },
+    Sample {
+        name: "RW2/PanasonicGF1",
+        file: "panasonic_gf1.rw2",
+    },
+    Sample {
+        name: "ORF/OlympusC5050",
+        file: "olympus_c5050z.orf",
+    },
 ];
 
 fn load_sample(name: &str) -> Option<Vec<u8>> {
@@ -44,13 +62,9 @@ fn bench_full_decode(c: &mut Criterion) {
         };
 
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_with_input(
-            BenchmarkId::new("full", sample.name),
-            &data,
-            |b, data| {
-                b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("full", sample.name), &data, |b, data| {
+            b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
+        });
     }
 
     group.finish();
@@ -96,13 +110,9 @@ fn bench_demosaic_methods(c: &mut Criterion) {
         ("malvar", DemosaicMethod::MalvarHeCutler),
     ] {
         let config = RawDecodeConfig::default().with_demosaic(method);
-        group.bench_with_input(
-            BenchmarkId::new(name, "NEF/NikonD40"),
-            &data,
-            |b, data| {
-                b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new(name, "NEF/NikonD40"), &data, |b, data| {
+            b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
+        });
     }
 
     group.finish();

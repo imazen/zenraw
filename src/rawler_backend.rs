@@ -236,15 +236,21 @@ fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, 
 
             // Fast path: uniform black/white levels (non-CFA or all channels same)
             let uniform_bw = cpp > 1
-                || (black[0] == black[1] && black[1] == black[2]
-                    && white[0] == white[1] && white[1] == white[2]);
+                || (black[0] == black[1]
+                    && black[1] == black[2]
+                    && white[0] == white[1]
+                    && white[1] == white[2]);
 
             if uniform_bw {
                 let bl = black[0];
                 let wl = white[0];
                 let range = (wl - bl).max(1.0);
                 let inv_range = 1.0 / range;
-                Ok(crate::simd::normalize_uniform(&data[..total], bl, inv_range))
+                Ok(crate::simd::normalize_uniform(
+                    &data[..total],
+                    bl,
+                    inv_range,
+                ))
             } else {
                 let mut out = Vec::with_capacity(total);
                 for (i, &sample) in data.iter().enumerate().take(total) {
