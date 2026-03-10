@@ -148,8 +148,12 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
         ))));
     }
 
-    // Create temp directory for output
-    let tmp_dir = std::env::temp_dir().join("zenraw_dt");
+    // Create unique temp directory per invocation to avoid parallel conflicts
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tmp_dir = std::env::temp_dir().join(format!("zenraw_dt_{pid}_{id}"));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Decode(e.to_string())))?;
 
     let out_path = tmp_dir.join("output.pfm");
@@ -213,12 +217,8 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     let pfm_data = std::fs::read(&out_path)
         .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
 
-    // Clean up temp files (best effort)
-    let _ = std::fs::remove_file(&out_path);
-    if let Some(ref xmp) = xmp_path {
-        let _ = std::fs::remove_file(xmp);
-    }
-    let _ = std::fs::remove_dir_all(&dt_config);
+    // Clean up entire temp directory (best effort)
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     let (pixels_f32, width, height) = parse_pfm(&pfm_data)?;
 

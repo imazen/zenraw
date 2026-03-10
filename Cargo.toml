@@ -18,6 +18,9 @@ zenpixels = { version = "0.1", path = "../zenpixels/zenpixels", default-features
 zencodec = { version = "0.1", path = "../zencodec", optional = true }
 
 [dev-dependencies]
+zensim = { version = "0.2", path = "../zensim/zensim" }
+bytemuck = "1.25"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 default = ["std"]
@@ -30,3 +33,4 @@ opt-level = 2
 
 [patch.crates-io]
 zenpixels = { path = "../zenpixels/zenpixels" }
+zensim = { path = "../zensim/zensim" }
