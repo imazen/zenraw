@@ -4,7 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/zenraw.svg?style=for-the-badge)](https://crates.io/crates/zenraw)
 [![docs.rs](https://img.shields.io/docsrs/zenraw?style=for-the-badge)](https://docs.rs/zenraw)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg?style=for-the-badge)](LICENSE-APACHE)
-[![MSRV: 1.89](https://img.shields.io/badge/MSRV-1.89-blue.svg?style=for-the-badge)](https://blog.rust-lang.org/)
+[![MSRV: 1.93](https://img.shields.io/badge/MSRV-1.93-blue.svg?style=for-the-badge)](https://blog.rust-lang.org/)
 
 Camera RAW and DNG decoder in safe Rust. Scene-referred linear f32 output by default,
 sRGB u8 opt-in. Three swappable backends for different camera coverage vs. dependency tradeoffs.

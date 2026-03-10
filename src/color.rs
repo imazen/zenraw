@@ -202,6 +202,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn identity_matrix_inversion() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let inv = invert_3x3(id);
@@ -218,6 +219,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn matrix_mul_identity() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
@@ -230,6 +232,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn invert_and_multiply_is_identity() {
         let m = [[2.0, 1.0, 0.0], [0.0, 3.0, 1.0], [1.0, 0.0, 2.0]];
         let inv = invert_3x3(m);
