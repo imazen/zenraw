@@ -20,6 +20,8 @@ use zenpixels::{PixelBuffer, PixelDescriptor};
 use crate::color;
 #[cfg(feature = "rawloader")]
 use crate::demosaic::{DemosaicMethod, demosaic_to_rgb_f32};
+#[cfg(feature = "rawloader")]
+use crate::error::IntoBufferError;
 use crate::error::{RawError, Result};
 
 /// Configuration for RAW/DNG decoding.
@@ -267,7 +269,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             final_h as u32,
             PixelDescriptor::RGB8_SRGB,
         )
-        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
         Ok(RawDecodeOutput { pixels: buf, info })
     } else {
@@ -279,7 +281,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             final_h as u32,
             PixelDescriptor::RGBF32_LINEAR,
         )
-        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
         Ok(RawDecodeOutput { pixels: buf, info })
     }
@@ -367,7 +369,7 @@ fn decode_non_bayer(
             final_h as u32,
             PixelDescriptor::RGB8_SRGB,
         )
-        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
         Ok(RawDecodeOutput { pixels: buf, info })
     } else {
@@ -379,7 +381,7 @@ fn decode_non_bayer(
             final_h as u32,
             PixelDescriptor::RGBF32_LINEAR,
         )
-        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
         Ok(RawDecodeOutput { pixels: buf, info })
     }

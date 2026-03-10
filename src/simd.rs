@@ -3,10 +3,13 @@
 //! Uses archmage for safe AVX2+FMA dispatch on x86-64.
 //! Falls back to scalar automatically when SIMD is unavailable.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(target_arch = "x86_64")]
+use alloc::vec;
+#[cfg(target_arch = "x86_64")]
 use archmage::prelude::*;
+#[cfg(target_arch = "x86_64")]
 use magetypes::simd::f32x8;
 
 // ── Normalize ────────────────────────────────────────────────────────────
@@ -16,20 +19,22 @@ use magetypes::simd::f32x8;
 /// All pixels share the same black/inv_range. This is the fast path for
 /// non-CFA data (cpp > 1) or when all CFA channels have identical levels.
 pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
+    #[cfg(target_arch = "x86_64")]
     if let Some(token) = X64V3Token::summon() {
-        normalize_uniform_avx2(token, data, black, inv_range)
-    } else {
-        data.iter()
-            .map(|&s| ((s - black) * inv_range).clamp(0.0, 1.0))
-            .collect()
+        return normalize_uniform_avx2(token, data, black, inv_range);
     }
+    data.iter()
+        .map(|&s| ((s - black) * inv_range).clamp(0.0, 1.0))
+        .collect()
 }
 
+#[cfg(target_arch = "x86_64")]
 #[arcane]
 fn normalize_uniform_avx2(token: X64V3Token, data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
     normalize_uniform_inner(token, data, black, inv_range)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[rite]
 fn normalize_uniform_inner(
     token: X64V3Token,

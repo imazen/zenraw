@@ -19,7 +19,7 @@ use zenpixels::{PixelBuffer, PixelDescriptor};
 use crate::color;
 use crate::decode::{RawDecodeConfig, RawDecodeOutput, RawInfo};
 use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
-use crate::error::{RawError, Result};
+use crate::error::{IntoBufferError, RawError, Result};
 
 /// Probe a RAW/DNG file for metadata without decoding pixels.
 pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
@@ -397,7 +397,7 @@ fn build_output(
             height as u32,
             PixelDescriptor::RGB8_SRGB,
         )
-        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
         Ok(RawDecodeOutput { pixels: buf, info })
     } else {
@@ -409,7 +409,7 @@ fn build_output(
             height as u32,
             PixelDescriptor::RGBF32_LINEAR,
         )
-        .map_err(|e| at!(RawError::Buffer(e.into_inner())))?;
+        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
         Ok(RawDecodeOutput { pixels: buf, info })
     }

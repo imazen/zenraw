@@ -51,3 +51,4 @@ opt-level = 2
 [patch.crates-io]
 zenpixels = { path = "../zenpixels/zenpixels" }
 zensim = { path = "../zensim/zensim" }
+whereat = { path = "../whereat" }
