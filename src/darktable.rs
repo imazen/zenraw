@@ -272,6 +272,7 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             cfa_pattern: String::new(),
             is_dng,
             orientation: 1,
+            bit_depth: None, // darktable outputs processed pixels, not raw sensor data
         },
     })
 }

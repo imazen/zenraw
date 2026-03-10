@@ -379,12 +379,14 @@ fn malvar_rb_at_green(
 /// Generic CFA pattern for arbitrary array sizes (X-Trans 6x6, etc.).
 ///
 /// Stores the repeating color pattern and provides `color_at(row, col)`.
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
 pub(crate) struct CfaPattern {
     colors: Vec<u8>,
     width: usize,
     height: usize,
 }
 
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
 impl CfaPattern {
     /// Create from a flat color array with the given tile dimensions.
     ///
@@ -413,6 +415,7 @@ impl CfaPattern {
 /// are interpolated by averaging same-color neighbors in a 5×5 window.
 /// This is a baseline quality algorithm — sufficient for previews and
 /// testing but not as sharp as frequency-domain X-Trans algorithms.
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
 pub(crate) fn demosaic_xtrans_bilinear(
     data: &[f32],
     width: usize,
@@ -444,6 +447,7 @@ pub(crate) fn demosaic_xtrans_bilinear(
 }
 
 /// Average same-color neighbors within a 5×5 window.
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
 fn interpolate_channel_xtrans(
     data: &[f32],
     width: usize,

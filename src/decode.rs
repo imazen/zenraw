@@ -135,8 +135,10 @@ pub struct RawInfo {
     pub cfa_pattern: alloc::string::String,
     /// Whether the source was a DNG file.
     pub is_dng: bool,
-    /// EXIF orientation (rawloader encoding).
+    /// EXIF orientation (1–8, EXIF spec).
     pub orientation: u16,
+    /// Sensor bit depth (e.g., 10, 12, 14), estimated from white level.
+    pub bit_depth: Option<u8>,
 }
 
 /// Probe a RAW/DNG file for metadata without decoding pixels.
@@ -161,6 +163,7 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         cfa_pattern: raw.cfa.to_string(),
         is_dng,
         orientation: orientation_to_u16(&raw.orientation),
+        bit_depth: Some(bits_from_whitelevel(raw.whitelevels[0] as u32)),
     })
 }
 
@@ -250,6 +253,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
         cfa_pattern: raw.cfa.to_string(),
         is_dng,
         orientation: final_orient,
+        bit_depth: Some(bits_from_whitelevel(raw.whitelevels[0] as u32)),
     };
 
     if config.apply_gamma {
@@ -349,6 +353,7 @@ fn decode_non_bayer(
         cfa_pattern: raw.cfa.to_string(),
         is_dng,
         orientation: final_orient,
+        bit_depth: Some(bits_from_whitelevel(raw.whitelevels[0] as u32)),
     };
 
     if config.apply_gamma {
@@ -519,6 +524,17 @@ fn orientation_to_u16(orient: &rawloader::Orientation) -> u16 {
     }
 }
 
+/// Estimate sensor bit depth from the white level value.
+///
+/// Returns the number of bits needed to represent the white level
+/// (e.g., white level 4095 → 12 bits, 16383 → 14 bits).
+pub(crate) fn bits_from_whitelevel(wl: u32) -> u8 {
+    if wl == 0 {
+        return 16;
+    }
+    (32 - wl.leading_zeros()) as u8
+}
+
 /// Detect whether a byte slice looks like a supported RAW/DNG file.
 ///
 /// Checks for TIFF-based RAW formats and known camera RAW magic bytes.
@@ -547,6 +563,11 @@ pub fn is_raw_file(data: &[u8]) -> bool {
 
     // Panasonic RW2 (TIFF variant with 0x55 marker)
     if data[0] == b'I' && data[1] == b'I' && data[2] == 0x55 && data[3] == 0x00 {
+        return true;
+    }
+
+    // Canon CR3 (ISO BMFF with "crx " major brand in ftyp box)
+    if &data[4..8] == b"ftyp" && &data[8..12] == b"crx " {
         return true;
     }
 

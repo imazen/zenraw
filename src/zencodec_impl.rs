@@ -12,10 +12,10 @@ use zencodec::Unsupported;
 use zencodec::decode::{
     Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, OutputInfo, SinkError,
 };
-use zencodec::{ImageFormat, ImageFormatDefinition, ImageInfo, ResourceLimits};
+use zencodec::{ImageFormat, ImageFormatDefinition, ImageInfo, Orientation, ResourceLimits};
 use zenpixels::PixelDescriptor;
 
-use crate::decode::RawDecodeConfig;
+use crate::decode::{self, RawDecodeConfig};
 use crate::error::RawError;
 
 // ── Format definition ──────────────────────────────────────────────────
@@ -44,7 +44,8 @@ pub static RAW_FORMAT: ImageFormatDefinition = ImageFormatDefinition::new(
     "Camera RAW",
     "raw",
     &[
-        "cr2", "nef", "arw", "srf", "sr2", "rw2", "pef", "orf", "erf", "raf", "3fr", "iiq",
+        "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "rw2", "pef", "orf", "erf", "raf", "3fr",
+        "iiq", "dcr", "kdc", "mrw", "rwl", "srw",
     ],
     "image/x-raw",
     &["image/x-raw", "image/x-dcraw"],
@@ -52,7 +53,7 @@ pub static RAW_FORMAT: ImageFormatDefinition = ImageFormatDefinition::new(
     false, // animation
     true,  // lossless
     true,  // lossy
-    12,    // enough for TIFF header + magic detection
+    12,    // enough for TIFF header + BMFF ftyp detection
     detect_raw,
 );
 
@@ -65,26 +66,40 @@ fn detect_raw(data: &[u8]) -> bool {
 }
 
 fn is_dng_header(data: &[u8]) -> bool {
-    if data.len() < 12 {
-        return false;
+    crate::decode::is_dng_data(data)
+}
+
+/// Detect the image format (DNG vs generic RAW) from file bytes.
+fn detect_format(data: &[u8]) -> ImageFormat {
+    if crate::is_raw_file(data) && crate::decode::is_dng_data(data) {
+        ImageFormat::Custom(&DNG_FORMAT)
+    } else {
+        ImageFormat::Custom(&RAW_FORMAT)
     }
-    let is_tiff = (data[0] == b'I' && data[1] == b'I' && data[2] == 42 && data[3] == 0)
-        || (data[0] == b'M' && data[1] == b'M' && data[2] == 0 && data[3] == 42);
-    if !is_tiff {
-        return false;
+}
+
+/// Build an ImageInfo from our RawInfo + original file data.
+///
+/// Populates orientation, bit depth, and XMP metadata (when the xmp feature is enabled).
+fn build_image_info(data: &[u8], raw_info: &decode::RawInfo) -> ImageInfo {
+    let format = detect_format(data);
+    let orientation = Orientation::from_exif(raw_info.orientation);
+
+    let mut info = ImageInfo::new(raw_info.width, raw_info.height, format)
+        .with_frame_count(1)
+        .with_orientation(orientation);
+
+    if let Some(bd) = raw_info.bit_depth {
+        info = info.with_bit_depth(bd);
     }
-    let search_len = data.len().min(4096);
-    let le = data[0] == b'I';
-    for i in 0..search_len.saturating_sub(1) {
-        if le {
-            if data[i] == 0x12 && data[i + 1] == 0xC6 {
-                return true;
-            }
-        } else if data[i] == 0xC6 && data[i + 1] == 0x12 {
-            return true;
-        }
+
+    // Attach XMP metadata when available
+    #[cfg(feature = "xmp")]
+    if let Some(xmp_xml) = crate::xmp::extract_xmp(data) {
+        info = info.with_xmp(xmp_xml.into_bytes());
     }
-    false
+
+    info
 }
 
 // ── Supported output descriptors ───────────────────────────────────────
@@ -132,10 +147,11 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
     type Job<'a> = RawDecodeJob<'a>;
 
     fn formats() -> &'static [ImageFormat] {
-        // Custom formats — callers should register DNG_FORMAT and RAW_FORMAT
-        // with the ImageFormatRegistry. We return an empty slice here because
-        // these are Custom formats, not built-in ImageFormat variants.
-        &[]
+        static FORMATS: [ImageFormat; 2] = [
+            ImageFormat::Custom(&DNG_FORMAT),
+            ImageFormat::Custom(&RAW_FORMAT),
+        ];
+        &FORMATS
     }
 
     fn supported_descriptors() -> &'static [PixelDescriptor] {
@@ -183,16 +199,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
         let stop: &dyn enough::Stop = self.stop.unwrap_or(&enough::Unstoppable);
         let info = crate::probe(data, stop)?;
-
-        let format = if crate::is_raw_file(data) && is_dng_header(data) {
-            ImageFormat::Custom(&DNG_FORMAT)
-        } else {
-            ImageFormat::Custom(&RAW_FORMAT)
-        };
-
-        Ok(ImageInfo::new(info.width, info.height, format)
-            .with_frame_count(1)
-            .with_bit_depth(16)) // Most RAW files are 12-14 bit, stored as 16
+        Ok(build_image_info(data, &info))
     }
 
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
@@ -205,7 +212,14 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
             PixelDescriptor::RGBF32_LINEAR
         };
 
-        Ok(OutputInfo::full_decode(info.width, info.height, descriptor))
+        // When orientation is applied, output has display dimensions (may be swapped)
+        let (w, h) = if self.config.apply_orientation {
+            (info.display_width(), info.display_height())
+        } else {
+            (info.width, info.height)
+        };
+
+        Ok(OutputInfo::full_decode(w, h, descriptor))
     }
 
     fn decoder(
@@ -280,17 +294,7 @@ impl<'a> Decode for RawDecoder<'a> {
     fn decode(self) -> Result<DecodeOutput, Self::Error> {
         let stop: &dyn enough::Stop = self.stop.unwrap_or(&enough::Unstoppable);
         let output = crate::decode(&self.data, &self.config, stop)?;
-
-        let format = if decode::is_raw_file(&self.data) && is_dng_header(&self.data) {
-            ImageFormat::Custom(&DNG_FORMAT)
-        } else {
-            ImageFormat::Custom(&RAW_FORMAT)
-        };
-
-        let info = ImageInfo::new(output.info.width, output.info.height, format)
-            .with_frame_count(1)
-            .with_bit_depth(16);
-
+        let info = build_image_info(&self.data, &output.info);
         Ok(DecodeOutput::new(output.pixels, info))
     }
 }

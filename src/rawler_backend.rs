@@ -52,6 +52,9 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         cfa_pattern,
         is_dng,
         orientation: orientation_to_u16(&raw.orientation),
+        bit_depth: Some(crate::decode::bits_from_whitelevel(
+            raw.whitelevel.as_bayer_array()[0] as u32,
+        )),
     })
 }
 
@@ -377,6 +380,9 @@ fn build_output(
         cfa_pattern,
         is_dng,
         orientation,
+        bit_depth: Some(crate::decode::bits_from_whitelevel(
+            raw.whitelevel.as_bayer_array()[0] as u32,
+        )),
     };
 
     if config.apply_gamma {
