@@ -198,7 +198,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         let info = self.probe(data)?;
 
-        // Pick the right descriptor based on config
+        // Scene-referred: linear f32 by default, sRGB u8 only when gamma requested
         let descriptor = if self.config.apply_gamma {
             PixelDescriptor::RGB8_SRGB
         } else {

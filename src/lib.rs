@@ -1,8 +1,11 @@
 //! Camera RAW and DNG decoder with zenpixels integration.
 //!
 //! Wraps the [`rawloader`] crate with demosaicing, white balance, and color
-//! matrix correction to produce sRGB pixel buffers compatible with the zen*
+//! matrix correction to produce pixel buffers compatible with the zen*
 //! codec ecosystem.
+//!
+//! Output is **scene-referred linear f32** (`RGBF32_LINEAR`) by default.
+//! Enable `apply_gamma` for display-referred sRGB u8 output.
 //!
 //! # Supported formats
 //!
@@ -53,6 +56,9 @@ pub mod color;
 pub mod decode;
 pub mod demosaic;
 mod error;
+
+#[cfg(feature = "darktable")]
+pub mod darktable;
 
 #[cfg(feature = "zencodec")]
 mod zencodec_impl;

@@ -1,7 +1,10 @@
 //! RAW/DNG decoding to zenpixels buffers.
 //!
 //! Takes camera RAW file bytes, demosaics the Bayer sensor data, applies
-//! white balance and color matrix correction, and produces sRGB pixel buffers.
+//! white balance and color matrix correction, and produces pixel buffers.
+//!
+//! By default, output is **scene-referred linear f32** (`RGBF32_LINEAR`).
+//! Set `apply_gamma(true)` for display-referred sRGB u8 output.
 
 extern crate std;
 
@@ -23,8 +26,10 @@ pub struct RawDecodeConfig {
     pub demosaic: DemosaicMethod,
     /// Maximum pixel count (width × height) before rejecting.
     pub max_pixels: u64,
-    /// Whether to apply sRGB gamma curve (true → sRGB u8/u16 output,
-    /// false → linear f32 output).
+    /// Whether to apply sRGB gamma curve (true → display-referred sRGB u8,
+    /// false → scene-referred linear f32).
+    ///
+    /// Default: `false` (scene-referred linear output).
     pub apply_gamma: bool,
     /// Whether to apply the crop specified in the RAW metadata.
     pub apply_crop: bool,
@@ -35,7 +40,7 @@ impl Default for RawDecodeConfig {
         Self {
             demosaic: DemosaicMethod::default(),
             max_pixels: 200_000_000, // 200 megapixels
-            apply_gamma: true,
+            apply_gamma: false,
             apply_crop: true,
         }
     }
@@ -61,9 +66,10 @@ impl RawDecodeConfig {
         self
     }
 
-    /// Set whether to apply sRGB gamma (default: true).
+    /// Set whether to apply sRGB gamma (default: false).
     ///
-    /// When true, output is sRGB-gamma RGB8. When false, output is linear f32.
+    /// When true, output is display-referred sRGB RGB8.
+    /// When false (default), output is scene-referred linear f32.
     #[must_use]
     pub fn with_gamma(mut self, apply: bool) -> Self {
         self.apply_gamma = apply;

@@ -91,7 +91,7 @@ fn config_defaults() {
     let config = RawDecodeConfig::default();
     assert_eq!(config.demosaic, DemosaicMethod::MalvarHeCutler);
     assert_eq!(config.max_pixels, 200_000_000);
-    assert!(config.apply_gamma);
+    assert!(!config.apply_gamma); // scene-referred: linear f32 by default
     assert!(config.apply_crop);
 }
 
@@ -257,12 +257,12 @@ fn decode_real_raw_file() {
         info.width, info.height, info.make, info.model, info.cfa_pattern
     );
 
-    // Test decode with default settings (sRGB RGB8)
+    // Test decode with default settings (scene-referred linear f32)
     let config = RawDecodeConfig::default();
     let output = zenraw::decode(&data, &config, &Unstoppable).expect("decode should succeed");
     assert_eq!(
         output.pixels.descriptor(),
-        zenpixels::PixelDescriptor::RGB8_SRGB
+        zenpixels::PixelDescriptor::RGBF32_LINEAR
     );
     assert!(output.info.width > 0);
     assert!(output.info.height > 0);
@@ -300,4 +300,129 @@ fn pixel_limit_with_real_file() {
         matches!(err.as_ref(), RawError::LimitExceeded(_)),
         "expected LimitExceeded, got: {err:?}"
     );
+}
+
+// ── darktable-cli backend tests ──────────────────────────────────────────
+
+#[cfg(feature = "darktable")]
+mod darktable_tests {
+    use zenraw::darktable::{DtColorProfile, DtConfig};
+
+    fn find_dng_file() -> Option<std::path::PathBuf> {
+        let dirs = ["/mnt/v/input/fivek/dng/", "/mnt/v/input/raw-samples/"];
+        for dir in &dirs {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("dng"))
+                    .unwrap_or(false)
+                {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn dt_available() {
+        if !zenraw::darktable::is_available() {
+            eprintln!("Skipping: darktable-cli not found");
+            return;
+        }
+        let version = zenraw::darktable::version().unwrap();
+        eprintln!("darktable version: {version}");
+        assert!(
+            version.contains("darktable") || version.contains("cli"),
+            "unexpected version: {version}"
+        );
+    }
+
+    #[test]
+    fn dt_decode_dng_linear() {
+        if !zenraw::darktable::is_available() {
+            eprintln!("Skipping: darktable-cli not found");
+            return;
+        }
+        let Some(path) = find_dng_file() else {
+            eprintln!("Skipping: no DNG files found");
+            return;
+        };
+
+        eprintln!("Testing darktable decode: {}", path.display());
+        let config = DtConfig::default();
+        let output = zenraw::darktable::decode_file(&path, &config)
+            .expect("darktable decode should succeed");
+
+        assert_eq!(
+            output.pixels.descriptor(),
+            zenpixels::PixelDescriptor::RGBF32_LINEAR
+        );
+        assert!(output.info.width > 0);
+        assert!(output.info.height > 0);
+        eprintln!(
+            "darktable decoded: {}x{} linear f32",
+            output.info.width, output.info.height
+        );
+
+        // Verify output is reasonable (not all zeros or all ones)
+        let data = output.pixels.copy_to_contiguous_bytes();
+        let floats: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+
+        let mean: f32 = floats.iter().sum::<f32>() / floats.len() as f32;
+        eprintln!("Mean pixel value: {mean:.4}");
+        assert!(mean > 0.001, "output is all black: mean={mean}");
+        assert!(mean < 10.0, "output has unreasonable values: mean={mean}");
+    }
+
+    #[test]
+    fn dt_decode_dng_rec2020() {
+        if !zenraw::darktable::is_available() {
+            eprintln!("Skipping: darktable-cli not found");
+            return;
+        }
+        let Some(path) = find_dng_file() else {
+            eprintln!("Skipping: no DNG files found");
+            return;
+        };
+
+        let config = DtConfig::new().with_color_profile(DtColorProfile::LinearRec2020);
+        let output = zenraw::darktable::decode_file(&path, &config).expect("rec2020 decode");
+
+        assert_eq!(
+            output.pixels.descriptor(),
+            zenpixels::PixelDescriptor::RGBF32_LINEAR
+        );
+        eprintln!(
+            "darktable Rec.2020 decoded: {}x{}",
+            output.info.width, output.info.height
+        );
+    }
+
+    #[test]
+    fn dt_decode_bytes() {
+        if !zenraw::darktable::is_available() {
+            eprintln!("Skipping: darktable-cli not found");
+            return;
+        }
+        let Some(path) = find_dng_file() else {
+            eprintln!("Skipping: no DNG files found");
+            return;
+        };
+
+        let data = std::fs::read(&path).expect("read DNG");
+        let config = DtConfig::default();
+        let output = zenraw::darktable::decode_bytes(&data, &config).expect("bytes decode");
+
+        assert!(output.info.width > 0);
+        assert!(output.info.height > 0);
+    }
 }
