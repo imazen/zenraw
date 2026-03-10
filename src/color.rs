@@ -162,7 +162,7 @@ fn invert_3x3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 
 /// Apply sRGB gamma curve (linear → sRGB transfer function).
 ///
-/// Operates on interleaved RGB f32 data (values should be in [0, 1]).
+/// Operates on interleaved RGB f32 data (values should be in \[0, 1\]).
 pub fn apply_srgb_gamma(rgb: &mut [f32]) {
     for val in rgb.iter_mut() {
         *val = linear_to_srgb(*val);
@@ -179,14 +179,14 @@ fn linear_to_srgb(x: f32) -> f32 {
     }
 }
 
-/// Convert f32 [0,1] RGB data to u8 [0,255] sRGB data.
+/// Convert f32 \[0,1\] RGB data to u8 \[0,255\] sRGB data.
 pub fn f32_to_u8_srgb(src: &[f32]) -> alloc::vec::Vec<u8> {
     src.iter()
         .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
         .collect()
 }
 
-/// Convert f32 [0,1] RGB data to u16 [0,65535] data.
+/// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
 pub fn f32_to_u16(src: &[f32]) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
     for &v in src {

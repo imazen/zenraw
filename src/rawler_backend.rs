@@ -145,7 +145,7 @@ fn extract_cfa_pattern(raw: &rawler::RawImage) -> String {
     }
 }
 
-/// Normalize rawler sensor data to f32 [0, 1].
+/// Normalize rawler sensor data to f32 \[0, 1\].
 fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;

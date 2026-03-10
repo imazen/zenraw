@@ -151,7 +151,7 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 ///
 /// The full pipeline:
 /// 1. Parse RAW file with rawloader
-/// 2. Normalize sensor data to [0, 1] using black/white levels
+/// 2. Normalize sensor data to \[0, 1\] using black/white levels
 /// 3. Demosaic Bayer CFA data to RGB
 /// 4. Apply white balance + camera→sRGB color matrix
 /// 5. Optionally apply sRGB gamma curve
@@ -363,7 +363,7 @@ fn decode_non_bayer(
     }
 }
 
-/// Normalize raw sensor data to f32 [0, 1] using black/white levels.
+/// Normalize raw sensor data to f32 \[0, 1\] using black/white levels.
 #[cfg(feature = "rawloader")]
 fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
