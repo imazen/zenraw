@@ -679,3 +679,142 @@ mod exif_tests {
         assert_eq!(fail, 0, "some DNG files failed EXIF extraction");
     }
 }
+
+// ── XMP extraction tests ─────────────────────────────────────────────
+
+#[cfg(feature = "xmp")]
+mod xmp_tests {
+    use super::*;
+
+    #[test]
+    fn xmp_fivek_dng() {
+        let dir = "/mnt/v/input/fivek/dng/";
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            eprintln!("Skipping: FiveK DNG directory not found");
+            return;
+        };
+
+        let mut with_xmp = 0;
+        let mut without_xmp = 0;
+        let mut white_balances: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+
+        for entry in entries.filter_map(|e| e.ok()).take(50) {
+            let path = entry.path();
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+            {
+                continue;
+            }
+
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+
+            match zenraw::xmp::read_xmp_metadata(&data) {
+                Some(meta) => {
+                    with_xmp += 1;
+                    if let Some(ref wb) = meta.white_balance {
+                        white_balances.insert(wb.clone());
+                    }
+                }
+                None => {
+                    without_xmp += 1;
+                }
+            }
+        }
+
+        eprintln!("FiveK XMP: {with_xmp} with XMP, {without_xmp} without");
+        eprintln!("White balances: {:?}", white_balances);
+        assert!(with_xmp > 0, "no DNG files had XMP");
+    }
+
+    #[test]
+    fn xmp_consistency_with_exif() {
+        // For DNG files that have both XMP and EXIF, verify they agree on make/model
+        let dir = "/mnt/v/input/fivek/dng/";
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            eprintln!("Skipping: FiveK DNG directory not found");
+            return;
+        };
+
+        let mut compared = 0;
+
+        for entry in entries.filter_map(|e| e.ok()).take(20) {
+            let path = entry.path();
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+            {
+                continue;
+            }
+
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+
+            #[cfg(feature = "exif")]
+            {
+                let exif = zenraw::exif::read_metadata(&data);
+                let xmp = zenraw::xmp::read_xmp_metadata(&data);
+
+                if let (Some(exif), Some(xmp)) = (exif, xmp) {
+                    // If both have make, they should agree
+                    if let (Some(exif_make), Some(xmp_make)) = (&exif.make, &xmp.tiff_make) {
+                        assert_eq!(
+                            exif_make,
+                            xmp_make,
+                            "EXIF/XMP make mismatch in {}",
+                            path.file_name().unwrap().to_str().unwrap()
+                        );
+                    }
+                    compared += 1;
+                }
+            }
+        }
+
+        if compared > 0 {
+            eprintln!("Compared EXIF vs XMP for {compared} files — all consistent");
+        } else {
+            eprintln!("Skipping: no files with both EXIF and XMP found");
+        }
+    }
+
+    #[test]
+    fn xmp_raw_samples() {
+        let samples = [
+            ("nikon_d40.nef", false),
+            ("canon_350d.cr2", false),
+            ("sony_nex3.arw", false),
+            ("olympus_c5050z.orf", false),
+            ("panasonic_gf1.rw2", false),
+            ("iphone12pro.dng", false), // iPhone DNG may or may not have XMP
+            ("canon_eosr_craw.cr3", true), // CR3 typically has XMP
+        ];
+
+        for (name, expect_xmp) in &samples {
+            let Some(data) = load_sample(name) else {
+                continue;
+            };
+
+            let xmp = zenraw::xmp::extract_xmp(&data);
+            let has_xmp = xmp.is_some();
+
+            if *expect_xmp {
+                assert!(has_xmp, "{name}: expected XMP but none found");
+            }
+
+            eprintln!("{name}: XMP={}", if has_xmp { "yes" } else { "no" });
+
+            if let Some(meta) = zenraw::xmp::read_xmp_metadata(&data) {
+                if let Some(ref make) = meta.tiff_make {
+                    eprintln!("  tiff:Make = {make}");
+                }
+                if let Some(ref wb) = meta.white_balance {
+                    eprintln!("  crs:WhiteBalance = {wb}");
+                }
+            }
+        }
+    }
+}
