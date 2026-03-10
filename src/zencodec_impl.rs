@@ -15,7 +15,7 @@ use zencodec::decode::{
 use zencodec::{ImageFormat, ImageFormatDefinition, ImageInfo, ResourceLimits};
 use zenpixels::PixelDescriptor;
 
-use crate::decode::{self, RawDecodeConfig};
+use crate::decode::RawDecodeConfig;
 use crate::error::RawError;
 
 // ── Format definition ──────────────────────────────────────────────────
@@ -57,11 +57,11 @@ pub static RAW_FORMAT: ImageFormatDefinition = ImageFormatDefinition::new(
 );
 
 fn detect_dng(data: &[u8]) -> bool {
-    decode::is_raw_file(data) && is_dng_header(data)
+    crate::is_raw_file(data) && is_dng_header(data)
 }
 
 fn detect_raw(data: &[u8]) -> bool {
-    decode::is_raw_file(data) && !is_dng_header(data)
+    crate::is_raw_file(data) && !is_dng_header(data)
 }
 
 fn is_dng_header(data: &[u8]) -> bool {
@@ -182,9 +182,9 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
         let stop: &dyn enough::Stop = self.stop.unwrap_or(&enough::Unstoppable);
-        let info = decode::probe(data, stop)?;
+        let info = crate::probe(data, stop)?;
 
-        let format = if decode::is_raw_file(data) && is_dng_header(data) {
+        let format = if crate::is_raw_file(data) && is_dng_header(data) {
             ImageFormat::Custom(&DNG_FORMAT)
         } else {
             ImageFormat::Custom(&RAW_FORMAT)
@@ -279,7 +279,7 @@ impl<'a> Decode for RawDecoder<'a> {
 
     fn decode(self) -> Result<DecodeOutput, Self::Error> {
         let stop: &dyn enough::Stop = self.stop.unwrap_or(&enough::Unstoppable);
-        let output = decode::decode(&self.data, &self.config, stop)?;
+        let output = crate::decode(&self.data, &self.config, stop)?;
 
         let format = if decode::is_raw_file(&self.data) && is_dng_header(&self.data) {
             ImageFormat::Custom(&DNG_FORMAT)

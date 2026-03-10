@@ -43,6 +43,7 @@ impl From<zenpixels::BufferError> for RawError {
     }
 }
 
+#[cfg(feature = "rawloader")]
 impl From<rawloader::RawLoaderError> for RawError {
     fn from(e: rawloader::RawLoaderError) -> Self {
         RawError::Decode(e.to_string())

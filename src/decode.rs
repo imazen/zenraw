@@ -11,10 +11,14 @@ extern crate std;
 use alloc::vec::Vec;
 
 use enough::Stop;
+#[cfg(feature = "rawloader")]
 use whereat::at;
+#[cfg(feature = "rawloader")]
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
+#[cfg(feature = "rawloader")]
 use crate::color;
+#[cfg(feature = "rawloader")]
 use crate::demosaic::{DemosaicMethod, demosaic_to_rgb_f32};
 use crate::error::{RawError, Result};
 
@@ -121,6 +125,7 @@ pub struct RawInfo {
 /// Probe a RAW/DNG file for metadata without decoding pixels.
 ///
 /// Returns metadata about the image (dimensions, camera info, etc.).
+#[cfg(feature = "rawloader")]
 pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -152,6 +157,7 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 /// 5. Optionally apply sRGB gamma curve
 /// 6. Optionally crop to the camera's recommended region
 /// 7. Return as a PixelBuffer
+#[cfg(feature = "rawloader")]
 pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<RawDecodeOutput> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -255,6 +261,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 }
 
 /// Handle non-Bayer data (cpp > 1, e.g., Foveon or some DNGs with embedded RGB).
+#[cfg(feature = "rawloader")]
 fn decode_non_bayer(
     raw: rawloader::RawImage,
     normalized: Vec<f32>,
@@ -357,6 +364,7 @@ fn decode_non_bayer(
 }
 
 /// Normalize raw sensor data to f32 [0, 1] using black/white levels.
+#[cfg(feature = "rawloader")]
 fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;
@@ -421,6 +429,7 @@ fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32
 /// Apply crop from RAW metadata.
 ///
 /// crops is [top, right, bottom, left] in rawloader convention.
+#[cfg(feature = "rawloader")]
 fn apply_crop(
     rgb: &[f32],
     width: usize,
@@ -452,7 +461,7 @@ fn apply_crop(
 }
 
 /// Check if data appears to be a DNG file (TIFF with DNG version tag).
-fn is_dng_data(data: &[u8]) -> bool {
+pub(crate) fn is_dng_data(data: &[u8]) -> bool {
     if data.len() < 12 {
         return false;
     }
@@ -478,6 +487,7 @@ fn is_dng_data(data: &[u8]) -> bool {
 }
 
 /// Convert rawloader Orientation to EXIF u16 value.
+#[cfg(feature = "rawloader")]
 fn orientation_to_u16(orient: &rawloader::Orientation) -> u16 {
     match orient {
         rawloader::Orientation::Normal => 1,
