@@ -49,6 +49,7 @@ pub struct ExifMetadata {
     pub forward_matrix_1: Option<Vec<f64>>,
     pub forward_matrix_2: Option<Vec<f64>>,
     pub as_shot_neutral: Option<Vec<f64>>,
+    pub as_shot_white_xy: Option<(f64, f64)>,
     pub baseline_exposure: Option<f64>,
     pub calibration_illuminant_1: Option<u16>,
     pub calibration_illuminant_2: Option<u16>,
@@ -63,6 +64,7 @@ const COLOR_MATRIX_2: Tag = Tag(Context::Tiff, 0xC622);
 const FORWARD_MATRIX_1: Tag = Tag(Context::Tiff, 0xC714);
 const FORWARD_MATRIX_2: Tag = Tag(Context::Tiff, 0xC715);
 const AS_SHOT_NEUTRAL: Tag = Tag(Context::Tiff, 0xC628);
+const AS_SHOT_WHITE_XY: Tag = Tag(Context::Tiff, 0xC629);
 const BASELINE_EXPOSURE: Tag = Tag(Context::Tiff, 0xC62A);
 const CALIBRATION_ILLUMINANT_1: Tag = Tag(Context::Tiff, 0xC65A);
 const CALIBRATION_ILLUMINANT_2: Tag = Tag(Context::Tiff, 0xC65B);
@@ -108,6 +110,7 @@ pub fn read_metadata(data: &[u8]) -> Option<ExifMetadata> {
         forward_matrix_1: get_srational_vec(&exif, FORWARD_MATRIX_1),
         forward_matrix_2: get_srational_vec(&exif, FORWARD_MATRIX_2),
         as_shot_neutral: get_rational_vec(&exif, AS_SHOT_NEUTRAL),
+        as_shot_white_xy: get_rational_xy(&exif, AS_SHOT_WHITE_XY),
         baseline_exposure: get_srational_f64(&exif, BASELINE_EXPOSURE),
         calibration_illuminant_1: get_u16(&exif, CALIBRATION_ILLUMINANT_1),
         calibration_illuminant_2: get_u16(&exif, CALIBRATION_ILLUMINANT_2),
@@ -162,6 +165,18 @@ fn get_rational_vec(exif: &exif::Exif, tag: Tag) -> Option<Vec<f64>> {
                 .map(|r| r.num as f64 / r.denom.max(1) as f64)
                 .collect();
             if vals.is_empty() { None } else { Some(vals) }
+        }
+        _ => None,
+    }
+}
+
+fn get_rational_xy(exif: &exif::Exif, tag: Tag) -> Option<(f64, f64)> {
+    let field = exif.get_field(tag, In::PRIMARY)?;
+    match &field.value {
+        Value::Rational(v) if v.len() >= 2 => {
+            let x = v[0].num as f64 / v[0].denom.max(1) as f64;
+            let y = v[1].num as f64 / v[1].denom.max(1) as f64;
+            Some((x, y))
         }
         _ => None,
     }
