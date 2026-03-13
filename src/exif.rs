@@ -69,9 +69,91 @@ const BASELINE_EXPOSURE: Tag = Tag(Context::Tiff, 0xC62A);
 const CALIBRATION_ILLUMINANT_1: Tag = Tag(Context::Tiff, 0xC65A);
 const CALIBRATION_ILLUMINANT_2: Tag = Tag(Context::Tiff, 0xC65B);
 
+/// Detect Apple AMPF container (JPEG wrapper with HDR gain map).
+///
+/// iPhone 17 Pro outputs "ProRAW" files in AMPF format: processed JPEG + HDR
+/// gain map, NOT linear raw data. These have `.DNG` extension but are NOT DNG.
+pub fn is_ampf(data: &[u8]) -> bool {
+    // JPEG SOI (FFD8) + JFIF APP0 with AMPF at end of the APP0 segment
+    // Layout: FFD8 FFE0 <len:2> "JFIF" <version:2> <units:1> <density:4> <thumb:2> "AMPF"
+    // AMPF is at offset 20 in a standard JFIF header
+    if data.len() < 24 || data[0] != 0xFF || data[1] != 0xD8 {
+        return false;
+    }
+    // Search first 64 bytes for AMPF marker
+    data[..64.min(data.len())].windows(4).any(|w| w == b"AMPF")
+}
+
+/// Extract the embedded JPEG preview from a DNG/TIFF file.
+///
+/// DNG files often contain a reduced-resolution JPEG preview in IFD0
+/// (StripOffsets/StripByteCounts). Apple ProRAW (APPLEDNG) files embed a
+/// full-resolution sRGB JPEG rendered by the camera pipeline.
+///
+/// Returns the raw JPEG bytes.
+pub fn extract_dng_preview(data: &[u8]) -> Option<Vec<u8>> {
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(data))
+        .ok()?;
+
+    // Try StripOffsets/StripByteCounts first (most DNGs)
+    let (offset, length) = get_strip_preview(&exif)
+        .or_else(|| get_thumbnail_preview(&exif))?;
+
+    if offset == 0 || length == 0 || offset + length > data.len() {
+        return None;
+    }
+
+    let preview = &data[offset..offset + length];
+
+    // Verify it starts with JPEG SOI
+    if preview.len() < 2 || preview[0] != 0xFF || preview[1] != 0xD8 {
+        return None;
+    }
+
+    Some(preview.to_vec())
+}
+
+fn get_strip_preview(exif: &exif::Exif) -> Option<(usize, usize)> {
+    let off_field = exif.get_field(Tag::StripOffsets, In::PRIMARY)?;
+    let len_field = exif.get_field(Tag::StripByteCounts, In::PRIMARY)?;
+
+    let offset = match &off_field.value {
+        Value::Long(v) => *v.first()? as usize,
+        Value::Short(v) => *v.first()? as usize,
+        _ => return None,
+    };
+    let length = match &len_field.value {
+        Value::Long(v) => *v.first()? as usize,
+        Value::Short(v) => *v.first()? as usize,
+        _ => return None,
+    };
+
+    Some((offset, length))
+}
+
+fn get_thumbnail_preview(exif: &exif::Exif) -> Option<(usize, usize)> {
+    let off_field = exif.get_field(Tag(Context::Tiff, 0x0201), In::PRIMARY)?;
+    let len_field = exif.get_field(Tag(Context::Tiff, 0x0202), In::PRIMARY)?;
+
+    let offset = match &off_field.value {
+        Value::Long(v) => *v.first()? as usize,
+        Value::Short(v) => *v.first()? as usize,
+        _ => return None,
+    };
+    let length = match &len_field.value {
+        Value::Long(v) => *v.first()? as usize,
+        Value::Short(v) => *v.first()? as usize,
+        _ => return None,
+    };
+
+    Some((offset, length))
+}
+
 /// Extract EXIF and DNG metadata from file bytes.
 ///
-/// Works with TIFF-based RAW formats (DNG, CR2, NEF, ARW, PEF, ORF, etc.).
+/// Works with TIFF-based RAW formats (DNG, CR2, NEF, ARW, PEF, ORF, etc.)
+/// and JPEG files (including Apple AMPF).
 pub fn read_metadata(data: &[u8]) -> Option<ExifMetadata> {
     let exif = exif::Reader::new()
         .read_from_container(&mut std::io::Cursor::new(data))
@@ -285,5 +367,55 @@ mod tests {
             }
         }
         eprintln!("Skipping: no DNG files found for EXIF test");
+    }
+
+    #[test]
+    fn extract_appledng_preview() {
+        let path = "/mnt/v/heic/46CD6167-C36B-4F98-B386-2300D8E840F0.DNG";
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("Skipping: APPLEDNG file not found");
+            return;
+        };
+
+        let preview = extract_dng_preview(&data);
+        assert!(preview.is_some(), "should extract preview from APPLEDNG");
+        let preview = preview.unwrap();
+        eprintln!("Preview: {} bytes", preview.len());
+        assert!(preview.len() > 100_000, "preview should be substantial");
+        assert_eq!(preview[0], 0xFF, "should start with JPEG SOI");
+        assert_eq!(preview[1], 0xD8, "should start with JPEG SOI");
+    }
+
+    #[test]
+    fn detect_ampf() {
+        let path = "/mnt/v/heic/IMG_3269.DNG";
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("Skipping: AMPF file not found");
+            return;
+        };
+        assert!(is_ampf(&data), "should detect AMPF format");
+
+        // APPLEDNG files should NOT be AMPF
+        let path2 = "/mnt/v/heic/46CD6167-C36B-4F98-B386-2300D8E840F0.DNG";
+        if let Ok(data2) = std::fs::read(path2) {
+            assert!(!is_ampf(&data2), "APPLEDNG should not be AMPF");
+        }
+    }
+
+    #[test]
+    fn ampf_metadata() {
+        let path = "/mnt/v/heic/IMG_3269.DNG";
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("Skipping: AMPF file not found");
+            return;
+        };
+
+        // kamadak-exif should be able to read JPEG EXIF from AMPF files
+        let meta = read_metadata(&data);
+        assert!(meta.is_some(), "should read metadata from AMPF");
+        let meta = meta.unwrap();
+        eprintln!("AMPF: {:?} {:?}", meta.make, meta.model);
+        assert_eq!(meta.make.as_deref(), Some("Apple"));
+        assert!(meta.model.as_deref().unwrap_or("").contains("iPhone 17"));
     }
 }
