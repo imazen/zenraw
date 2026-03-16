@@ -652,6 +652,199 @@ pub fn extract_dng_profile(data: &[u8]) -> Option<DngProfile> {
     Some(profile)
 }
 
+// ── ProfileGainTableMap (DNG 1.6 Smart HDR) ─────────────────────────
+
+/// DNG 1.6 ProfileGainTableMap — spatially-varying, tonally-dependent gain.
+///
+/// Apple ProRAW uses this to encode Smart HDR: per-pixel exposure adjustments
+/// that recover highlights and boost shadows. The map is a 3D lookup table
+/// with spatial (V×H grid) and tonal (N weight entries) dimensions.
+///
+/// The gain is applied to raw pixel values before color rendering.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct ProfileGainTableMap {
+    /// Grid dimensions (rows, cols).
+    pub grid_rows: u32,
+    pub grid_cols: u32,
+    /// Spacing between grid points in normalized image coords.
+    pub spacing_v: f64,
+    pub spacing_h: f64,
+    /// Origin of grid in normalized image coords.
+    pub origin_v: f64,
+    pub origin_h: f64,
+    /// Number of tonal table entries per grid point.
+    pub tonal_points: u32,
+    /// Input weight coefficients: [R, G, B, min(RGB), max(RGB)].
+    pub input_weights: [f32; 5],
+    /// The gain table: `grid_rows × grid_cols × tonal_points` f32 values.
+    /// Layout: row-major, then col-major, then tonal index.
+    pub table: Vec<f32>,
+}
+
+impl ProfileGainTableMap {
+    /// Apply the gain map to linear RGB pixel data in-place.
+    ///
+    /// `width` and `height` are the image dimensions in pixels.
+    /// `baseline_exposure` is used to scale the weight input.
+    pub fn apply(&self, pixels: &mut [f32], width: u32, height: u32, baseline_exposure: f64) {
+        let bl_scale = 2.0f32.powf(baseline_exposure as f32);
+        let npix = (width as usize) * (height as usize);
+        if pixels.len() < npix * 3 {
+            return;
+        }
+
+        let max_row = (self.grid_rows - 1) as f32;
+        let max_col = (self.grid_cols - 1) as f32;
+        let max_tone = (self.tonal_points - 1) as f32;
+        let gc = self.grid_cols as usize;
+        let tp = self.tonal_points as usize;
+
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let idx = (y * width as usize + x) * 3;
+                let r = pixels[idx];
+                let g = pixels[idx + 1];
+                let b = pixels[idx + 2];
+
+                // Compute weight from linear RGB
+                let mn = r.min(g).min(b);
+                let mx = r.max(g).max(b);
+                let weight = (self.input_weights[0] * r
+                    + self.input_weights[1] * g
+                    + self.input_weights[2] * b
+                    + self.input_weights[3] * mn
+                    + self.input_weights[4] * mx)
+                    * bl_scale;
+                let weight = weight.clamp(0.0, 1.0);
+
+                // Spatial position in grid
+                let v_img = y as f32 / height as f32;
+                let h_img = x as f32 / width as f32;
+                let gy =
+                    ((v_img - self.origin_v as f32) / self.spacing_v as f32).clamp(0.0, max_row);
+                let gx =
+                    ((h_img - self.origin_h as f32) / self.spacing_h as f32).clamp(0.0, max_col);
+
+                // Grid indices for bilinear spatial interpolation
+                let gy0 = gy as usize;
+                let gy1 = (gy0 + 1).min(self.grid_rows as usize - 1);
+                let gx0 = gx as usize;
+                let gx1 = (gx0 + 1).min(self.grid_cols as usize - 1);
+                let fy = gy - gy0 as f32;
+                let fx = gx - gx0 as f32;
+
+                // Tonal index
+                let tone = weight * max_tone;
+                let t0 = tone as usize;
+                let t1 = (t0 + 1).min(tp - 1);
+                let ft = tone - t0 as f32;
+
+                // Trilinear interpolation: spatial (2D) × tonal (1D)
+                let lookup = |row: usize, col: usize, t: usize| -> f32 {
+                    self.table[(row * gc + col) * tp + t]
+                };
+
+                let g00 = lookup(gy0, gx0, t0) * (1.0 - ft) + lookup(gy0, gx0, t1) * ft;
+                let g01 = lookup(gy0, gx1, t0) * (1.0 - ft) + lookup(gy0, gx1, t1) * ft;
+                let g10 = lookup(gy1, gx0, t0) * (1.0 - ft) + lookup(gy1, gx0, t1) * ft;
+                let g11 = lookup(gy1, gx1, t0) * (1.0 - ft) + lookup(gy1, gx1, t1) * ft;
+
+                let g0 = g00 * (1.0 - fx) + g01 * fx;
+                let g1 = g10 * (1.0 - fx) + g11 * fx;
+                let gain = g0 * (1.0 - fy) + g1 * fy;
+
+                pixels[idx] *= gain;
+                pixels[idx + 1] *= gain;
+                pixels[idx + 2] *= gain;
+            }
+        }
+    }
+
+    /// Get gain statistics (min, max, mean).
+    pub fn stats(&self) -> (f32, f32, f32) {
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        let mut sum = 0.0f64;
+        for &v in &self.table {
+            min = min.min(v);
+            max = max.max(v);
+            sum += v as f64;
+        }
+        let mean = if self.table.is_empty() {
+            0.0
+        } else {
+            (sum / self.table.len() as f64) as f32
+        };
+        (min, max, mean)
+    }
+}
+
+/// Extract ProfileGainTableMap from an APPLEDNG file.
+///
+/// The map is stored in SubIFD[0] (the raw image SubIFD) as tag 0xCD2D.
+/// Format: V1 — big-endian header + f32 gain table.
+pub fn extract_profile_gain_table_map(data: &[u8]) -> Option<ProfileGainTableMap> {
+    let tiff = TiffStructure::parse(data)?;
+
+    // Find tag 0xCD2D in SubIFDs (it's in the raw image SubIFD, not IFD0)
+    let (_, entry) = tiff.find_entry(tags::PROFILE_GAIN_TABLE_MAP)?;
+
+    // The entry is UNDEFINED (type 7) — raw bytes
+    let raw = tiff_ifd::read_entry_bytes(data, entry, tiff.byte_order)?;
+    if raw.len() < 64 {
+        return None;
+    }
+
+    // Parse header (always big-endian per DNG spec)
+    let grid_rows = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+    let grid_cols = u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]);
+    let spacing_v = f64::from_be_bytes(raw[8..16].try_into().ok()?);
+    let spacing_h = f64::from_be_bytes(raw[16..24].try_into().ok()?);
+    let origin_v = f64::from_be_bytes(raw[24..32].try_into().ok()?);
+    let origin_h = f64::from_be_bytes(raw[32..40].try_into().ok()?);
+    let tonal_points = u32::from_be_bytes([raw[40], raw[41], raw[42], raw[43]]);
+
+    // Input weights: 5 × f32
+    let mut input_weights = [0.0f32; 5];
+    for i in 0..5 {
+        let off = 44 + i * 4;
+        input_weights[i] = f32::from_be_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
+    }
+
+    // Gain table: grid_rows × grid_cols × tonal_points × f32
+    let table_start = 64;
+    let table_len = grid_rows as usize * grid_cols as usize * tonal_points as usize;
+    let table_bytes = table_len * 4;
+
+    if table_start + table_bytes > raw.len() {
+        return None;
+    }
+
+    let mut table = Vec::with_capacity(table_len);
+    for i in 0..table_len {
+        let off = table_start + i * 4;
+        table.push(f32::from_be_bytes([
+            raw[off],
+            raw[off + 1],
+            raw[off + 2],
+            raw[off + 3],
+        ]));
+    }
+
+    Some(ProfileGainTableMap {
+        grid_rows,
+        grid_cols,
+        spacing_v,
+        spacing_h,
+        origin_v,
+        origin_h,
+        tonal_points,
+        input_weights,
+        table,
+    })
+}
+
 // ── Comprehensive Apple metadata extraction ──────────────────────────
 
 /// Complete Apple-specific metadata extracted from an APPLEDNG or AMPF file.
@@ -662,7 +855,9 @@ pub struct AppleMetadata {
     pub makernote: Option<AppleMakerNote>,
     /// DNG profile data (APPLEDNG only).
     pub dng_profile: Option<DngProfile>,
-    /// HDR gain map info.
+    /// ProfileGainTableMap — Smart HDR spatially-varying gain (APPLEDNG only).
+    pub gain_table_map: Option<ProfileGainTableMap>,
+    /// HDR gain map info (from embedded preview MPF).
     pub gain_map: Option<GainMapInfo>,
     /// Semantic segmentation mattes (APPLEDNG only).
     pub semantic_mattes: Vec<SemanticMatte>,
@@ -710,6 +905,8 @@ pub fn extract_apple_metadata(data: &[u8]) -> Option<AppleMetadata> {
         crate::classify::FileFormat::AppleDng => {
             // DNG profile
             meta.dng_profile = extract_dng_profile(data);
+            // ProfileGainTableMap (Smart HDR)
+            meta.gain_table_map = extract_profile_gain_table_map(data);
             // Semantic mattes
             meta.semantic_mattes = extract_semantic_mattes(data);
             // Gain map (from embedded preview JPEG)
@@ -1063,6 +1260,48 @@ mod tests {
             eprintln!("AMPF MakerNote version: {}", mn.version);
             eprintln!("AMPF MakerNote tags: {}", mn.tags.len());
         }
+    }
+
+    #[test]
+    fn extract_profile_gain_table_map_test() {
+        let path = "/mnt/v/heic/46CD6167-C36B-4F98-B386-2300D8E840F0.DNG";
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("Skipping: APPLEDNG file not found");
+            return;
+        };
+
+        let pgtm = extract_profile_gain_table_map(&data);
+        assert!(pgtm.is_some(), "should extract ProfileGainTableMap");
+        let pgtm = pgtm.unwrap();
+        eprintln!(
+            "PGTM: {}x{} grid, {} tonal points, {} entries",
+            pgtm.grid_rows,
+            pgtm.grid_cols,
+            pgtm.tonal_points,
+            pgtm.table.len()
+        );
+        eprintln!(
+            "  spacing: ({:.4}, {:.4}) origin: ({:.4}, {:.4})",
+            pgtm.spacing_v, pgtm.spacing_h, pgtm.origin_v, pgtm.origin_h
+        );
+        eprintln!(
+            "  weights: R={:.5} G={:.5} B={:.5} min={:.5} max={:.5}",
+            pgtm.input_weights[0],
+            pgtm.input_weights[1],
+            pgtm.input_weights[2],
+            pgtm.input_weights[3],
+            pgtm.input_weights[4]
+        );
+        let (min, max, mean) = pgtm.stats();
+        eprintln!("  gains: min={min:.4} max={max:.4} mean={mean:.4}");
+
+        assert!(pgtm.grid_rows > 0);
+        assert!(pgtm.grid_cols > 0);
+        assert!(pgtm.tonal_points > 0);
+        assert_eq!(
+            pgtm.table.len(),
+            (pgtm.grid_rows * pgtm.grid_cols * pgtm.tonal_points) as usize
+        );
     }
 
     #[test]

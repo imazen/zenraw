@@ -115,12 +115,15 @@ pub mod tags {
     pub const NOISE_PROFILE: u16 = 0xC761;
     pub const DEFAULT_USER_CROP: u16 = 0xC7B5;
 
-    // Apple-specific (SubIFD tags)
+    // DNG 1.6+ (ProfileGainTableMap — used by Apple ProRAW for Smart HDR)
+    pub const PROFILE_GAIN_TABLE_MAP: u16 = 0xCD2D; // 52525
+    pub const PROFILE_GAIN_TABLE_MAP2: u16 = 0xCD40; // 52544, DNG 1.7+
+
+    // Apple-specific (SubIFD tags for semantic segmentation)
     pub const APPLE_UNKNOWN_C7A6: u16 = 0xC7A6;
-    pub const APPLE_AUX_DATA: u16 = 0xCD2D;
-    pub const APPLE_AUX_TYPE: u16 = 0xCD2E;
+    pub const APPLE_AUX_TYPE: u16 = 0xCD2E; // 52526 — semantic mask type URN
     /// Custom PhotometricInterpretation value used by Apple for semantic data.
-    pub const APPLE_SEMANTIC_PHOTOMETRIC: u16 = 52527; // 0xCD2F
+    pub const APPLE_SEMANTIC_PHOTOMETRIC: u16 = 0xCD2F; // 52527
 
     // PhotometricInterpretation values
     pub const PHOTOMETRIC_LINEAR_RAW: u16 = 34892;
