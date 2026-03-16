@@ -722,24 +722,37 @@ pub fn extract_apple_metadata(data: &[u8]) -> Option<AppleMetadata> {
         _ => {}
     }
 
-    // Apple XMP namespaces (scan all XMP packets)
+    // Apple XMP namespaces — scan main file XMP packets
     #[cfg(feature = "xmp")]
     {
         for pkt in crate::xmp::extract_xmp_packets(data) {
-            if meta.auxiliary_image_type.is_none() {
-                meta.auxiliary_image_type =
-                    crate::xmp::get_xmp_property(&pkt.xml, "apdi", "AuxiliaryImageType");
-            }
-            if meta.native_format.is_none() {
-                meta.native_format = crate::xmp::get_xmp_property(&pkt.xml, "apdi", "NativeFormat");
-            }
-            if meta.stored_format.is_none() {
-                meta.stored_format = crate::xmp::get_xmp_property(&pkt.xml, "apdi", "StoredFormat");
-            }
+            extract_apdi_from_xmp(&pkt.xml, &mut meta);
         }
     }
 
+    // Also check gain map XMP for apdi properties (APPLEDNG stores apdi there)
+    #[cfg(feature = "xmp")]
+    if let Some(gm) = &meta.gain_map
+        && let Some(xmp) = crate::xmp::extract_xmp(&gm.jpeg_data)
+    {
+        extract_apdi_from_xmp(&xmp, &mut meta);
+    }
+
     Some(meta)
+}
+
+/// Extract Apple pixel data info (apdi:) properties from an XMP string.
+#[cfg(feature = "xmp")]
+fn extract_apdi_from_xmp(xmp: &str, meta: &mut AppleMetadata) {
+    if meta.auxiliary_image_type.is_none() {
+        meta.auxiliary_image_type = crate::xmp::get_xmp_property(xmp, "apdi", "AuxiliaryImageType");
+    }
+    if meta.native_format.is_none() {
+        meta.native_format = crate::xmp::get_xmp_property(xmp, "apdi", "NativeFormat");
+    }
+    if meta.stored_format.is_none() {
+        meta.stored_format = crate::xmp::get_xmp_property(xmp, "apdi", "StoredFormat");
+    }
 }
 
 // ── MakerNote byte extraction ────────────────────────────────────────
