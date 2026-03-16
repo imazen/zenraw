@@ -404,24 +404,47 @@ impl DngPipeline {
             [cm_data[6], cm_data[7], cm_data[8]],
         ];
 
-        // Get white balance from AsShotNeutral
+        // Get white balance from AsShotNeutral and AnalogBalance
         let neutral = exif.as_shot_neutral.as_deref()?;
         if neutral.len() < 3 {
             return None;
         }
 
-        // Compute white point chromaticity
-        let white_xy = neutral_to_xy(neutral, &color_matrix)?;
+        // AnalogBalance: per-channel gain applied to raw data before color matrix.
+        // In DNG spec: effective camera neutral = AnalogBalance × AsShotNeutral
+        let ab = exif.analog_balance.as_deref().unwrap_or(&[1.0, 1.0, 1.0]);
+        let analog_balance = if ab.len() >= 3 {
+            [ab[0], ab[1], ab[2]]
+        } else {
+            [1.0, 1.0, 1.0]
+        };
 
-        // Compute camera → sRGB matrix WITH white balance baked in
-        let neutral3 = [neutral[0], neutral[1], neutral[2]];
-        let camera_to_srgb = compute_camera_to_srgb_with_wb(&color_matrix, white_xy, &neutral3)?;
+        // Effective neutral: AnalogBalance × AsShotNeutral
+        // This is what the color matrix "sees" as the scene white point.
+        let effective_neutral = [
+            neutral[0] * analog_balance[0],
+            neutral[1] * analog_balance[1],
+            neutral[2] * analog_balance[2],
+        ];
+
+        // Compute white point chromaticity.
+        // Try the selected color_matrix first; if that gives out-of-gamut xy,
+        // fall back to using AsShotNeutral without AnalogBalance (less accurate
+        // but more stable for files like CBFA where AnalogBalance is large).
+        let white_xy = neutral_to_xy(&effective_neutral, &color_matrix)
+            .filter(|&(x, y)| y > 0.25 && x + y < 0.95 && x > 0.2)
+            .or_else(|| neutral_to_xy(neutral, &color_matrix))
+            .filter(|&(x, y)| y > 0.25 && x + y < 0.95 && x > 0.2)
+            .unwrap_or(D50_XY); // ultimate fallback: D50
+
+        // Compute camera → sRGB matrix with WB baked in
+        let camera_to_srgb =
+            compute_camera_to_srgb_with_wb(&color_matrix, white_xy, &effective_neutral)?;
 
         // WB is baked into the matrix, so wb_mult = [1,1,1]
         let wb_mult = [1.0, 1.0, 1.0];
 
         let baseline_exposure = exif.baseline_exposure.unwrap_or(0.0);
-        let analog_balance = [1.0, 1.0, 1.0];
 
         Some(DngPipeline {
             camera_to_srgb,
@@ -942,6 +965,125 @@ mod tests {
             dw,
             dh,
             srgb.len()
+        );
+    }
+
+    #[test]
+    fn test_cbfa_metadata_investigation() {
+        let path = "/mnt/v/heic/CBFA569A-5C28-468E-96B4-CFFBAEB951C7.DNG";
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("Skipping: CBFA file not found");
+            return;
+        };
+
+        // kamadak-exif
+        let exif = crate::exif::read_metadata(&data).unwrap();
+        eprintln!("kamadak-exif AsShotNeutral: {:?}", exif.as_shot_neutral);
+        eprintln!("kamadak-exif AsShotWhiteXY: {:?}", exif.as_shot_white_xy);
+        eprintln!("kamadak-exif ColorMatrix1: {:?}", exif.color_matrix_1);
+        eprintln!("kamadak-exif ColorMatrix2: {:?}", exif.color_matrix_2);
+        eprintln!(
+            "kamadak-exif CalibIllum1: {:?}",
+            exif.calibration_illuminant_1
+        );
+        eprintln!(
+            "kamadak-exif CalibIllum2: {:?}",
+            exif.calibration_illuminant_2
+        );
+        eprintln!(
+            "kamadak-exif BaselineExposure: {:?}",
+            exif.baseline_exposure
+        );
+
+        // Our TIFF parser — check IFD0 for the actual tag values
+        let tiff = crate::tiff_ifd::TiffStructure::parse(&data).unwrap();
+        let bo = tiff.byte_order;
+
+        // AsShotNeutral (0xC628)
+        if let Some(entry) = tiff.ifd0_entry(crate::tiff_ifd::tags::AS_SHOT_NEUTRAL) {
+            let vals = crate::tiff_ifd::read_rational_values(&data, entry, bo);
+            eprintln!(
+                "TIFF AsShotNeutral (0xC628): type={} count={} vals={:?}",
+                entry.dtype, entry.count, vals
+            );
+        } else {
+            eprintln!("TIFF: NO AsShotNeutral tag!");
+        }
+
+        // AnalogBalance (0xC627)
+        if let Some(entry) = tiff.ifd0_entry(crate::tiff_ifd::tags::ANALOG_BALANCE) {
+            let vals = crate::tiff_ifd::read_rational_values(&data, entry, bo);
+            eprintln!(
+                "TIFF AnalogBalance (0xC627): type={} count={} vals={:?}",
+                entry.dtype, entry.count, vals
+            );
+        }
+
+        // AsShotWhiteXY (0xC629)
+        if let Some(entry) = tiff.ifd0_entry(crate::tiff_ifd::tags::AS_SHOT_WHITE_XY) {
+            let vals = crate::tiff_ifd::read_rational_values(&data, entry, bo);
+            eprintln!(
+                "TIFF AsShotWhiteXY (0xC629): type={} count={} vals={:?}",
+                entry.dtype, entry.count, vals
+            );
+        }
+
+        // ColorMatrix1 (0xC621) — SRational
+        if let Some(entry) = tiff.ifd0_entry(crate::tiff_ifd::tags::COLOR_MATRIX_1) {
+            let vals = crate::tiff_ifd::read_rational_values(&data, entry, bo);
+            eprintln!(
+                "TIFF ColorMatrix1 (0xC621): type={} count={} vals={:?}",
+                entry.dtype, entry.count, vals
+            );
+        }
+
+        // Decode camera-space raw and check channel balance
+        let mut config = crate::decode::RawDecodeConfig::default();
+        config.skip_color_pipeline = true;
+        if let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) {
+            let w = output.pixels.width();
+            let h = output.pixels.height();
+            let bytes = output.pixels.copy_to_contiguous_bytes();
+            let raw: &[f32] = bytemuck::cast_slice(&bytes);
+            let npix = (w as usize) * (h as usize);
+            let (mut r, mut g, mut b) = (0.0f64, 0.0f64, 0.0f64);
+            for i in 0..npix {
+                r += raw[i * 3] as f64;
+                g += raw[i * 3 + 1] as f64;
+                b += raw[i * 3 + 2] as f64;
+            }
+            r /= npix as f64;
+            g /= npix as f64;
+            b /= npix as f64;
+            eprintln!(
+                "Camera-space means: R={r:.5} G={g:.5} B={b:.5}  R/G={:.3} B/G={:.3}",
+                r / g,
+                b / g
+            );
+        }
+
+        // Build DngPipeline — should now work with AnalogBalance
+        let pipeline = DngPipeline::from_metadata(&exif, 4032, 3024);
+        assert!(pipeline.is_some(), "DngPipeline should build for CBFA");
+        let p = pipeline.unwrap();
+
+        // Effective neutral = AnalogBalance × AsShotNeutral
+        let ab = exif.analog_balance.as_ref().unwrap();
+        let eff_neutral = [ab[0], ab[1], ab[2]]; // neutral is [1,1,1]
+        let test = mat3_vec(&p.camera_to_srgb, &eff_neutral);
+        eprintln!(
+            "CBFA Matrix × eff_neutral = [{:.4}, {:.4}, {:.4}]",
+            test[0], test[1], test[2]
+        );
+        let rg = test[0] / test[1];
+        let bg = test[2] / test[1];
+        assert!(
+            (rg - 1.0).abs() < 0.01,
+            "CBFA neutral should map to gray, R/G={rg}"
+        );
+        assert!(
+            (bg - 1.0).abs() < 0.01,
+            "CBFA neutral should map to gray, B/G={bg}"
         );
     }
 

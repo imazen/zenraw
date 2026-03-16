@@ -48,6 +48,7 @@ pub struct ExifMetadata {
     pub color_matrix_2: Option<Vec<f64>>,
     pub forward_matrix_1: Option<Vec<f64>>,
     pub forward_matrix_2: Option<Vec<f64>>,
+    pub analog_balance: Option<Vec<f64>>,
     pub as_shot_neutral: Option<Vec<f64>>,
     pub as_shot_white_xy: Option<(f64, f64)>,
     pub baseline_exposure: Option<f64>,
@@ -63,6 +64,7 @@ const COLOR_MATRIX_1: Tag = Tag(Context::Tiff, 0xC621);
 const COLOR_MATRIX_2: Tag = Tag(Context::Tiff, 0xC622);
 const FORWARD_MATRIX_1: Tag = Tag(Context::Tiff, 0xC714);
 const FORWARD_MATRIX_2: Tag = Tag(Context::Tiff, 0xC715);
+const ANALOG_BALANCE: Tag = Tag(Context::Tiff, 0xC627);
 const AS_SHOT_NEUTRAL: Tag = Tag(Context::Tiff, 0xC628);
 const AS_SHOT_WHITE_XY: Tag = Tag(Context::Tiff, 0xC629);
 const BASELINE_EXPOSURE: Tag = Tag(Context::Tiff, 0xC62A);
@@ -190,6 +192,7 @@ pub fn read_metadata(data: &[u8]) -> Option<ExifMetadata> {
         color_matrix_2: get_srational_vec(&exif, COLOR_MATRIX_2),
         forward_matrix_1: get_srational_vec(&exif, FORWARD_MATRIX_1),
         forward_matrix_2: get_srational_vec(&exif, FORWARD_MATRIX_2),
+        analog_balance: get_rational_vec(&exif, ANALOG_BALANCE),
         as_shot_neutral: get_rational_vec(&exif, AS_SHOT_NEUTRAL),
         as_shot_white_xy: get_rational_xy(&exif, AS_SHOT_WHITE_XY),
         baseline_exposure: get_srational_f64(&exif, BASELINE_EXPOSURE),
