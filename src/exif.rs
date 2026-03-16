@@ -97,8 +97,7 @@ pub fn extract_dng_preview(data: &[u8]) -> Option<Vec<u8>> {
         .ok()?;
 
     // Try StripOffsets/StripByteCounts first (most DNGs)
-    let (offset, length) = get_strip_preview(&exif)
-        .or_else(|| get_thumbnail_preview(&exif))?;
+    let (offset, length) = get_strip_preview(&exif).or_else(|| get_thumbnail_preview(&exif))?;
 
     if offset == 0 || length == 0 || offset + length > data.len() {
         return None;

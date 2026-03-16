@@ -44,6 +44,7 @@ zencodec = ["dep:zencodec"]
 darktable = ["std"]
 exif = ["dep:kamadak-exif"]
 xmp = ["std"]
+apple = ["exif", "xmp"]
 
 [profile.test]
 opt-level = 2

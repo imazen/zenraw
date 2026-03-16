@@ -66,8 +66,31 @@ pub fn extract_xmp_packets(data: &[u8]) -> Vec<XmpPacket> {
 }
 
 /// Extract the first XMP packet as a string, or None if not found.
+///
+/// Tries `<?xpacket>` markers first, then falls back to `<x:xmpmeta>` blocks
+/// (some embedded XMP, like Apple gain map metadata, omits xpacket wrappers).
 pub fn extract_xmp(data: &[u8]) -> Option<String> {
-    extract_xmp_packets(data).into_iter().next().map(|p| p.xml)
+    let packets = extract_xmp_packets(data);
+    if let Some(first) = packets.into_iter().next() {
+        return Some(first.xml);
+    }
+    // Fallback: look for <x:xmpmeta> ... </x:xmpmeta> blocks
+    extract_xmpmeta_block(data)
+}
+
+/// Extract XMP from `<x:xmpmeta>` blocks (without xpacket wrappers).
+fn extract_xmpmeta_block(data: &[u8]) -> Option<String> {
+    let open = b"<x:xmpmeta";
+    let close = b"</x:xmpmeta>";
+
+    let start = find_bytes(data, open)?;
+    let after_open = start;
+    let end_pos = find_bytes(&data[after_open..], close)?;
+    let abs_end = after_open + end_pos + close.len();
+
+    core::str::from_utf8(&data[start..abs_end])
+        .ok()
+        .map(String::from)
 }
 
 /// Extract a specific XMP property value by namespace prefix and name.

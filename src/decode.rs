@@ -22,9 +22,9 @@ use zenpixels::PixelDescriptor;
 
 #[cfg(feature = "rawloader")]
 use crate::color;
+use crate::demosaic::DemosaicMethod;
 #[cfg(feature = "rawloader")]
 use crate::demosaic::demosaic_to_rgb_f32;
-use crate::demosaic::DemosaicMethod;
 #[cfg(feature = "rawloader")]
 use crate::error::IntoBufferError;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]

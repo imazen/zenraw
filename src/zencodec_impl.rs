@@ -12,7 +12,9 @@ use zencodec::Unsupported;
 use zencodec::decode::{
     Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, OutputInfo, SinkError,
 };
-use zencodec::{ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, ResourceLimits};
+use zencodec::{
+    ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, ResourceLimits,
+};
 use zenpixels::PixelDescriptor;
 
 use crate::decode::{self, RawDecodeConfig};

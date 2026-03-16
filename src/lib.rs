@@ -54,12 +54,14 @@ extern crate alloc;
 // Crate info for whereat error tracing
 whereat::define_at_crate_info!();
 
+pub mod classify;
 pub mod color;
 pub mod decode;
 pub mod demosaic;
 mod error;
 mod orient;
 mod simd;
+pub mod tiff_ifd;
 
 #[cfg(feature = "rawler")]
 mod rawler_backend;
@@ -73,11 +75,15 @@ pub mod exif;
 #[cfg(feature = "xmp")]
 pub mod xmp;
 
+#[cfg(feature = "apple")]
+pub mod apple;
+
 #[cfg(feature = "zencodec")]
 mod zencodec_impl;
 #[cfg(feature = "zencodec")]
 pub use zencodec_impl::{DNG_FORMAT, RAW_FORMAT, RawDecoderConfig};
 
+pub use classify::{FileFormat, classify};
 pub use decode::{RawDecodeConfig, RawDecodeOutput, RawInfo};
 pub use demosaic::DemosaicMethod;
 pub use error::RawError;
