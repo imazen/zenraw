@@ -58,6 +58,7 @@ pub mod classify;
 pub mod color;
 pub mod decode;
 pub mod demosaic;
+pub mod dng_render;
 mod error;
 mod orient;
 mod simd;
