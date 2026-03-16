@@ -419,23 +419,21 @@ impl DngPipeline {
             [1.0, 1.0, 1.0]
         };
 
-        // Effective neutral: AnalogBalance × AsShotNeutral
-        // This is what the color matrix "sees" as the scene white point.
+        // White point from AsShotNeutral (NOT multiplied by AnalogBalance).
+        // AsShotNeutral represents the camera sensor response to scene white.
+        let neutral3 = [neutral[0], neutral[1], neutral[2]];
+        let white_xy = neutral_to_xy(&neutral3, &color_matrix)?;
+
+        // The combined WB+color matrix must map camera-space data to sRGB.
+        // Raw camera data has AnalogBalance baked in (it's analog gain),
+        // so the matrix must compensate for it.
+        // Effective neutral for matrix normalization:
+        //   neutral_on_sensor = AnalogBalance × AsShotNeutral
         let effective_neutral = [
             neutral[0] * analog_balance[0],
             neutral[1] * analog_balance[1],
             neutral[2] * analog_balance[2],
         ];
-
-        // Compute white point chromaticity.
-        // Try the selected color_matrix first; if that gives out-of-gamut xy,
-        // fall back to using AsShotNeutral without AnalogBalance (less accurate
-        // but more stable for files like CBFA where AnalogBalance is large).
-        let white_xy = neutral_to_xy(&effective_neutral, &color_matrix)
-            .filter(|&(x, y)| y > 0.25 && x + y < 0.95 && x > 0.2)
-            .or_else(|| neutral_to_xy(neutral, &color_matrix))
-            .filter(|&(x, y)| y > 0.25 && x + y < 0.95 && x > 0.2)
-            .unwrap_or(D50_XY); // ultimate fallback: D50
 
         // Compute camera → sRGB matrix with WB baked in
         let camera_to_srgb =
