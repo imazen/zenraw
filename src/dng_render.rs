@@ -420,21 +420,49 @@ impl DngPipeline {
         };
 
         // Effective neutral = AnalogBalance × AsShotNeutral.
-        // This is what the sensor outputs for neutral — raw data has AB baked in.
+        // This is the actual sensor response to scene white (raw data has AB baked in).
         let effective_neutral = [
             neutral[0] * analog_balance[0],
             neutral[1] * analog_balance[1],
             neutral[2] * analog_balance[2],
         ];
 
-        // White point: derived from AsShotNeutral (not effective_neutral)
-        let neutral3 = [neutral[0], neutral[1], neutral[2]];
-        let white_xy = neutral_to_xy(&neutral3, &color_matrix)?;
+        // For Apple APPLEDNG: the data is already demosaiced with Apple's color science.
+        // Neither CM1 nor CM2 gives a valid white point from the effective neutral
+        // (AsShotNeutral=[1,1,1], AnalogBalance=[R_wb, 1, B_wb]).
+        //
+        // Simple approach: invert the color matrix, apply WB diagonal, and normalize
+        // so that effective_neutral maps to equal sRGB. Skip Bradford adaptation
+        // (Apple's pipeline already handles illuminant adaptation).
+        let cm_inv = mat3_invert(&color_matrix)?;
 
-        // Matrix bakes in WB for effective_neutral (what the raw data actually contains).
-        // AnalogBalance is NOT applied in render() — it's already in the raw pixels.
-        let camera_to_srgb =
-            compute_camera_to_srgb_with_wb(&color_matrix, white_xy, &effective_neutral)?;
+        // XYZ → sRGB
+        let srgb_from_xyz = mat3_invert(&SRGB_TO_XYZ_D50)?;
+
+        // Camera → XYZ → sRGB (no Bradford — Apple data is pre-adapted)
+        let raw_mat = mat3_mul(&srgb_from_xyz, &cm_inv);
+
+        // Bake WB: divide columns by effective_neutral
+        let mut wb_mat = raw_mat;
+        for i in 0..3 {
+            for j in 0..3 {
+                wb_mat[i][j] /= effective_neutral[j].max(1e-10);
+            }
+        }
+
+        // Normalize: effective_neutral should map to equal sRGB
+        let test_out = mat3_vec(&wb_mat, &effective_neutral);
+        let target = test_out[1];
+        if target.abs() < 1e-10 {
+            return None;
+        }
+        let mut camera_to_srgb = wb_mat;
+        for i in 0..3 {
+            let row_scale = target / test_out[i].max(1e-10);
+            for j in 0..3 {
+                camera_to_srgb[i][j] *= row_scale;
+            }
+        }
 
         let wb_mult = [1.0, 1.0, 1.0];
         let analog_balance = [1.0, 1.0, 1.0]; // already in raw data
