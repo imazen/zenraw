@@ -130,8 +130,10 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    // Step 4: Color pipeline (WB + camera→sRGB)
-    color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+    // Step 4: Color pipeline (WB + camera→sRGB) — skip if user wants camera-space output
+    if !config.skip_color_pipeline {
+        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+    }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -326,7 +328,9 @@ fn decode_non_bayer(
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+    if !config.skip_color_pipeline {
+        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+    }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 

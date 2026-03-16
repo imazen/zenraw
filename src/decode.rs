@@ -51,6 +51,14 @@ pub struct RawDecodeConfig {
     /// display orientation, and `RawInfo::orientation` is set to 1.
     /// When false, the raw sensor orientation is preserved.
     pub apply_orientation: bool,
+    /// Skip the color pipeline (WB + camera→sRGB matrix).
+    ///
+    /// When true, the output is in camera color space (not white-balanced,
+    /// not color-corrected). This is needed for proper DNG rendering where
+    /// you want to apply your own color pipeline (e.g., `DngPipeline`).
+    ///
+    /// Default: `false` (apply WB + color matrix → sRGB linear output).
+    pub skip_color_pipeline: bool,
 }
 
 impl Default for RawDecodeConfig {
@@ -61,6 +69,7 @@ impl Default for RawDecodeConfig {
             apply_gamma: false,
             apply_crop: true,
             apply_orientation: true,
+            skip_color_pipeline: false,
         }
     }
 }

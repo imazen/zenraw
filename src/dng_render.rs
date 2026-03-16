@@ -863,6 +863,89 @@ mod tests {
     }
 
     #[test]
+    fn test_full_pipeline_real_appledng() {
+        // End-to-end test: decode APPLEDNG with skip_color_pipeline, then render via DngPipeline
+        let path = "/mnt/v/heic/46CD6167-C36B-4F98-B386-2300D8E840F0.DNG";
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("Skipping: APPLEDNG file not found");
+            return;
+        };
+
+        let exif = crate::exif::read_metadata(&data).expect("should read EXIF");
+        let dng_profile = crate::apple::extract_dng_profile(&data);
+        let pgtm = crate::apple::extract_profile_gain_table_map(&data);
+
+        // Decode with skip_color_pipeline = true (camera-space raw)
+        let mut config = crate::decode::RawDecodeConfig::default();
+        config.skip_color_pipeline = true;
+        let output =
+            crate::decode(&data, &config, &enough::Unstoppable).expect("should decode APPLEDNG");
+
+        let dw = output.pixels.width();
+        let dh = output.pixels.height();
+        let raw_bytes = output.pixels.copy_to_contiguous_bytes();
+        let camera_raw: &[f32] = bytemuck::cast_slice(&raw_bytes);
+        eprintln!(
+            "Camera-space raw: {}x{}, {} floats",
+            dw,
+            dh,
+            camera_raw.len()
+        );
+
+        // Verify: camera-space data should have unequal channel means (not WB'd)
+        let npix = (dw as usize) * (dh as usize);
+        let (mut mr, mut mg, mut mb) = (0.0f64, 0.0f64, 0.0f64);
+        for i in 0..npix {
+            mr += camera_raw[i * 3] as f64;
+            mg += camera_raw[i * 3 + 1] as f64;
+            mb += camera_raw[i * 3 + 2] as f64;
+        }
+        mr /= npix as f64;
+        mg /= npix as f64;
+        mb /= npix as f64;
+        eprintln!("Channel means: R={mr:.5} G={mg:.5} B={mb:.5}");
+        eprintln!("Ratios: R/G={:.3} B/G={:.3}", mr / mg, mb / mg);
+
+        // Build pipeline
+        let mut pipeline =
+            DngPipeline::from_metadata(&exif, dw, dh).expect("should build pipeline from EXIF");
+        if let Some(ref profile) = dng_profile {
+            if let Some(ref tc) = profile.tone_curve {
+                pipeline = pipeline.with_tone_curve(tc);
+            }
+        }
+        if let Some(pgtm) = pgtm {
+            pipeline = pipeline.with_gain_table_map(pgtm);
+        }
+
+        eprintln!("Rendering via DngPipeline...");
+        let srgb = pipeline.render_lum_preserving(camera_raw);
+        eprintln!("Output: {} bytes", srgb.len());
+
+        // Verify output is not all black or all white
+        let mean: f64 = srgb.iter().map(|&v| v as f64).sum::<f64>() / srgb.len() as f64;
+        eprintln!("sRGB output mean: {mean:.1}");
+        assert!(
+            mean > 10.0,
+            "output should not be nearly black, mean={mean}"
+        );
+        assert!(
+            mean < 245.0,
+            "output should not be nearly white, mean={mean}"
+        );
+
+        // Save output for visual inspection
+        let out_path = "/mnt/v/output/zenfilters/mobile_parity/46CD_dng_pipeline.raw";
+        let _ = std::fs::write(out_path, &srgb);
+        eprintln!(
+            "Saved raw sRGB u8 to {out_path} ({}x{}, {} bytes)",
+            dw,
+            dh,
+            srgb.len()
+        );
+    }
+
+    #[test]
     fn test_linear_to_srgb_u8_boundaries() {
         let srgb = linear_to_srgb_u8(&[0.0, 0.5, 1.0]);
         assert_eq!(srgb[0], 0);
