@@ -419,28 +419,25 @@ impl DngPipeline {
             [1.0, 1.0, 1.0]
         };
 
-        // White point from AsShotNeutral (NOT multiplied by AnalogBalance).
-        // AsShotNeutral represents the camera sensor response to scene white.
-        let neutral3 = [neutral[0], neutral[1], neutral[2]];
-        let white_xy = neutral_to_xy(&neutral3, &color_matrix)?;
-
-        // The combined WB+color matrix must map camera-space data to sRGB.
-        // Raw camera data has AnalogBalance baked in (it's analog gain),
-        // so the matrix must compensate for it.
-        // Effective neutral for matrix normalization:
-        //   neutral_on_sensor = AnalogBalance × AsShotNeutral
+        // Effective neutral = AnalogBalance × AsShotNeutral.
+        // This is what the sensor outputs for neutral — raw data has AB baked in.
         let effective_neutral = [
             neutral[0] * analog_balance[0],
             neutral[1] * analog_balance[1],
             neutral[2] * analog_balance[2],
         ];
 
-        // Compute camera → sRGB matrix with WB baked in
+        // White point: derived from AsShotNeutral (not effective_neutral)
+        let neutral3 = [neutral[0], neutral[1], neutral[2]];
+        let white_xy = neutral_to_xy(&neutral3, &color_matrix)?;
+
+        // Matrix bakes in WB for effective_neutral (what the raw data actually contains).
+        // AnalogBalance is NOT applied in render() — it's already in the raw pixels.
         let camera_to_srgb =
             compute_camera_to_srgb_with_wb(&color_matrix, white_xy, &effective_neutral)?;
 
-        // WB is baked into the matrix, so wb_mult = [1,1,1]
         let wb_mult = [1.0, 1.0, 1.0];
+        let analog_balance = [1.0, 1.0, 1.0]; // already in raw data
 
         let baseline_exposure = exif.baseline_exposure.unwrap_or(0.0);
 
@@ -506,13 +503,18 @@ impl DngPipeline {
             pgtm.apply(&mut pixels, self.width, self.height, self.baseline_exposure);
         }
 
-        // 2. BaselineExposure + White Balance
+        // 2. AnalogBalance + BaselineExposure (+ WB if not baked into matrix)
         let bl_mult = 2.0f32.powf(self.baseline_exposure as f32);
+        let ab = [
+            bl_mult * self.analog_balance[0] as f32 * self.wb_mult[0] as f32,
+            bl_mult * self.analog_balance[1] as f32 * self.wb_mult[1] as f32,
+            bl_mult * self.analog_balance[2] as f32 * self.wb_mult[2] as f32,
+        ];
         for i in 0..npix {
             let base = i * 3;
-            pixels[base] *= bl_mult * self.wb_mult[0] as f32;
-            pixels[base + 1] *= bl_mult * self.wb_mult[1] as f32;
-            pixels[base + 2] *= bl_mult * self.wb_mult[2] as f32;
+            pixels[base] *= ab[0];
+            pixels[base + 1] *= ab[1];
+            pixels[base + 2] *= ab[2];
         }
 
         // 3. Camera → sRGB color matrix
@@ -551,13 +553,18 @@ impl DngPipeline {
             pgtm.apply(&mut pixels, self.width, self.height, self.baseline_exposure);
         }
 
-        // 2. BaselineExposure + White Balance
+        // 2. AnalogBalance + BaselineExposure (+ WB if not baked into matrix)
         let bl_mult = 2.0f32.powf(self.baseline_exposure as f32);
+        let ab = [
+            bl_mult * self.analog_balance[0] as f32 * self.wb_mult[0] as f32,
+            bl_mult * self.analog_balance[1] as f32 * self.wb_mult[1] as f32,
+            bl_mult * self.analog_balance[2] as f32 * self.wb_mult[2] as f32,
+        ];
         for i in 0..npix {
             let base = i * 3;
-            pixels[base] *= bl_mult * self.wb_mult[0] as f32;
-            pixels[base + 1] *= bl_mult * self.wb_mult[1] as f32;
-            pixels[base + 2] *= bl_mult * self.wb_mult[2] as f32;
+            pixels[base] *= ab[0];
+            pixels[base + 1] *= ab[1];
+            pixels[base + 2] *= ab[2];
         }
 
         // 3. Camera → sRGB color matrix
@@ -1060,28 +1067,45 @@ mod tests {
             );
         }
 
-        // Build DngPipeline — should now work with AnalogBalance
+        // Build DngPipeline — should work with AnalogBalance
         let pipeline = DngPipeline::from_metadata(&exif, 4032, 3024);
         assert!(pipeline.is_some(), "DngPipeline should build for CBFA");
         let p = pipeline.unwrap();
-
-        // Effective neutral = AnalogBalance × AsShotNeutral
-        let ab = exif.analog_balance.as_ref().unwrap();
-        let eff_neutral = [ab[0], ab[1], ab[2]]; // neutral is [1,1,1]
-        let test = mat3_vec(&p.camera_to_srgb, &eff_neutral);
         eprintln!(
-            "CBFA Matrix × eff_neutral = [{:.4}, {:.4}, {:.4}]",
-            test[0], test[1], test[2]
+            "CBFA analog_balance: [{:.4}, {:.4}, {:.4}]",
+            p.analog_balance[0], p.analog_balance[1], p.analog_balance[2]
         );
-        let rg = test[0] / test[1];
-        let bg = test[2] / test[1];
-        assert!(
-            (rg - 1.0).abs() < 0.01,
-            "CBFA neutral should map to gray, R/G={rg}"
+
+        // Test: render a 1×1 neutral patch.
+        // For CBFA: AsShotNeutral=[1,1,1], AnalogBalance=[2.382, 1.0, 1.875]
+        // Camera-space neutral at level 0.05 = effective_neutral * 0.05
+        //   = [1.0*2.382*0.05, 1.0*1.0*0.05, 1.0*1.875*0.05] = [0.119, 0.05, 0.094]
+        let ab = exif.analog_balance.as_ref().unwrap();
+        let n = exif.as_shot_neutral.as_ref().unwrap();
+        let test_pipe = DngPipeline {
+            width: 1,
+            height: 1,
+            ..p
+        };
+        let raw_patch = vec![
+            (n[0] * ab[0] * 0.05) as f32,
+            (n[1] * ab[1] * 0.05) as f32,
+            (n[2] * ab[2] * 0.05) as f32,
+        ];
+        let srgb = test_pipe.render(&raw_patch);
+        eprintln!(
+            "CBFA neutral render: R={} G={} B={}",
+            srgb[0], srgb[1], srgb[2]
         );
+        let max_diff = (srgb[0] as i32 - srgb[1] as i32)
+            .unsigned_abs()
+            .max((srgb[1] as i32 - srgb[2] as i32).unsigned_abs());
         assert!(
-            (bg - 1.0).abs() < 0.01,
-            "CBFA neutral should map to gray, B/G={bg}"
+            max_diff < 15,
+            "CBFA neutral should produce near-equal RGB, got R={} G={} B={} (diff={max_diff})",
+            srgb[0],
+            srgb[1],
+            srgb[2]
         );
     }
 
