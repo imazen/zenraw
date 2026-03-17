@@ -38,12 +38,51 @@ pub const PROPHOTO_TO_XYZ: [[f64; 3]; 3] = [
     [0.0000, 0.0000, 0.8249],
 ];
 
-/// sRGB to XYZ (D50) matrix (adapted from D65).
+/// sRGB / BT.709 to XYZ (D50) matrix.
 pub const SRGB_TO_XYZ_D50: [[f64; 3]; 3] = [
     [0.4361, 0.3851, 0.1431],
     [0.2225, 0.7169, 0.0606],
     [0.0139, 0.0971, 0.7141],
 ];
+
+/// Display P3 to XYZ (D50) matrix.
+/// P3 uses D65 white; this is Bradford-adapted to D50 for the DNG PCS.
+pub const DISPLAY_P3_TO_XYZ_D50: [[f64; 3]; 3] = [
+    [0.5151, 0.2920, 0.1571],
+    [0.2412, 0.6922, 0.0666],
+    [-0.0011, 0.0419, 0.7843],
+];
+
+/// BT.2020 to XYZ (D50) matrix.
+/// BT.2020 uses D65 white; Bradford-adapted to D50.
+pub const BT2020_TO_XYZ_D50: [[f64; 3]; 3] = [
+    [0.6370, 0.1446, 0.1689],
+    [0.2627, 0.6780, 0.0593],
+    [0.0000, 0.0281, 0.8070],
+];
+
+/// Target output color space for DNG rendering.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutputPrimaries {
+    /// BT.709 / sRGB (default).
+    #[default]
+    Srgb,
+    /// Display P3 (Apple ecosystem).
+    DisplayP3,
+    /// BT.2020 (HDR / wide gamut).
+    Bt2020,
+}
+
+impl OutputPrimaries {
+    /// Get the RGB-to-XYZ (D50) matrix for this color space.
+    pub fn to_xyz_d50(&self) -> &Mat3 {
+        match self {
+            Self::Srgb => &SRGB_TO_XYZ_D50,
+            Self::DisplayP3 => &DISPLAY_P3_TO_XYZ_D50,
+            Self::Bt2020 => &BT2020_TO_XYZ_D50,
+        }
+    }
+}
 
 /// Bradford chromatic adaptation matrix.
 const BRADFORD: [[f64; 3]; 3] = [
@@ -229,41 +268,31 @@ pub fn neutral_to_xy(as_shot_neutral: &[f64], color_matrix: &Mat3) -> Option<(f6
 
 // ── Full camera-to-sRGB matrix computation ──────────────────────────
 
-/// Compute the combined camera RGB → linear sRGB matrix.
+/// Compute camera RGB → linear output matrix with WB baked in.
 ///
-/// This implements the ColorMatrix path (no ForwardMatrix):
-/// 1. Apply Bradford adaptation from white point to D50
-/// 2. Multiply by inverted ColorMatrix to get XYZ
-/// 3. Convert XYZ to sRGB
+/// ColorMatrix path (no ForwardMatrix):
+/// 1. Invert ColorMatrix (XYZ→camera becomes camera→XYZ)
+/// 2. Bradford adaptation from camera white to D50
+/// 3. XYZ (D50) → output primaries (sRGB, P3, or BT.2020)
+/// 4. Bake WB into the matrix (divide columns by neutral)
+/// 5. Normalize so neutral maps to equal output
 ///
-/// Returns the 3×3 matrix that maps camera-space RGB to linear sRGB.
-/// The returned matrix maps **raw camera RGB** (not white-balanced) to linear sRGB.
-/// White balance is baked into the matrix.
-///
-/// `as_shot_neutral`: camera-space neutral point (e.g., [0.449, 1.0, 0.541])
-pub fn compute_camera_to_srgb_with_wb(
+/// `as_shot_neutral`: effective camera-space neutral (AnalogBalance × AsShotNeutral)
+pub fn compute_camera_to_output_with_wb(
     color_matrix: &Mat3,
     white_xy: (f64, f64),
     as_shot_neutral: &[f64; 3],
+    output: OutputPrimaries,
 ) -> Option<Mat3> {
-    // ColorMatrix maps XYZ → camera, so invert for camera → XYZ
     let cm_inv = mat3_invert(color_matrix)?;
-
-    // Bradford adapt from camera white to D50 (PCS)
     let adapt = bradford_adapt(white_xy, D50_XY);
-
-    // Camera → XYZ (adapted to D50)
     let camera_to_xyz_d50 = mat3_mul(&adapt, &cm_inv);
 
-    // XYZ (D50) → sRGB linear
-    let srgb_from_xyz = mat3_invert(&SRGB_TO_XYZ_D50)?;
+    // XYZ (D50) → output linear RGB
+    let output_from_xyz = mat3_invert(output.to_xyz_d50())?;
+    let raw_mat = mat3_mul(&output_from_xyz, &camera_to_xyz_d50);
 
-    // camera_raw → XYZ → sRGB (without WB)
-    let raw_mat = mat3_mul(&srgb_from_xyz, &camera_to_xyz_d50);
-
-    // Bake WB into the matrix: pre-multiply by diag(1/neutral)
-    // raw_pixel → (raw_pixel / neutral) → raw_mat → sRGB
-    // Combined: wb_mat = raw_mat × diag(1/neutral[0], 1/neutral[1], 1/neutral[2])
+    // Bake WB: divide columns by neutral
     let mut wb_mat = raw_mat;
     for i in 0..3 {
         for j in 0..3 {
@@ -271,13 +300,9 @@ pub fn compute_camera_to_srgb_with_wb(
         }
     }
 
-    // Normalize: neutral input should map to equal sRGB output.
-    // After WB baking, neutral → wb_mat × neutral = raw_mat × [1,1,1] (WB cancels out).
-    // So we normalize by what [neutral] produces, making R=G=B.
+    // Normalize: neutral → equal output
     let test = mat3_vec(&wb_mat, as_shot_neutral);
-    // We want R≈G≈B. Scale each row so test produces equal output.
-    // Simple approach: normalize each row by its output for neutral.
-    let target = test[1]; // normalize to G channel value
+    let target = test[1];
     if target.abs() < 1e-10 {
         return None;
     }
@@ -292,7 +317,21 @@ pub fn compute_camera_to_srgb_with_wb(
     Some(result)
 }
 
-/// Compute camera → sRGB without baked-in WB (legacy, for external WB).
+/// Convenience: camera → sRGB with WB baked in.
+pub fn compute_camera_to_srgb_with_wb(
+    color_matrix: &Mat3,
+    white_xy: (f64, f64),
+    as_shot_neutral: &[f64; 3],
+) -> Option<Mat3> {
+    compute_camera_to_output_with_wb(
+        color_matrix,
+        white_xy,
+        as_shot_neutral,
+        OutputPrimaries::Srgb,
+    )
+}
+
+/// Convenience: camera → sRGB without baked-in WB.
 pub fn compute_camera_to_srgb(color_matrix: &Mat3, white_xy: (f64, f64)) -> Option<Mat3> {
     let cm_inv = mat3_invert(color_matrix)?;
     let adapt = bradford_adapt(white_xy, D50_XY);
@@ -354,17 +393,19 @@ pub fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
 ///
 /// Extracts all needed metadata from the DNG file and provides
 /// a `render()` method that applies the full pipeline:
-/// PGTM → exposure × WB → color matrix → tone curve → sRGB gamma
+/// PGTM → exposure × WB → color matrix → tone curve → output gamma
 #[derive(Clone, Debug)]
 pub struct DngPipeline {
-    /// Camera → sRGB linear color matrix (3×3).
-    pub camera_to_srgb: Mat3,
-    /// White balance multipliers (normalized, max=1.0).
+    /// Camera → output linear color matrix (3×3). WB baked in.
+    pub camera_to_output: Mat3,
+    /// White balance multipliers (usually [1,1,1] when baked into matrix).
     pub wb_mult: Vec3,
     /// BaselineExposure in EV (applied as 2^EV multiplier).
     pub baseline_exposure: f64,
-    /// AnalogBalance diagonal (usually [1,1,1]).
+    /// AnalogBalance diagonal (usually [1,1,1] — already in raw data).
     pub analog_balance: Vec3,
+    /// Output color primaries.
+    pub output_primaries: OutputPrimaries,
     /// Image dimensions.
     pub width: u32,
     pub height: u32,
@@ -378,12 +419,24 @@ pub struct DngPipeline {
 impl DngPipeline {
     /// Build a pipeline from DNG EXIF metadata.
     ///
+    /// `output`: target color primaries (sRGB, Display P3, or BT.2020).
     /// Returns None if essential metadata is missing (ColorMatrix, AsShotNeutral).
     #[cfg(feature = "exif")]
     pub fn from_metadata(
         exif: &crate::exif::ExifMetadata,
         width: u32,
         height: u32,
+    ) -> Option<Self> {
+        Self::from_metadata_with_primaries(exif, width, height, OutputPrimaries::default())
+    }
+
+    /// Build a pipeline targeting specific output primaries.
+    #[cfg(feature = "exif")]
+    pub fn from_metadata_with_primaries(
+        exif: &crate::exif::ExifMetadata,
+        width: u32,
+        height: u32,
+        output: OutputPrimaries,
     ) -> Option<Self> {
         // Get color matrix (prefer CM2 for D65 illuminant if available)
         let cm_data = if exif.calibration_illuminant_2 == Some(21) {
@@ -436,11 +489,11 @@ impl DngPipeline {
         // (Apple's pipeline already handles illuminant adaptation).
         let cm_inv = mat3_invert(&color_matrix)?;
 
-        // XYZ → sRGB
-        let srgb_from_xyz = mat3_invert(&SRGB_TO_XYZ_D50)?;
+        // XYZ → output primaries
+        let output_from_xyz = mat3_invert(output.to_xyz_d50())?;
 
-        // Camera → XYZ → sRGB (no Bradford — Apple data is pre-adapted)
-        let raw_mat = mat3_mul(&srgb_from_xyz, &cm_inv);
+        // Camera → XYZ → output (no Bradford — Apple data is pre-adapted)
+        let raw_mat = mat3_mul(&output_from_xyz, &cm_inv);
 
         // Bake WB: divide columns by effective_neutral
         let mut wb_mat = raw_mat;
@@ -456,11 +509,11 @@ impl DngPipeline {
         if target.abs() < 1e-10 {
             return None;
         }
-        let mut camera_to_srgb = wb_mat;
+        let mut camera_to_output = wb_mat;
         for i in 0..3 {
             let row_scale = target / test_out[i].max(1e-10);
             for j in 0..3 {
-                camera_to_srgb[i][j] *= row_scale;
+                camera_to_output[i][j] *= row_scale;
             }
         }
 
@@ -470,10 +523,11 @@ impl DngPipeline {
         let baseline_exposure = exif.baseline_exposure.unwrap_or(0.0);
 
         Some(DngPipeline {
-            camera_to_srgb,
+            camera_to_output,
             wb_mult,
             baseline_exposure,
             analog_balance,
+            output_primaries: output,
             width,
             height,
             tone_curve: None,
@@ -546,7 +600,7 @@ impl DngPipeline {
         }
 
         // 3. Camera → sRGB color matrix
-        apply_matrix_rgb(&mut pixels, &self.camera_to_srgb);
+        apply_matrix_rgb(&mut pixels, &self.camera_to_output);
 
         // Clamp to [0, 1] after matrix (matrix can produce negatives)
         for v in pixels.iter_mut() {
@@ -596,7 +650,7 @@ impl DngPipeline {
         }
 
         // 3. Camera → sRGB color matrix
-        apply_matrix_rgb(&mut pixels, &self.camera_to_srgb);
+        apply_matrix_rgb(&mut pixels, &self.camera_to_output);
 
         // Clamp negatives
         for v in pixels.iter_mut() {
@@ -754,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn test_camera_to_srgb_matrix_produces_valid_white() {
+    fn test_camera_to_output_matrix_produces_valid_white() {
         let cm = [
             [1.2272, -0.5455, -0.2613],
             [-0.4547, 1.5178, -0.0427],
@@ -807,10 +861,10 @@ mod tests {
         ];
         let neutral = [0.4490, 1.0, 0.5409];
         let white_xy = neutral_to_xy(&neutral, &cm).unwrap();
-        let camera_to_srgb = compute_camera_to_srgb_with_wb(&cm, white_xy, &neutral).unwrap();
+        let camera_to_output = compute_camera_to_srgb_with_wb(&cm, white_xy, &neutral).unwrap();
 
         // Verify: matrix × neutral should produce near-equal RGB
-        let test = mat3_vec(&camera_to_srgb, &neutral);
+        let test = mat3_vec(&camera_to_output, &neutral);
         eprintln!(
             "Matrix × neutral = [{:.4}, {:.4}, {:.4}]",
             test[0], test[1], test[2]
@@ -824,10 +878,11 @@ mod tests {
         );
 
         let pipeline = DngPipeline {
-            camera_to_srgb,
-            wb_mult: [1.0, 1.0, 1.0], // WB baked into matrix
+            camera_to_output,
+            wb_mult: [1.0, 1.0, 1.0],
             baseline_exposure: 0.0,
             analog_balance: [1.0, 1.0, 1.0],
+            output_primaries: OutputPrimaries::Srgb,
             width: 2,
             height: 2,
             tone_curve: None,
@@ -911,10 +966,10 @@ mod tests {
         // we'll test with a small synthetic patch instead.)
         eprintln!("Pipeline constructed successfully from real APPLEDNG metadata");
         eprintln!(
-            "  camera_to_srgb diagonal: [{:.3}, {:.3}, {:.3}]",
-            pipeline.camera_to_srgb[0][0],
-            pipeline.camera_to_srgb[1][1],
-            pipeline.camera_to_srgb[2][2]
+            "  camera_to_output diagonal: [{:.3}, {:.3}, {:.3}]",
+            pipeline.camera_to_output[0][0],
+            pipeline.camera_to_output[1][1],
+            pipeline.camera_to_output[2][2]
         );
     }
 
@@ -1150,14 +1205,54 @@ mod tests {
     }
 
     #[test]
+    fn test_output_primaries_p3() {
+        let cm = [
+            [1.2272, -0.5455, -0.2613],
+            [-0.4547, 1.5178, -0.0427],
+            [-0.0409, 0.1636, 0.5913],
+        ];
+        let neutral = [0.4490, 1.0, 0.5409];
+        let white_xy = neutral_to_xy(&neutral, &cm).unwrap();
+
+        let srgb = compute_camera_to_output_with_wb(&cm, white_xy, &neutral, OutputPrimaries::Srgb)
+            .unwrap();
+        let p3 =
+            compute_camera_to_output_with_wb(&cm, white_xy, &neutral, OutputPrimaries::DisplayP3)
+                .unwrap();
+        let bt2020 =
+            compute_camera_to_output_with_wb(&cm, white_xy, &neutral, OutputPrimaries::Bt2020)
+                .unwrap();
+
+        // All should map neutral to equal output
+        for (name, mat) in [("sRGB", &srgb), ("P3", &p3), ("BT.2020", &bt2020)] {
+            let out = mat3_vec(mat, &neutral);
+            let rg = out[0] / out[1];
+            let bg = out[2] / out[1];
+            assert!((rg - 1.0).abs() < 0.05, "{name}: neutral R/G={rg}");
+            assert!((bg - 1.0).abs() < 0.05, "{name}: neutral B/G={bg}");
+        }
+
+        // Matrices should differ (different primaries)
+        assert!(
+            (srgb[0][0] - p3[0][0]).abs() > 0.01,
+            "sRGB and P3 should differ"
+        );
+        assert!(
+            (srgb[0][0] - bt2020[0][0]).abs() > 0.01,
+            "sRGB and BT.2020 should differ"
+        );
+    }
+
+    #[test]
     fn test_render_lum_preserving_color_ratios() {
         // Simple pipeline with a contrast-boosting tone curve
         let cm = mat3_identity(); // identity matrix = camera is sRGB
         let pipeline = DngPipeline {
-            camera_to_srgb: cm,
+            camera_to_output: cm,
             wb_mult: [1.0, 1.0, 1.0],
             baseline_exposure: 0.0,
             analog_balance: [1.0, 1.0, 1.0],
+            output_primaries: OutputPrimaries::Srgb,
             width: 1,
             height: 1,
             tone_curve: Some({
