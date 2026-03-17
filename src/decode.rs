@@ -195,7 +195,11 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 /// 6. Optionally crop to the camera's recommended region
 /// 7. Return as a PixelBuffer
 #[cfg(feature = "rawloader")]
-pub(crate) fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<RawDecodeOutput> {
+pub(crate) fn decode(
+    data: &[u8],
+    config: &RawDecodeConfig,
+    stop: &dyn Stop,
+) -> Result<RawDecodeOutput> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 1: Parse
