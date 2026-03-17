@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 
 /// Raw XMP packet extracted from a file.
 #[derive(Clone, Debug)]
-pub struct XmpPacket {
+pub(crate) struct XmpPacket {
     /// The raw XMP XML string (everything between xpacket markers, inclusive).
     pub xml: String,
     /// Byte offset where the packet was found in the file.
@@ -25,7 +25,7 @@ pub struct XmpPacket {
 /// Scans for `<?xpacket begin` markers and extracts the complete XML
 /// including the xpacket processing instructions. Most files contain
 /// exactly one XMP packet, but some (like PDFs) may contain multiple.
-pub fn extract_xmp_packets(data: &[u8]) -> Vec<XmpPacket> {
+pub(crate) fn extract_xmp_packets(data: &[u8]) -> Vec<XmpPacket> {
     let mut packets = Vec::new();
     let begin_marker = b"<?xpacket begin";
     let end_marker = b"<?xpacket end";
@@ -104,7 +104,7 @@ fn extract_xmpmeta_block(data: &[u8]) -> Option<String> {
 /// let rating = get_xmp_property(&xmp_xml, "xmp", "Rating");
 /// let creator = get_xmp_property(&xmp_xml, "dc", "creator");
 /// ```
-pub fn get_xmp_property(xmp_xml: &str, ns_prefix: &str, name: &str) -> Option<String> {
+pub(crate) fn get_xmp_property(xmp_xml: &str, ns_prefix: &str, name: &str) -> Option<String> {
     // Try attribute form: ns:Name="value"
     let attr_pattern = format!("{ns_prefix}:{name}=\"");
     if let Some(pos) = xmp_xml.find(&attr_pattern) {

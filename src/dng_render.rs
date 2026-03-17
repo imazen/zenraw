@@ -21,25 +21,25 @@ use alloc::vec::Vec;
 // ── D50 / D65 constants ─────────────────────────────────────────────
 
 /// D50 illuminant xy coordinates (PCS white point).
-pub const D50_XY: (f64, f64) = (0.3457, 0.3585);
+pub(crate) const D50_XY: (f64, f64) = (0.3457, 0.3585);
 
 /// D65 illuminant xy coordinates.
-pub const D65_XY: (f64, f64) = (0.3127, 0.3290);
+pub(crate) const D65_XY: (f64, f64) = (0.3127, 0.3290);
 
 /// Standard illuminant A xy coordinates (incandescent).
-pub const STD_A_XY: (f64, f64) = (0.4476, 0.4074);
+pub(crate) const STD_A_XY: (f64, f64) = (0.4476, 0.4074);
 
 // ── Color space matrices ────────────────────────────────────────────
 
 /// ProPhoto RGB to XYZ (D50) matrix.
-pub const PROPHOTO_TO_XYZ: [[f64; 3]; 3] = [
+pub(crate) const PROPHOTO_TO_XYZ: [[f64; 3]; 3] = [
     [0.7977, 0.1352, 0.0313],
     [0.2880, 0.7119, 0.0001],
     [0.0000, 0.0000, 0.8249],
 ];
 
 /// sRGB / BT.709 to XYZ (D50) matrix.
-pub const SRGB_TO_XYZ_D50: [[f64; 3]; 3] = [
+pub(crate) const SRGB_TO_XYZ_D50: [[f64; 3]; 3] = [
     [0.4361, 0.3851, 0.1431],
     [0.2225, 0.7169, 0.0606],
     [0.0139, 0.0971, 0.7141],
@@ -47,7 +47,7 @@ pub const SRGB_TO_XYZ_D50: [[f64; 3]; 3] = [
 
 /// Display P3 to XYZ (D50) matrix.
 /// P3 uses D65 white; this is Bradford-adapted to D50 for the DNG PCS.
-pub const DISPLAY_P3_TO_XYZ_D50: [[f64; 3]; 3] = [
+pub(crate) const DISPLAY_P3_TO_XYZ_D50: [[f64; 3]; 3] = [
     [0.5151, 0.2920, 0.1571],
     [0.2412, 0.6922, 0.0666],
     [-0.0011, 0.0419, 0.7843],
@@ -55,7 +55,7 @@ pub const DISPLAY_P3_TO_XYZ_D50: [[f64; 3]; 3] = [
 
 /// BT.2020 to XYZ (D50) matrix.
 /// BT.2020 uses D65 white; Bradford-adapted to D50.
-pub const BT2020_TO_XYZ_D50: [[f64; 3]; 3] = [
+pub(crate) const BT2020_TO_XYZ_D50: [[f64; 3]; 3] = [
     [0.6370, 0.1446, 0.1689],
     [0.2627, 0.6780, 0.0593],
     [0.0000, 0.0281, 0.8070],
@@ -93,10 +93,10 @@ const BRADFORD: [[f64; 3]; 3] = [
 
 // ── 3x3 matrix operations ───────────────────────────────────────────
 
-pub type Mat3 = [[f64; 3]; 3];
-pub type Vec3 = [f64; 3];
+pub(crate) type Mat3 = [[f64; 3]; 3];
+pub(crate) type Vec3 = [f64; 3];
 
-pub fn mat3_mul(a: &Mat3, b: &Mat3) -> Mat3 {
+pub(crate) fn mat3_mul(a: &Mat3, b: &Mat3) -> Mat3 {
     let mut c = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -106,7 +106,7 @@ pub fn mat3_mul(a: &Mat3, b: &Mat3) -> Mat3 {
     c
 }
 
-pub fn mat3_vec(m: &Mat3, v: &Vec3) -> Vec3 {
+pub(crate) fn mat3_vec(m: &Mat3, v: &Vec3) -> Vec3 {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
@@ -114,7 +114,7 @@ pub fn mat3_vec(m: &Mat3, v: &Vec3) -> Vec3 {
     ]
 }
 
-pub fn mat3_invert(m: &Mat3) -> Option<Mat3> {
+pub(crate) fn mat3_invert(m: &Mat3) -> Option<Mat3> {
     let a = m;
     let cof00 = a[1][1] * a[2][2] - a[2][1] * a[1][2];
     let cof01 = a[2][1] * a[0][2] - a[0][1] * a[2][2];
@@ -139,15 +139,15 @@ pub fn mat3_invert(m: &Mat3) -> Option<Mat3> {
     ])
 }
 
-pub fn mat3_identity() -> Mat3 {
+pub(crate) fn mat3_identity() -> Mat3 {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 
-pub fn mat3_diagonal(d: &Vec3) -> Mat3 {
+pub(crate) fn mat3_diagonal(d: &Vec3) -> Mat3 {
     [[d[0], 0.0, 0.0], [0.0, d[1], 0.0], [0.0, 0.0, d[2]]]
 }
 
-pub fn mat3_scale(m: &Mat3, s: f64) -> Mat3 {
+pub(crate) fn mat3_scale(m: &Mat3, s: f64) -> Mat3 {
     let mut r = *m;
     for row in &mut r {
         for v in row.iter_mut() {
@@ -157,7 +157,7 @@ pub fn mat3_scale(m: &Mat3, s: f64) -> Mat3 {
     r
 }
 
-pub fn mat3_lerp(a: &Mat3, b: &Mat3, t: f64) -> Mat3 {
+pub(crate) fn mat3_lerp(a: &Mat3, b: &Mat3, t: f64) -> Mat3 {
     let mut r = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -170,13 +170,13 @@ pub fn mat3_lerp(a: &Mat3, b: &Mat3, t: f64) -> Mat3 {
 // ── xy ↔ XYZ conversions ────────────────────────────────────────────
 
 /// Convert CIE xy chromaticity to XYZ (Y=1).
-pub fn xy_to_xyz(x: f64, y: f64) -> Vec3 {
+pub(crate) fn xy_to_xyz(x: f64, y: f64) -> Vec3 {
     let y_clamped = y.max(1e-6);
     [x / y_clamped, 1.0, (1.0 - x - y) / y_clamped]
 }
 
 /// Bradford chromatic adaptation matrix from white1 → white2.
-pub fn bradford_adapt(white1_xy: (f64, f64), white2_xy: (f64, f64)) -> Mat3 {
+pub(crate) fn bradford_adapt(white1_xy: (f64, f64), white2_xy: (f64, f64)) -> Mat3 {
     let w1_xyz = xy_to_xyz(white1_xy.0, white1_xy.1);
     let w2_xyz = xy_to_xyz(white2_xy.0, white2_xy.1);
 
@@ -197,7 +197,7 @@ pub fn bradford_adapt(white1_xy: (f64, f64), white2_xy: (f64, f64)) -> Mat3 {
 // ── Dual-illuminant interpolation ───────────────────────────────────
 
 /// DNG illuminant IDs to approximate color temperature.
-pub fn illuminant_to_temp(illuminant: u16) -> f64 {
+pub(crate) fn illuminant_to_temp(illuminant: u16) -> f64 {
     match illuminant {
         1 => 5500.0,  // Daylight
         2 => 4150.0,  // Fluorescent
@@ -224,7 +224,7 @@ pub fn illuminant_to_temp(illuminant: u16) -> f64 {
 /// Compute interpolation weight between two illuminants.
 /// Uses reciprocal temperature interpolation per DNG spec.
 /// Returns weight for illuminant 1 (0.0 = use illum2, 1.0 = use illum1).
-pub fn dual_illuminant_weight(temp: f64, illum1: u16, illum2: u16) -> f64 {
+pub(crate) fn dual_illuminant_weight(temp: f64, illum1: u16, illum2: u16) -> f64 {
     let t1 = illuminant_to_temp(illum1);
     let t2 = illuminant_to_temp(illum2);
 
@@ -248,7 +248,7 @@ pub fn dual_illuminant_weight(temp: f64, illum1: u16, illum2: u16) -> f64 {
 /// AsShotNeutral gives the camera-space white point as ratios.
 /// ColorMatrix maps XYZ → camera space, so we invert to find the
 /// corresponding xy chromaticity.
-pub fn neutral_to_xy(as_shot_neutral: &[f64], color_matrix: &Mat3) -> Option<(f64, f64)> {
+pub(crate) fn neutral_to_xy(as_shot_neutral: &[f64], color_matrix: &Mat3) -> Option<(f64, f64)> {
     // Camera neutral → XYZ: invert ColorMatrix
     let cm_inv = mat3_invert(color_matrix)?;
     let neutral = if as_shot_neutral.len() >= 3 {
@@ -278,7 +278,7 @@ pub fn neutral_to_xy(as_shot_neutral: &[f64], color_matrix: &Mat3) -> Option<(f6
 /// 5. Normalize so neutral maps to equal output
 ///
 /// `as_shot_neutral`: effective camera-space neutral (AnalogBalance × AsShotNeutral)
-pub fn compute_camera_to_output_with_wb(
+pub(crate) fn compute_camera_to_output_with_wb(
     color_matrix: &Mat3,
     white_xy: (f64, f64),
     as_shot_neutral: &[f64; 3],
@@ -318,7 +318,7 @@ pub fn compute_camera_to_output_with_wb(
 }
 
 /// Convenience: camera → sRGB with WB baked in.
-pub fn compute_camera_to_srgb_with_wb(
+pub(crate) fn compute_camera_to_srgb_with_wb(
     color_matrix: &Mat3,
     white_xy: (f64, f64),
     as_shot_neutral: &[f64; 3],
@@ -332,7 +332,7 @@ pub fn compute_camera_to_srgb_with_wb(
 }
 
 /// Convenience: camera → sRGB without baked-in WB.
-pub fn compute_camera_to_srgb(color_matrix: &Mat3, white_xy: (f64, f64)) -> Option<Mat3> {
+pub(crate) fn compute_camera_to_srgb(color_matrix: &Mat3, white_xy: (f64, f64)) -> Option<Mat3> {
     let cm_inv = mat3_invert(color_matrix)?;
     let adapt = bradford_adapt(white_xy, D50_XY);
     let camera_to_xyz_d50 = mat3_mul(&adapt, &cm_inv);
@@ -341,7 +341,7 @@ pub fn compute_camera_to_srgb(color_matrix: &Mat3, white_xy: (f64, f64)) -> Opti
 }
 
 /// Apply a 3×3 color matrix to interleaved RGB f32 pixel data.
-pub fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
+pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
     let m = [
         [
             matrix[0][0] as f32,
@@ -373,7 +373,7 @@ pub fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
 }
 
 /// Apply sRGB gamma encoding to linear f32 data, producing u8 output.
-pub fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
+pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
     let mut output = Vec::with_capacity(linear.len());
     for &v in linear {
         let v = v.clamp(0.0, 1.0);
@@ -398,11 +398,11 @@ pub fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
 pub struct DngPipeline {
     /// Camera → output linear color matrix (3×3). WB baked in.
     pub camera_to_output: Mat3,
-    /// White balance multipliers (usually [1,1,1] when baked into matrix).
+    /// White balance multipliers (usually `[1,1,1]` when baked into matrix).
     pub wb_mult: Vec3,
     /// BaselineExposure in EV (applied as 2^EV multiplier).
     pub baseline_exposure: f64,
-    /// AnalogBalance diagonal (usually [1,1,1] — already in raw data).
+    /// AnalogBalance diagonal (usually `[1,1,1]` — already in raw data).
     pub analog_balance: Vec3,
     /// Output color primaries.
     pub output_primaries: OutputPrimaries,
@@ -501,9 +501,9 @@ impl DngPipeline {
 
         // Bake WB: divide columns by effective_neutral
         let mut wb_mat = raw_mat;
-        for i in 0..3 {
-            for j in 0..3 {
-                wb_mat[i][j] /= effective_neutral[j].max(1e-10);
+        for row in &mut wb_mat {
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell /= effective_neutral[j].max(1e-10);
             }
         }
 
@@ -514,10 +514,10 @@ impl DngPipeline {
             return None;
         }
         let mut camera_to_output = wb_mat;
-        for i in 0..3 {
-            let row_scale = target / test_out[i].max(1e-10);
-            for j in 0..3 {
-                camera_to_output[i][j] *= row_scale;
+        for (row, &test_val) in camera_to_output.iter_mut().zip(test_out.iter()) {
+            let row_scale = target / test_val.max(1e-10);
+            for cell in row.iter_mut() {
+                *cell *= row_scale;
             }
         }
 
@@ -752,7 +752,7 @@ fn interpolate_curve(points: &[(f32, f32)], x: f32) -> f32 {
     y0 + t * (y1 - y0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "exif", feature = "apple"))]
 mod tests {
     use super::*;
 

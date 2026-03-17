@@ -33,7 +33,7 @@ pub enum DemosaicMethod {
 ///
 /// Output: interleaved RGB f32 data with 3 components per pixel.
 #[cfg(feature = "rawloader")]
-pub fn demosaic_to_rgb_f32(
+pub(crate) fn demosaic_to_rgb_f32(
     data: &[f32],
     width: usize,
     height: usize,

@@ -188,7 +188,7 @@ fn f32_to_u8_inner(_token: SimdToken, src: &[f32]) -> alloc::vec::Vec<u8> {
 }
 
 /// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
-pub fn f32_to_u16(src: &[f32]) -> alloc::vec::Vec<u8> {
+pub(crate) fn f32_to_u16(src: &[f32]) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
     for &v in src {
         let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;

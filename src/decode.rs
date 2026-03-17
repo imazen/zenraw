@@ -162,7 +162,7 @@ pub struct RawInfo {
 ///
 /// Returns metadata about the image (dimensions, camera info, etc.).
 #[cfg(feature = "rawloader")]
-pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
+pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     let raw =
@@ -195,7 +195,7 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 /// 6. Optionally crop to the camera's recommended region
 /// 7. Return as a PixelBuffer
 #[cfg(feature = "rawloader")]
-pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<RawDecodeOutput> {
+pub(crate) fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<RawDecodeOutput> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 1: Parse
@@ -555,7 +555,7 @@ pub(crate) fn bits_from_whitelevel(wl: u32) -> u8 {
 /// Detect whether a byte slice looks like a supported RAW/DNG file.
 ///
 /// Checks for TIFF-based RAW formats and known camera RAW magic bytes.
-pub fn is_raw_file(data: &[u8]) -> bool {
+pub(crate) fn is_raw_file(data: &[u8]) -> bool {
     if data.len() < 12 {
         return false;
     }

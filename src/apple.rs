@@ -46,7 +46,7 @@ pub mod makernote_tags {
 
 /// A single raw MakerNote tag value.
 #[derive(Clone, Debug)]
-pub struct MakerNoteTag {
+pub(crate) struct MakerNoteTag {
     pub tag: u16,
     pub dtype: u16,
     pub count: u32,
@@ -57,7 +57,7 @@ pub struct MakerNoteTag {
 /// Parsed Apple MakerNote.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
-pub struct AppleMakerNote {
+pub(crate) struct AppleMakerNote {
     /// MakerNote header version (e.g., 14 for iPhone 16 Pro).
     pub version: u16,
     /// Byte order of the MakerNote IFD.
@@ -89,7 +89,7 @@ pub struct AppleMakerNote {
 ///
 /// All offsets within the MakerNote are relative to the byte-order marker
 /// (offset 12 from the start of the MakerNote blob).
-pub fn parse_apple_makernote(makernote_bytes: &[u8]) -> Option<AppleMakerNote> {
+pub(crate) fn parse_apple_makernote(makernote_bytes: &[u8]) -> Option<AppleMakerNote> {
     // Check "Apple iOS\0" prefix
     if makernote_bytes.len() < 20 || &makernote_bytes[..10] != b"Apple iOS\0" {
         return None;
@@ -279,7 +279,7 @@ fn read_makernote_i32(data: &[u8], dtype: u16, byte_order: ByteOrder) -> Option<
 /// grayscale JPEG that encodes per-pixel HDR headroom.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub struct GainMapInfo {
+pub(crate) struct GainMapInfo {
     /// Raw JPEG bytes of the gain map image.
     pub jpeg_data: Vec<u8>,
     /// Gain map width in pixels.
@@ -316,7 +316,7 @@ pub struct GainMapInfo {
 ///
 /// For AMPF: scans the MPF structure in the JPEG to find the second image.
 /// For APPLEDNG: extracts the gain map from the embedded preview JPEG's MPF.
-pub fn extract_gain_map(data: &[u8]) -> Option<GainMapInfo> {
+pub(crate) fn extract_gain_map(data: &[u8]) -> Option<GainMapInfo> {
     if data.len() < 4 {
         return None;
     }
@@ -415,7 +415,7 @@ fn parse_gain_map_xmp(xmp: &str, info: &mut GainMapInfo) {
 /// Apple semantic segmentation matte (e.g., sky, skin, hair, teeth).
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub struct SemanticMatte {
+pub(crate) struct SemanticMatte {
     /// URN type, e.g. `urn:com:apple:photo:2020:aux:semanticskymatte`.
     pub matte_type: String,
     /// Short type name extracted from URN (e.g., "semanticskymatte").
@@ -436,7 +436,7 @@ pub struct SemanticMatte {
 ///
 /// APPLEDNG SubIFDs may contain semantic data with tag 0xCD2E (AppleAuxType)
 /// containing a URN like `urn:com:apple:photo:2020:aux:semanticskymatte`.
-pub fn extract_semantic_mattes(file_data: &[u8]) -> Vec<SemanticMatte> {
+pub(crate) fn extract_semantic_mattes(file_data: &[u8]) -> Vec<SemanticMatte> {
     let Some(tiff) = TiffStructure::parse(file_data) else {
         return Vec::new();
     };
@@ -782,7 +782,7 @@ impl ProfileGainTableMap {
 
 /// Extract ProfileGainTableMap from an APPLEDNG file.
 ///
-/// The map is stored in SubIFD[0] (the raw image SubIFD) as tag 0xCD2D.
+/// The map is stored in SubIFD\[0\] (the raw image SubIFD) as tag 0xCD2D.
 /// Format: V1 — big-endian header + f32 gain table.
 pub fn extract_profile_gain_table_map(data: &[u8]) -> Option<ProfileGainTableMap> {
     let tiff = TiffStructure::parse(data)?;
@@ -807,9 +807,9 @@ pub fn extract_profile_gain_table_map(data: &[u8]) -> Option<ProfileGainTableMap
 
     // Input weights: 5 × f32
     let mut input_weights = [0.0f32; 5];
-    for i in 0..5 {
+    for (i, weight) in input_weights.iter_mut().enumerate() {
         let off = 44 + i * 4;
-        input_weights[i] = f32::from_be_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
+        *weight = f32::from_be_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
     }
 
     // Gain table: grid_rows × grid_cols × tonal_points × f32
@@ -850,7 +850,7 @@ pub fn extract_profile_gain_table_map(data: &[u8]) -> Option<ProfileGainTableMap
 /// Complete Apple-specific metadata extracted from an APPLEDNG or AMPF file.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
-pub struct AppleMetadata {
+pub(crate) struct AppleMetadata {
     /// Apple MakerNote data.
     pub makernote: Option<AppleMakerNote>,
     /// DNG profile data (APPLEDNG only).
@@ -881,7 +881,7 @@ pub struct AppleMetadata {
 /// For AMPF (JPEG) files, MakerNote is extracted via kamadak-exif.
 /// For APPLEDNG (TIFF) files, MakerNote is extracted via our own TIFF parser
 /// since kamadak-exif's TIFF codepath doesn't always expose it.
-pub fn extract_apple_metadata(data: &[u8]) -> Option<AppleMetadata> {
+pub(crate) fn extract_apple_metadata(data: &[u8]) -> Option<AppleMetadata> {
     let format = crate::classify::classify(data);
     if !format.is_apple() {
         return None;

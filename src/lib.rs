@@ -55,14 +55,19 @@ extern crate alloc;
 whereat::define_at_crate_info!();
 
 pub mod classify;
+#[allow(dead_code)]
 pub mod color;
+#[allow(dead_code)]
 pub mod decode;
 pub mod demosaic;
+#[allow(dead_code)]
 pub mod dng_render;
 mod error;
+#[allow(dead_code)]
 mod orient;
 mod simd;
-pub mod tiff_ifd;
+#[allow(dead_code)]
+pub(crate) mod tiff_ifd;
 
 #[cfg(feature = "rawler")]
 mod rawler_backend;
@@ -74,9 +79,11 @@ pub mod darktable;
 pub mod exif;
 
 #[cfg(feature = "xmp")]
+#[allow(dead_code)]
 pub mod xmp;
 
 #[cfg(feature = "apple")]
+#[allow(dead_code)]
 pub mod apple;
 
 #[cfg(feature = "zencodec")]
