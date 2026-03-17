@@ -18,6 +18,7 @@ use magetypes::simd::f32x8;
 ///
 /// All pixels share the same black/inv_range. This is the fast path for
 /// non-CFA data (cpp > 1) or when all CFA channels have identical levels.
+#[allow(dead_code)]
 pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = X64V3Token::summon() {
@@ -70,6 +71,7 @@ fn normalize_uniform_inner(
 /// Extract RGB from cpp-interleaved data (cpp >= 3).
 ///
 /// For cpp==3, this is a zero-copy clone. For cpp>3, drops extra channels.
+#[allow(dead_code)]
 pub fn extract_rgb_from_cpp(data: &[f32], pixel_count: usize, cpp: usize) -> Vec<f32> {
     if cpp == 3 {
         let len = pixel_count * 3;

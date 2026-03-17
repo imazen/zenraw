@@ -294,9 +294,9 @@ pub fn compute_camera_to_output_with_wb(
 
     // Bake WB: divide columns by neutral
     let mut wb_mat = raw_mat;
-    for i in 0..3 {
-        for j in 0..3 {
-            wb_mat[i][j] /= as_shot_neutral[j].max(1e-10);
+    for row in &mut wb_mat {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell /= as_shot_neutral[j].max(1e-10);
         }
     }
 
@@ -307,10 +307,10 @@ pub fn compute_camera_to_output_with_wb(
         return None;
     }
     let mut result = wb_mat;
-    for i in 0..3 {
+    for (i, row) in result.iter_mut().enumerate() {
         let row_scale = target / test[i].max(1e-10);
-        for j in 0..3 {
-            result[i][j] *= row_scale;
+        for cell in row.iter_mut() {
+            *cell *= row_scale;
         }
     }
 
@@ -409,7 +409,11 @@ pub struct DngPipeline {
     /// Image dimensions.
     pub width: u32,
     pub height: u32,
-    /// ProfileToneCurve LUT (4096 entries, maps [0,1]→[0,1]).
+    /// ProfileToneCurve from DNG camera profile.
+    #[cfg(feature = "ultrahdr")]
+    pub tone_curve: Option<ultrahdr_core::color::tonemap::ProfileToneCurve>,
+    /// ProfileToneCurve LUT (4097 entries, maps [0,1]→[0,1]).
+    #[cfg(not(feature = "ultrahdr"))]
     pub tone_curve: Option<Vec<f32>>,
     /// ProfileGainTableMap for Smart HDR.
     #[cfg(feature = "apple")]
@@ -538,18 +542,30 @@ impl DngPipeline {
 
     /// Set the ProfileToneCurve from raw 514-float data (257 x,y pairs).
     pub fn with_tone_curve(mut self, tc_data: &[f32]) -> Self {
-        let n_points = tc_data.len() / 2;
-        if n_points >= 2 {
-            let points: Vec<(f32, f32)> = (0..n_points)
-                .map(|i| (tc_data[i * 2], tc_data[i * 2 + 1]))
-                .collect();
-            let lut_size = 4096usize;
-            let mut lut = vec![0.0f32; lut_size + 1];
-            for i in 0..=lut_size {
-                let x = i as f32 / lut_size as f32;
-                lut[i] = interpolate_curve(&points, x);
+        #[cfg(feature = "ultrahdr")]
+        {
+            if let Some(curve) =
+                ultrahdr_core::color::tonemap::ProfileToneCurve::from_xy_pairs(tc_data)
+            {
+                self.tone_curve = Some(curve);
             }
-            self.tone_curve = Some(lut);
+        }
+        #[cfg(not(feature = "ultrahdr"))]
+        {
+            let n_points = tc_data.len() / 2;
+            if n_points >= 2 {
+                let points: Vec<(f32, f32)> = (0..n_points)
+                    .map(|i| (tc_data[i * 2], tc_data[i * 2 + 1]))
+                    .collect();
+                let lut_size = 4096usize;
+                let lut: Vec<f32> = (0..=lut_size)
+                    .map(|i| {
+                        let x = i as f32 / lut_size as f32;
+                        interpolate_curve(&points, x)
+                    })
+                    .collect();
+                self.tone_curve = Some(lut);
+            }
         }
         self
     }
@@ -608,6 +624,11 @@ impl DngPipeline {
         }
 
         // 4. ProfileToneCurve (applied per-channel in linear sRGB, per DNG spec)
+        #[cfg(feature = "ultrahdr")]
+        if let Some(ref curve) = self.tone_curve {
+            curve.apply_row_per_channel(&mut pixels, 3);
+        }
+        #[cfg(not(feature = "ultrahdr"))]
         if let Some(ref lut) = self.tone_curve {
             for v in pixels.iter_mut() {
                 *v = eval_lut(lut, *v);
@@ -658,22 +679,33 @@ impl DngPipeline {
         }
 
         // 4. Luminance-preserving tone curve
-        if let Some(ref lut) = self.tone_curve {
-            for i in 0..npix {
-                let base = i * 3;
-                let r = pixels[base];
-                let g = pixels[base + 1];
-                let b = pixels[base + 2];
-                let lum = (0.2126 * r + 0.7152 * g + 0.0722 * b).max(1e-10);
-                let mapped = eval_lut(lut, lum.min(1.0));
-                let ratio = mapped / lum;
-                pixels[base] = (r * ratio).min(1.0);
-                pixels[base + 1] = (g * ratio).min(1.0);
-                pixels[base + 2] = (b * ratio).min(1.0);
-            }
-        } else {
-            for v in pixels.iter_mut() {
-                *v = v.min(1.0);
+        {
+            let has_curve = self.tone_curve.is_some();
+            if has_curve {
+                #[cfg(feature = "ultrahdr")]
+                if let Some(ref curve) = self.tone_curve {
+                    const BT709_LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+                    curve.apply_row_lum_preserving(&mut pixels, 3, BT709_LUMA);
+                }
+                #[cfg(not(feature = "ultrahdr"))]
+                if let Some(ref lut) = self.tone_curve {
+                    for i in 0..npix {
+                        let base = i * 3;
+                        let r = pixels[base];
+                        let g = pixels[base + 1];
+                        let b = pixels[base + 2];
+                        let lum = (0.2126 * r + 0.7152 * g + 0.0722 * b).max(1e-10);
+                        let mapped = eval_lut(lut, lum.min(1.0));
+                        let ratio = mapped / lum;
+                        pixels[base] = (r * ratio).min(1.0);
+                        pixels[base + 1] = (g * ratio).min(1.0);
+                        pixels[base + 2] = (b * ratio).min(1.0);
+                    }
+                }
+            } else {
+                for v in pixels.iter_mut() {
+                    *v = v.min(1.0);
+                }
             }
         }
 
@@ -683,6 +715,7 @@ impl DngPipeline {
 }
 
 /// Evaluate a LUT with linear interpolation.
+#[cfg(not(feature = "ultrahdr"))]
 fn eval_lut(lut: &[f32], x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     let max_idx = (lut.len() - 1) as f32;
@@ -697,6 +730,7 @@ fn eval_lut(lut: &[f32], x: f32) -> f32 {
 }
 
 /// Linear interpolation on sorted (x, y) control points.
+#[cfg(not(feature = "ultrahdr"))]
 fn interpolate_curve(points: &[(f32, f32)], x: f32) -> f32 {
     if x <= points[0].0 {
         return points[0].1;
@@ -781,6 +815,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "ultrahdr"))]
     fn test_eval_lut_identity() {
         // Identity LUT: y = x
         let lut: Vec<f32> = (0..=256).map(|i| i as f32 / 256.0).collect();
@@ -790,6 +825,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "ultrahdr"))]
     fn test_eval_lut_clamp() {
         let lut = vec![0.0, 0.5, 1.0];
         assert_eq!(eval_lut(&lut, -0.5), 0.0);
@@ -797,6 +833,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "ultrahdr"))]
     fn test_interpolate_curve() {
         let pts = vec![(0.0, 0.0), (0.5, 0.3), (1.0, 1.0)];
         assert!((interpolate_curve(&pts, 0.0) - 0.0).abs() < 0.01);
@@ -1257,12 +1294,20 @@ mod tests {
             height: 1,
             tone_curve: Some({
                 // Gamma 0.5 curve (brightens)
-                (0..=4096)
+                let lut: Vec<f32> = (0..=4096)
                     .map(|i| {
                         let x = i as f32 / 4096.0;
                         x.powf(0.5)
                     })
-                    .collect()
+                    .collect();
+                #[cfg(feature = "ultrahdr")]
+                {
+                    ultrahdr_core::color::tonemap::ProfileToneCurve::from_lut(lut).unwrap()
+                }
+                #[cfg(not(feature = "ultrahdr"))]
+                {
+                    lut
+                }
             }),
             #[cfg(feature = "apple")]
             gain_table_map: None,

@@ -21,6 +21,7 @@ zencodec = { version = "0.1", path = "../zencodec", optional = true }
 archmage = { version = "0.9", default-features = false }
 magetypes = { version = "0.9", default-features = false }
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
+ultrahdr-core = { version = "0.2", path = "../ultrahdr/ultrahdr-core", default-features = false, features = ["transfer"], optional = true }
 
 # Metadata crates
 kamadak-exif = { version = "0.6", optional = true }
@@ -36,12 +37,13 @@ name = "decode_bench"
 harness = false
 
 [features]
-default = ["std", "rawloader"]
+default = ["std", "rawloader", "ultrahdr"]
 std = ["enough/std", "whereat/std"]
 rawloader = ["dep:rawloader"]
 rawler = ["dep:rawler", "std"]
 zencodec = ["dep:zencodec"]
 darktable = ["std"]
+ultrahdr = ["dep:ultrahdr-core"]
 exif = ["dep:kamadak-exif"]
 xmp = ["std"]
 apple = ["exif", "xmp"]
