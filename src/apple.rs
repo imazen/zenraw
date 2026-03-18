@@ -279,7 +279,7 @@ fn read_makernote_i32(data: &[u8], dtype: u16, byte_order: ByteOrder) -> Option<
 /// grayscale JPEG that encodes per-pixel HDR headroom.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub(crate) struct GainMapInfo {
+pub struct GainMapInfo {
     /// Raw JPEG bytes of the gain map image.
     pub jpeg_data: Vec<u8>,
     /// Gain map width in pixels.
@@ -316,7 +316,7 @@ pub(crate) struct GainMapInfo {
 ///
 /// For AMPF: scans the MPF structure in the JPEG to find the second image.
 /// For APPLEDNG: extracts the gain map from the embedded preview JPEG's MPF.
-pub(crate) fn extract_gain_map(data: &[u8]) -> Option<GainMapInfo> {
+pub fn extract_gain_map(data: &[u8]) -> Option<GainMapInfo> {
     if data.len() < 4 {
         return None;
     }
