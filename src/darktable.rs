@@ -273,6 +273,14 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             is_dng,
             orientation: 1,
             bit_depth: None, // darktable outputs processed pixels, not raw sensor data
+            wb_coeffs: [1.0, 1.0, 1.0, 1.0],
+            color_matrix: [[0.0; 3]; 4],
+            black_levels: [0.0; 4],
+            white_levels: [0.0; 4],
+            crop_rect: None,
+            active_area: None,
+            baseline_exposure: None,
+            sensor_layout: crate::decode::SensorLayout::Unknown,
         },
     })
 }

@@ -59,6 +59,15 @@ pub struct RawDecodeConfig {
     ///
     /// Default: `false` (apply WB + color matrix → sRGB linear output).
     pub skip_color_pipeline: bool,
+    /// Override white balance coefficients (RGB multipliers).
+    ///
+    /// When set, these multipliers replace the camera's as-shot WB
+    /// during the color pipeline. Only has effect when `skip_color_pipeline`
+    /// is false.
+    ///
+    /// Values are relative multipliers (e.g., `[1.0, 1.0, 1.0]` = no WB,
+    /// `[2.0, 1.0, 1.5]` = boost red, slight blue).
+    pub wb_override: Option<[f32; 3]>,
 }
 
 impl Default for RawDecodeConfig {
@@ -70,6 +79,7 @@ impl Default for RawDecodeConfig {
             apply_crop: true,
             apply_orientation: true,
             skip_color_pipeline: false,
+            wb_override: None,
         }
     }
 }
@@ -120,6 +130,16 @@ impl RawDecodeConfig {
         self.apply_orientation = apply;
         self
     }
+
+    /// Override white balance with custom RGB multipliers.
+    ///
+    /// Replaces the camera's as-shot WB during color pipeline processing.
+    /// Only effective when `skip_color_pipeline` is false.
+    #[must_use]
+    pub fn with_wb(mut self, rgb: [f32; 3]) -> Self {
+        self.wb_override = Some(rgb);
+        self
+    }
 }
 
 /// Output from RAW/DNG decoding.
@@ -130,6 +150,21 @@ pub struct RawDecodeOutput {
     pub pixels: PixelBuffer,
     /// Decoded image metadata.
     pub info: RawInfo,
+}
+
+/// Sensor data layout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SensorLayout {
+    /// Standard 2×2 Bayer CFA (RGGB, BGGR, GRBG, GBRG).
+    #[default]
+    Bayer,
+    /// Fujifilm X-Trans 6×6 CFA.
+    XTrans,
+    /// Already demosaiced linear RGB (some DNGs, Apple ProRAW).
+    LinearRaw,
+    /// Unknown or unsupported layout.
+    Unknown,
 }
 
 /// Metadata extracted from RAW/DNG files.
@@ -156,6 +191,28 @@ pub struct RawInfo {
     pub orientation: u16,
     /// Sensor bit depth (e.g., 10, 12, 14), estimated from white level.
     pub bit_depth: Option<u8>,
+
+    // ── Raw pipeline metadata ──
+    /// White balance coefficients as-shot (RGBE, 4 channels).
+    /// These are the multipliers the camera recorded for the scene illuminant.
+    pub wb_coeffs: [f32; 4],
+    /// Camera→XYZ color matrix (4×3, row-major).
+    /// Maps camera RGB to CIE XYZ. Used with WB to produce sRGB output.
+    pub color_matrix: [[f32; 3]; 4],
+    /// Black level per channel (RGBE order, sensor DN units).
+    pub black_levels: [f32; 4],
+    /// White level per channel (RGBE order, sensor DN units).
+    pub white_levels: [f32; 4],
+    /// Crop rectangle from camera metadata: `[top, right, bottom, left]` in pixels.
+    /// `None` if the camera provided no crop.
+    pub crop_rect: Option<[u32; 4]>,
+    /// Active sensor area (usable region before aesthetic crop).
+    /// Format: `[x, y, width, height]`. `None` if not available.
+    pub active_area: Option<[u32; 4]>,
+    /// DNG BaselineExposure in EV (how much to scale for correct brightness).
+    pub baseline_exposure: Option<f64>,
+    /// Sensor data layout (Bayer, X-Trans, LinearRaw, etc.).
+    pub sensor_layout: SensorLayout,
 }
 
 /// Probe a RAW/DNG file for metadata without decoding pixels.
@@ -170,6 +227,17 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 
     let is_dng = is_dng_data(data);
 
+    let crop_rect = if raw.crops.iter().any(|&c| c > 0) {
+        Some([
+            raw.crops[0] as u32,
+            raw.crops[1] as u32,
+            raw.crops[2] as u32,
+            raw.crops[3] as u32,
+        ])
+    } else {
+        None
+    };
+
     Ok(RawInfo {
         width: raw.width as u32,
         height: raw.height as u32,
@@ -181,6 +249,28 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         is_dng,
         orientation: orientation_to_u16(&raw.orientation),
         bit_depth: Some(bits_from_whitelevel(raw.whitelevels[0] as u32)),
+        wb_coeffs: raw.wb_coeffs,
+        color_matrix: raw.xyz_to_cam,
+        black_levels: [
+            raw.blacklevels[0] as f32,
+            raw.blacklevels[1] as f32,
+            raw.blacklevels[2] as f32,
+            raw.blacklevels[3] as f32,
+        ],
+        white_levels: [
+            raw.whitelevels[0] as f32,
+            raw.whitelevels[1] as f32,
+            raw.whitelevels[2] as f32,
+            raw.whitelevels[3] as f32,
+        ],
+        crop_rect,
+        active_area: None, // rawloader doesn't distinguish active_area from crop
+        baseline_exposure: None, // rawloader doesn't extract this
+        sensor_layout: if raw.cpp > 1 {
+            SensorLayout::LinearRaw
+        } else {
+            SensorLayout::Bayer
+        },
     })
 }
 
@@ -236,7 +326,17 @@ pub(crate) fn decode(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 4: Color pipeline (WB + camera→sRGB)
-    color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+    let wb = if let Some(override_wb) = config.wb_override {
+        [
+            override_wb[0],
+            override_wb[1],
+            override_wb[2],
+            override_wb[1],
+        ]
+    } else {
+        raw.wb_coeffs
+    };
+    color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -263,6 +363,17 @@ pub(crate) fn decode(
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
+    let crop_rect = if raw.crops.iter().any(|&c| c > 0) {
+        Some([
+            raw.crops[0] as u32,
+            raw.crops[1] as u32,
+            raw.crops[2] as u32,
+            raw.crops[3] as u32,
+        ])
+    } else {
+        None
+    };
+
     // Step 7: Convert to output format
     let info = RawInfo {
         width: final_w as u32,
@@ -275,6 +386,24 @@ pub(crate) fn decode(
         is_dng,
         orientation: final_orient,
         bit_depth: Some(bits_from_whitelevel(raw.whitelevels[0] as u32)),
+        wb_coeffs: raw.wb_coeffs,
+        color_matrix: raw.xyz_to_cam,
+        black_levels: [
+            raw.blacklevels[0] as f32,
+            raw.blacklevels[1] as f32,
+            raw.blacklevels[2] as f32,
+            raw.blacklevels[3] as f32,
+        ],
+        white_levels: [
+            raw.whitelevels[0] as f32,
+            raw.whitelevels[1] as f32,
+            raw.whitelevels[2] as f32,
+            raw.whitelevels[3] as f32,
+        ],
+        crop_rect,
+        active_area: None,
+        baseline_exposure: None,
+        sensor_layout: SensorLayout::Bayer,
     };
 
     if config.apply_gamma {
@@ -342,7 +471,17 @@ fn decode_non_bayer(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Apply color pipeline
-    color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+    let wb = if let Some(override_wb) = config.wb_override {
+        [
+            override_wb[0],
+            override_wb[1],
+            override_wb[2],
+            override_wb[1],
+        ]
+    } else {
+        raw.wb_coeffs
+    };
+    color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -364,6 +503,17 @@ fn decode_non_bayer(
         (cropped_rgb, out_w, out_h, raw_orient)
     };
 
+    let crop_rect = if raw.crops.iter().any(|&c| c > 0) {
+        Some([
+            raw.crops[0] as u32,
+            raw.crops[1] as u32,
+            raw.crops[2] as u32,
+            raw.crops[3] as u32,
+        ])
+    } else {
+        None
+    };
+
     let info = RawInfo {
         width: final_w as u32,
         height: final_h as u32,
@@ -375,6 +525,24 @@ fn decode_non_bayer(
         is_dng,
         orientation: final_orient,
         bit_depth: Some(bits_from_whitelevel(raw.whitelevels[0] as u32)),
+        wb_coeffs: raw.wb_coeffs,
+        color_matrix: raw.xyz_to_cam,
+        black_levels: [
+            raw.blacklevels[0] as f32,
+            raw.blacklevels[1] as f32,
+            raw.blacklevels[2] as f32,
+            raw.blacklevels[3] as f32,
+        ],
+        white_levels: [
+            raw.whitelevels[0] as f32,
+            raw.whitelevels[1] as f32,
+            raw.whitelevels[2] as f32,
+            raw.whitelevels[3] as f32,
+        ],
+        crop_rect,
+        active_area: None,
+        baseline_exposure: None,
+        sensor_layout: SensorLayout::LinearRaw,
     };
 
     if config.apply_gamma {

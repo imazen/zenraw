@@ -92,7 +92,7 @@ mod zencodec_impl;
 pub use zencodec_impl::{DNG_FORMAT, RAW_FORMAT, RawDecoderConfig};
 
 pub use classify::{FileFormat, classify};
-pub use decode::{RawDecodeConfig, RawDecodeOutput, RawInfo};
+pub use decode::{RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 pub use demosaic::DemosaicMethod;
 pub use error::RawError;
 

@@ -17,7 +17,7 @@ use whereat::at;
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
 use crate::color;
-use crate::decode::{RawDecodeConfig, RawDecodeOutput, RawInfo};
+use crate::decode::{RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
 use crate::error::{IntoBufferError, RawError, Result};
 
@@ -42,6 +42,35 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         (raw.width as u32, raw.height as u32)
     };
 
+    let black = raw.blacklevel.as_bayer_array();
+    let white = raw.whitelevel.as_bayer_array();
+
+    let crop_rect = raw.crop_area.as_ref().map(|r| {
+        [
+            r.p.y as u32,
+            (raw.width as u32).saturating_sub(r.p.x as u32 + r.d.w as u32),
+            (raw.height as u32).saturating_sub(r.p.y as u32 + r.d.h as u32),
+            r.p.x as u32,
+        ]
+    });
+    let active_area = raw
+        .active_area
+        .as_ref()
+        .map(|r| [r.p.x as u32, r.p.y as u32, r.d.w as u32, r.d.h as u32]);
+
+    let sensor_layout = match &raw.photometric {
+        RawPhotometricInterpretation::Cfa(cfg) => {
+            let s = cfg.cfa.to_string();
+            if s.len() > 4 {
+                SensorLayout::XTrans
+            } else {
+                SensorLayout::Bayer
+            }
+        }
+        RawPhotometricInterpretation::LinearRaw => SensorLayout::LinearRaw,
+        _ => SensorLayout::Unknown,
+    };
+
     Ok(RawInfo {
         width,
         height,
@@ -52,9 +81,15 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         cfa_pattern,
         is_dng,
         orientation: orientation_to_u16(&raw.orientation),
-        bit_depth: Some(crate::decode::bits_from_whitelevel(
-            raw.whitelevel.as_bayer_array()[0] as u32,
-        )),
+        bit_depth: Some(crate::decode::bits_from_whitelevel(white[0] as u32)),
+        wb_coeffs: raw.wb_coeffs,
+        color_matrix: raw.xyz_to_cam,
+        black_levels: black,
+        white_levels: white,
+        crop_rect,
+        active_area,
+        baseline_exposure: None,
+        sensor_layout,
     })
 }
 
@@ -132,7 +167,17 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     // Step 4: Color pipeline (WB + camera→sRGB) — skip if user wants camera-space output
     if !config.skip_color_pipeline {
-        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+        let wb = if let Some(override_wb) = config.wb_override {
+            [
+                override_wb[0],
+                override_wb[1],
+                override_wb[2],
+                override_wb[1],
+            ]
+        } else {
+            raw.wb_coeffs
+        };
+        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
     }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -329,7 +374,17 @@ fn decode_non_bayer(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     if !config.skip_color_pipeline {
-        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, raw.xyz_to_cam);
+        let wb = if let Some(override_wb) = config.wb_override {
+            [
+                override_wb[0],
+                override_wb[1],
+                override_wb[2],
+                override_wb[1],
+            ]
+        } else {
+            raw.wb_coeffs
+        };
+        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
     }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -374,6 +429,34 @@ fn build_output(
     orientation: u16,
 ) -> Result<RawDecodeOutput> {
     let cfa_pattern = extract_cfa_pattern(raw);
+    let black = raw.blacklevel.as_bayer_array();
+    let white = raw.whitelevel.as_bayer_array();
+
+    let crop_rect = raw.crop_area.as_ref().map(|r| {
+        [
+            r.p.y as u32,
+            (raw.width as u32).saturating_sub(r.p.x as u32 + r.d.w as u32),
+            (raw.height as u32).saturating_sub(r.p.y as u32 + r.d.h as u32),
+            r.p.x as u32,
+        ]
+    });
+    let active_area = raw
+        .active_area
+        .as_ref()
+        .map(|r| [r.p.x as u32, r.p.y as u32, r.d.w as u32, r.d.h as u32]);
+
+    let sensor_layout = match &raw.photometric {
+        RawPhotometricInterpretation::Cfa(cfg) => {
+            let s = cfg.cfa.to_string();
+            if s.len() > 4 {
+                SensorLayout::XTrans
+            } else {
+                SensorLayout::Bayer
+            }
+        }
+        RawPhotometricInterpretation::LinearRaw => SensorLayout::LinearRaw,
+        _ => SensorLayout::Unknown,
+    };
 
     let info = RawInfo {
         width: width as u32,
@@ -385,9 +468,15 @@ fn build_output(
         cfa_pattern,
         is_dng,
         orientation,
-        bit_depth: Some(crate::decode::bits_from_whitelevel(
-            raw.whitelevel.as_bayer_array()[0] as u32,
-        )),
+        bit_depth: Some(crate::decode::bits_from_whitelevel(white[0] as u32)),
+        wb_coeffs: raw.wb_coeffs,
+        color_matrix: raw.xyz_to_cam,
+        black_levels: black,
+        white_levels: white,
+        crop_rect,
+        active_area,
+        baseline_exposure: None,
+        sensor_layout,
     };
 
     if config.apply_gamma {
