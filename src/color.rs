@@ -89,6 +89,11 @@ fn compute_cam_to_srgb_matrix(wb_coeffs: [f32; 4], xyz_to_cam: [[f32; 3]; 4]) ->
     // cam_to_srgb = xyz_to_srgb × cam_to_xyz
     let cam_to_srgb = mat_mul(xyz_to_srgb, cam_to_xyz);
 
+    // Normalize cam_to_srgb rows to sum to 1.
+    // This ensures that equal-channel input (a neutral) maps to equal
+    // sRGB output, so WB column-multiply produces correct neutrals.
+    let cam_to_srgb = normalize_rows(cam_to_srgb);
+
     // Apply white balance: multiply each column by the WB factor
     [
         [

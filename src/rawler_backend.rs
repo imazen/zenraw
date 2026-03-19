@@ -16,10 +16,45 @@ use rawler::rawsource::RawSource;
 use whereat::at;
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
+use rawler::imgop::xyz::Illuminant;
+
 use crate::color;
 use crate::decode::{RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
 use crate::error::{IntoBufferError, RawError, Result};
+
+/// Extract xyz_to_cam matrix from rawler's color_matrix HashMap.
+///
+/// rawler's `xyz_to_cam` field is deprecated (all zeros). The actual
+/// matrix lives in `color_matrix: HashMap<Illuminant, FlatColorMatrix>`.
+/// Prefers D65, falls back to D50, then any available illuminant.
+fn extract_xyz_to_cam(raw: &rawler::RawImage) -> [[f32; 3]; 4] {
+    let mat = raw
+        .color_matrix
+        .get(&Illuminant::D65)
+        .or_else(|| raw.color_matrix.get(&Illuminant::D50))
+        .or_else(|| raw.color_matrix.values().next());
+
+    if let Some(flat) = mat.filter(|f| f.len() >= 9) {
+        return [
+            [flat[0], flat[1], flat[2]],
+            [flat[3], flat[4], flat[5]],
+            [flat[6], flat[7], flat[8]],
+            [0.0, 0.0, 0.0],
+        ];
+    }
+    // Fallback: check deprecated field
+    if raw.xyz_to_cam.iter().any(|r| r.iter().any(|&v| v != 0.0)) {
+        return raw.xyz_to_cam;
+    }
+    // No matrix available — identity-ish fallback
+    [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+    ]
+}
 
 /// Probe a RAW/DNG file for metadata without decoding pixels.
 pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
@@ -42,6 +77,7 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         (raw.width as u32, raw.height as u32)
     };
 
+    let xyz_to_cam = extract_xyz_to_cam(&raw);
     let black = raw.blacklevel.as_bayer_array();
     let white = raw.whitelevel.as_bayer_array();
 
@@ -83,7 +119,7 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         orientation: orientation_to_u16(&raw.orientation),
         bit_depth: Some(crate::decode::bits_from_whitelevel(white[0] as u32)),
         wb_coeffs: raw.wb_coeffs,
-        color_matrix: raw.xyz_to_cam,
+        color_matrix: xyz_to_cam,
         black_levels: black,
         white_levels: white,
         crop_rect,
@@ -103,6 +139,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     let raw =
         rawler::decode(&source, &params).map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
 
+    let xyz_to_cam = extract_xyz_to_cam(&raw);
     let width = raw.width;
     let height = raw.height;
 
@@ -124,7 +161,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     // For non-Bayer data (cpp > 1), skip demosaicing
     if raw.cpp > 1 {
-        return decode_non_bayer(raw, normalized, config, stop, data);
+        return decode_non_bayer(raw, normalized, config, stop, data, xyz_to_cam);
     }
 
     // Step 3: Demosaic — extract CFA
@@ -177,7 +214,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
         } else {
             raw.wb_coeffs
         };
-        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
+        color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam);
     }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -212,6 +249,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
         final_h,
         config,
         &raw,
+        xyz_to_cam,
         is_dng,
         final_orient,
     )
@@ -364,6 +402,7 @@ fn decode_non_bayer(
     config: &RawDecodeConfig,
     stop: &dyn Stop,
     original_data: &[u8],
+    xyz_to_cam: [[f32; 3]; 4],
 ) -> Result<RawDecodeOutput> {
     let width = raw.width;
     let height = raw.height;
@@ -384,7 +423,7 @@ fn decode_non_bayer(
         } else {
             raw.wb_coeffs
         };
-        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
+        color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam);
     }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -413,18 +452,21 @@ fn decode_non_bayer(
         final_h,
         config,
         &raw,
+        xyz_to_cam,
         is_dng,
         final_orient,
     )
 }
 
 /// Build final output from processed RGB data.
+#[allow(clippy::too_many_arguments)]
 fn build_output(
     rgb: Vec<f32>,
     width: usize,
     height: usize,
     config: &RawDecodeConfig,
     raw: &rawler::RawImage,
+    xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
 ) -> Result<RawDecodeOutput> {
@@ -470,7 +512,7 @@ fn build_output(
         orientation,
         bit_depth: Some(crate::decode::bits_from_whitelevel(white[0] as u32)),
         wb_coeffs: raw.wb_coeffs,
-        color_matrix: raw.xyz_to_cam,
+        color_matrix: xyz_to_cam,
         black_levels: black,
         white_levels: white,
         crop_rect,
