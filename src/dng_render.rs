@@ -420,45 +420,49 @@ pub struct DngPipeline {
     pub gain_table_map: Option<crate::apple::ProfileGainTableMap>,
 }
 
-/// Default filmic tone curve for RAW files without an embedded profile.
+/// Log-logistic sigmoid function.
 ///
-/// A simple S-curve that lifts shadows, compresses highlights, and adds
-/// midtone contrast — similar to what camera firmware applies to JPEGs.
-/// Parameters tuned to match typical camera-embedded tone curves.
+/// The generalized logistic: `M * ((fog + x)^P / (E + (fog + x)^P))^Q`
+/// A standard family of S-curves used in film sensitometry and tone mapping.
+#[inline]
+pub(crate) fn loglogistic_sigmoid(
+    x: f32,
+    magnitude: f32,
+    paper_exp: f32,
+    film_fog: f32,
+    film_power: f32,
+    paper_power: f32,
+) -> f32 {
+    let c = x.max(0.0);
+    let film_response = (film_fog + c).powf(film_power);
+    let result = magnitude * (film_response / (paper_exp + film_response)).powf(paper_power);
+    if result.is_nan() { magnitude } else { result }
+}
+
+/// Default scene-referred tone curve for RAW files without an embedded profile.
+///
+/// Uses the log-logistic sigmoid at contrast=1.5 (medium contrast, symmetric).
+/// Middle grey (0.1845 linear) maps to itself, highlights roll off smoothly
+/// (1.0 linear → 0.74, 4.0 → 0.96), shadows taper to near-black.
+///
+/// A 1.85x exposure boost compensates for the fact that well-exposed RAW
+/// data after WB + color matrix typically peaks around 0.5.
 pub(crate) fn default_filmic_tone_curve() -> Vec<f32> {
+    // Parameters for the log-logistic sigmoid:
+    //   y = M * ((fog + x)^P / (E + (fog + x)^P))^Q
+    // Solved for: middle_grey (0.1845) maps to itself at contrast 1.5.
+    let magnitude = 1.0f32;
+    let paper_exp = 0.3543554f32;
+    let film_fog = 0.0014264f32;
+    let film_power = 1.5f32;
+    let paper_power = 1.0f32;
+    let exposure_boost = 1.85f32;
+
     let lut_size = 4096usize;
     (0..=lut_size)
         .map(|i| {
-            let x = i as f32 / lut_size as f32;
-            // Scene-referred filmic S-curve matching darktable's sigmoid module
-            // at contrast ~1.5. Applied in linear space before sRGB gamma.
-            //
-            // The curve has three regions:
-            // - Toe (shadows): compressed, deepens blacks
-            // - Midtones: steeper slope for contrast
-            // - Shoulder (highlights): soft rolloff to avoid clipping
-            //
-            // Based on the generalized filmic curve:
-            //   y = (x * (A*x + C*B) + D*E) / (x * (A*x + B) + D*F) - E/F
-            // Simplified Hable/Uncharted2 variant tuned by eye against darktable.
-
-            // Exposure boost (~1 stop) to compensate for linear data being dark
-            let x = x * 2.0;
-
-            // Filmic curve parameters
-            let a = 0.22f32; // shoulder strength
-            let b = 0.30; // linear strength
-            let c = 0.10; // linear angle
-            let d = 0.20; // toe strength
-            let e = 0.01; // toe numerator
-            let f = 0.30; // toe denominator
-
-            let curve = |t: f32| -> f32 {
-                ((t * (a * t + c * b) + d * e) / (t * (a * t + b) + d * f)) - e / f
-            };
-
-            let white = 4.0f32; // linear white point
-            (curve(x) / curve(white)).clamp(0.0, 1.0)
+            let x = (i as f32 / lut_size as f32) * exposure_boost;
+            loglogistic_sigmoid(x, magnitude, paper_exp, film_fog, film_power, paper_power)
         })
         .collect()
 }
