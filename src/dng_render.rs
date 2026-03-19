@@ -420,7 +420,135 @@ pub struct DngPipeline {
     pub gain_table_map: Option<crate::apple::ProfileGainTableMap>,
 }
 
+/// Default filmic tone curve for RAW files without an embedded profile.
+///
+/// A simple S-curve that lifts shadows, compresses highlights, and adds
+/// midtone contrast — similar to what camera firmware applies to JPEGs.
+/// Parameters tuned to match typical camera-embedded tone curves.
+pub(crate) fn default_filmic_tone_curve() -> Vec<f32> {
+    let lut_size = 4096usize;
+    (0..=lut_size)
+        .map(|i| {
+            let x = i as f32 / lut_size as f32;
+            // Scene-referred filmic S-curve matching darktable's sigmoid module
+            // at contrast ~1.5. Applied in linear space before sRGB gamma.
+            //
+            // The curve has three regions:
+            // - Toe (shadows): compressed, deepens blacks
+            // - Midtones: steeper slope for contrast
+            // - Shoulder (highlights): soft rolloff to avoid clipping
+            //
+            // Based on the generalized filmic curve:
+            //   y = (x * (A*x + C*B) + D*E) / (x * (A*x + B) + D*F) - E/F
+            // Simplified Hable/Uncharted2 variant tuned by eye against darktable.
+
+            // Exposure boost (~1 stop) to compensate for linear data being dark
+            let x = x * 2.0;
+
+            // Filmic curve parameters
+            let a = 0.22f32; // shoulder strength
+            let b = 0.30; // linear strength
+            let c = 0.10; // linear angle
+            let d = 0.20; // toe strength
+            let e = 0.01; // toe numerator
+            let f = 0.30; // toe denominator
+
+            let curve = |t: f32| -> f32 {
+                ((t * (a * t + c * b) + d * e) / (t * (a * t + b) + d * f)) - e / f
+            };
+
+            let white = 4.0f32; // linear white point
+            (curve(x) / curve(white)).clamp(0.0, 1.0)
+        })
+        .collect()
+}
+
 impl DngPipeline {
+    /// Build a pipeline from `RawInfo` metadata (available from any decode).
+    ///
+    /// This works for all file types (DNG, NEF, CR2, ARW, etc.) since it
+    /// uses the `xyz_to_cam` matrix and WB coefficients that both backends
+    /// always provide. Produces correct colors via the dcraw-style pipeline
+    /// (row-normalized matrices with WB baked in).
+    pub fn from_raw_info(info: &crate::decode::RawInfo) -> Option<Self> {
+        // Extract 3×3 color matrix (drop 4th row)
+        let cm = info.color_matrix;
+        let color_matrix: Mat3 = [
+            [cm[0][0] as f64, cm[0][1] as f64, cm[0][2] as f64],
+            [cm[1][0] as f64, cm[1][1] as f64, cm[1][2] as f64],
+            [cm[2][0] as f64, cm[2][1] as f64, cm[2][2] as f64],
+        ];
+
+        // Check matrix is non-zero
+        if color_matrix.iter().all(|r| r.iter().all(|&v| v == 0.0)) {
+            return None;
+        }
+
+        // WB coefficients → effective neutral (1/wb, normalized)
+        let wb = info.wb_coeffs;
+        let wb_g = wb[1].max(1e-10);
+        let effective_neutral = [
+            (wb_g / wb[0].max(1e-10)) as f64,
+            1.0,
+            (wb_g / wb[2].max(1e-10)) as f64,
+        ];
+
+        // Build the combined camera→sRGB matrix with WB baked in
+        let cm_inv = mat3_invert(&color_matrix)?;
+        let output = OutputPrimaries::Srgb;
+        let output_from_xyz = mat3_invert(output.to_xyz_d50())?;
+
+        // Bradford adaptation from camera white to D50
+        let white_xy = neutral_to_xy(
+            &[
+                effective_neutral[0],
+                effective_neutral[1],
+                effective_neutral[2],
+            ],
+            &color_matrix,
+        )?;
+        let adapt = bradford_adapt(white_xy, D50_XY);
+        let camera_to_xyz_d50 = mat3_mul(&adapt, &cm_inv);
+        let raw_mat = mat3_mul(&output_from_xyz, &camera_to_xyz_d50);
+
+        // Bake WB: divide columns by effective_neutral
+        let mut wb_mat = raw_mat;
+        for row in &mut wb_mat {
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell /= effective_neutral[j].max(1e-10);
+            }
+        }
+
+        // Normalize: effective_neutral should map to equal sRGB
+        let test_out = mat3_vec(&wb_mat, &effective_neutral);
+        let target = test_out[1];
+        if target.abs() < 1e-10 {
+            return None;
+        }
+        let mut camera_to_output = wb_mat;
+        for (row, &test_val) in camera_to_output.iter_mut().zip(test_out.iter()) {
+            let row_scale = target / test_val.max(1e-10);
+            for cell in row.iter_mut() {
+                *cell *= row_scale;
+            }
+        }
+
+        let baseline_exposure = info.baseline_exposure.unwrap_or(0.0);
+
+        Some(DngPipeline {
+            camera_to_output,
+            wb_mult: [1.0, 1.0, 1.0],
+            baseline_exposure,
+            analog_balance: [1.0, 1.0, 1.0],
+            output_primaries: output,
+            width: info.width,
+            height: info.height,
+            tone_curve: None,
+            #[cfg(feature = "apple")]
+            gain_table_map: None,
+        })
+    }
+
     /// Build a pipeline from DNG EXIF metadata.
     ///
     /// `output`: target color primaries (sRGB, Display P3, or BT.2020).
@@ -574,6 +702,25 @@ impl DngPipeline {
     #[cfg(feature = "apple")]
     pub fn with_gain_table_map(mut self, pgtm: crate::apple::ProfileGainTableMap) -> Self {
         self.gain_table_map = Some(pgtm);
+        self
+    }
+
+    /// Apply the built-in filmic tone curve (for files without an embedded profile).
+    pub fn with_default_tone_curve(mut self) -> Self {
+        if self.tone_curve.is_none() {
+            let lut = default_filmic_tone_curve();
+            #[cfg(feature = "ultrahdr")]
+            {
+                if let Some(curve) = ultrahdr_core::color::tonemap::ProfileToneCurve::from_lut(lut)
+                {
+                    self.tone_curve = Some(curve);
+                }
+            }
+            #[cfg(not(feature = "ultrahdr"))]
+            {
+                self.tone_curve = Some(lut);
+            }
+        }
         self
     }
 

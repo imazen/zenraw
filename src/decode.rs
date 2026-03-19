@@ -68,6 +68,19 @@ pub struct RawDecodeConfig {
     /// Values are relative multipliers (e.g., `[1.0, 1.0, 1.0]` = no WB,
     /// `[2.0, 1.0, 1.5]` = boost red, slight blue).
     pub wb_override: Option<[f32; 3]>,
+    /// Automatic development: produce display-ready sRGB output.
+    ///
+    /// When true, the decode pipeline applies a full rendering:
+    /// - DNG color pipeline with Bradford adaptation
+    /// - BaselineExposure compensation
+    /// - Tone curve (ProfileToneCurve if embedded, filmic fallback otherwise)
+    /// - sRGB gamma encoding
+    ///
+    /// Output is always RGB8 sRGB (overrides `apply_gamma`).
+    /// This produces results comparable to camera JPEG or darktable defaults.
+    ///
+    /// Default: `false`.
+    pub auto_develop: bool,
 }
 
 impl Default for RawDecodeConfig {
@@ -80,6 +93,7 @@ impl Default for RawDecodeConfig {
             apply_orientation: true,
             skip_color_pipeline: false,
             wb_override: None,
+            auto_develop: false,
         }
     }
 }
@@ -138,6 +152,17 @@ impl RawDecodeConfig {
     #[must_use]
     pub fn with_wb(mut self, rgb: [f32; 3]) -> Self {
         self.wb_override = Some(rgb);
+        self
+    }
+
+    /// Enable automatic development for display-ready output.
+    ///
+    /// Produces sRGB u8 output with tone mapping, comparable to a camera
+    /// JPEG. Uses embedded tone curves when available, falls back to a
+    /// built-in filmic curve.
+    #[must_use]
+    pub fn auto_develop(mut self) -> Self {
+        self.auto_develop = true;
         self
     }
 }

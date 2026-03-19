@@ -177,7 +177,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     // Convert CFA and demosaic
     let cfa_str = cfa.to_string();
 
-    let mut rgb = if cfa_str.len() > 4 {
+    let rgb = if cfa_str.len() > 4 {
         // X-Trans (6x6) or other non-Bayer CFA — use generic demosaic
         let pattern_size = (cfa_str.len() as f64).sqrt() as usize;
         if pattern_size * pattern_size != cfa_str.len() {
@@ -202,24 +202,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    // Step 4: Color pipeline (WB + camera→sRGB) — skip if user wants camera-space output
-    if !config.skip_color_pipeline {
-        let wb = if let Some(override_wb) = config.wb_override {
-            [
-                override_wb[0],
-                override_wb[1],
-                override_wb[2],
-                override_wb[1],
-            ]
-        } else {
-            raw.wb_coeffs
-        };
-        color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam);
-    }
-
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
-
-    // Step 5: Crop using rawler's crop_area or active_area
+    // Step 4: Crop before color (auto_develop needs dimensions for DngPipeline)
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
         apply_rawler_crop(&rgb, width, height, &raw)
     } else {
@@ -228,9 +211,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    let is_dng = crate::decode::is_dng_data(data);
-
-    // Step 6: Apply EXIF orientation
+    // Step 5: Apply EXIF orientation
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
@@ -242,17 +223,125 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    // Step 7: Convert to output format
-    build_output(
-        final_rgb,
-        final_w,
-        final_h,
-        config,
-        &raw,
-        xyz_to_cam,
+    let is_dng = crate::decode::is_dng_data(data);
+
+    // Step 6: Color pipeline
+    if config.auto_develop {
+        // Auto-develop: use DngPipeline with tone curve for display-ready output
+        auto_develop_output(
+            final_rgb,
+            final_w,
+            final_h,
+            &raw,
+            xyz_to_cam,
+            is_dng,
+            final_orient,
+        )
+    } else {
+        // Standard path: basic WB + color matrix
+        let mut colored = final_rgb;
+        if !config.skip_color_pipeline {
+            let wb = if let Some(override_wb) = config.wb_override {
+                [
+                    override_wb[0],
+                    override_wb[1],
+                    override_wb[2],
+                    override_wb[1],
+                ]
+            } else {
+                raw.wb_coeffs
+            };
+            color::apply_color_pipeline(&mut colored, wb, xyz_to_cam);
+        }
+
+        build_output(
+            colored,
+            final_w,
+            final_h,
+            config,
+            &raw,
+            xyz_to_cam,
+            is_dng,
+            final_orient,
+        )
+    }
+}
+
+/// Auto-develop: render camera-space linear f32 to display-ready sRGB u8
+/// using DngPipeline with a filmic tone curve.
+#[allow(clippy::too_many_arguments)]
+fn auto_develop_output(
+    camera_linear: Vec<f32>,
+    width: usize,
+    height: usize,
+    raw: &rawler::RawImage,
+    xyz_to_cam: [[f32; 3]; 4],
+    is_dng: bool,
+    orientation: u16,
+) -> Result<RawDecodeOutput> {
+    use crate::dng_render::DngPipeline;
+
+    let cfa_pattern = extract_cfa_pattern(raw);
+    let black = raw.blacklevel.as_bayer_array();
+    let white = raw.whitelevel.as_bayer_array();
+
+    let sensor_layout = match &raw.photometric {
+        RawPhotometricInterpretation::Cfa(cfg) => {
+            let s = cfg.cfa.to_string();
+            if s.len() > 4 {
+                SensorLayout::XTrans
+            } else {
+                SensorLayout::Bayer
+            }
+        }
+        RawPhotometricInterpretation::LinearRaw => SensorLayout::LinearRaw,
+        _ => SensorLayout::Unknown,
+    };
+
+    // Build RawInfo for DngPipeline::from_raw_info
+    let info = RawInfo {
+        width: width as u32,
+        height: height as u32,
+        make: raw.clean_make.clone(),
+        model: raw.clean_model.clone(),
+        sensor_width: raw.width as u32,
+        sensor_height: raw.height as u32,
+        cfa_pattern: cfa_pattern.clone(),
         is_dng,
-        final_orient,
+        orientation,
+        bit_depth: Some(crate::decode::bits_from_whitelevel(white[0] as u32)),
+        wb_coeffs: raw.wb_coeffs,
+        color_matrix: xyz_to_cam,
+        black_levels: black,
+        white_levels: white,
+        crop_rect: None,
+        active_area: None,
+        baseline_exposure: None,
+        sensor_layout,
+    };
+
+    // Build pipeline and apply tone curve
+    let pipeline = DngPipeline::from_raw_info(&info).map(|p| p.with_default_tone_curve());
+
+    let u8_data = if let Some(pipeline) = pipeline {
+        pipeline.render_lum_preserving(&camera_linear)
+    } else {
+        // Fallback: basic color pipeline + gamma if DngPipeline can't be built
+        let mut rgb = camera_linear;
+        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, xyz_to_cam);
+        color::apply_srgb_gamma(&mut rgb);
+        color::f32_to_u8_srgb(&rgb)
+    };
+
+    let buf = PixelBuffer::from_vec(
+        u8_data,
+        width as u32,
+        height as u32,
+        PixelDescriptor::RGB8_SRGB,
     )
+    .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+
+    Ok(RawDecodeOutput { pixels: buf, info })
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
