@@ -62,6 +62,8 @@ pub mod decode;
 pub mod demosaic;
 #[allow(dead_code)]
 pub mod dng_render;
+#[allow(dead_code)]
+pub(crate) mod dt_sigmoid;
 mod error;
 #[allow(dead_code)]
 mod orient;

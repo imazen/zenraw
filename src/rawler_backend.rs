@@ -320,11 +320,42 @@ fn auto_develop_output(
         sensor_layout,
     };
 
-    // Build pipeline and apply tone curve
-    let pipeline = DngPipeline::from_raw_info(&info).map(|p| p.with_default_tone_curve());
+    // Build color pipeline (DngPipeline for proper Bradford adaptation + WB)
+    let pipeline = DngPipeline::from_raw_info(&info);
 
     let u8_data = if let Some(pipeline) = pipeline {
-        pipeline.render_lum_preserving(&camera_linear)
+        // DngPipeline handles: exposure + WB + color matrix → linear sRGB
+        // We skip its tone curve and apply dt_sigmoid with hue preservation instead
+        let mut pixels = camera_linear;
+
+        // 1. BaselineExposure
+        let bl_mult = 2.0f32.powf(pipeline.baseline_exposure as f32);
+        if (bl_mult - 1.0).abs() > 1e-6 {
+            for v in pixels.iter_mut() {
+                *v *= bl_mult;
+            }
+        }
+
+        // 2. Camera → sRGB color matrix (WB baked in)
+        crate::dng_render::apply_matrix_rgb(&mut pixels, &pipeline.camera_to_output);
+
+        // Clamp negatives (matrix can produce them)
+        for v in pixels.iter_mut() {
+            *v = v.max(0.0);
+        }
+
+        // 3. Exposure boost (~1.85x, matching the zenfilters FiveK parity baseline)
+        let exposure_boost = 1.85f32;
+        for v in pixels.iter_mut() {
+            *v *= exposure_boost;
+        }
+
+        // 4. Scene-referred sigmoid tone mapping with hue preservation
+        let params = crate::dt_sigmoid::default_params();
+        crate::dt_sigmoid::apply_dt_sigmoid(&mut pixels, &params);
+
+        // 5. sRGB gamma
+        crate::dng_render::linear_to_srgb_u8(&pixels)
     } else {
         // Fallback: basic color pipeline + gamma if DngPipeline can't be built
         let mut rgb = camera_linear;
