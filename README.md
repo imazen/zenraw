@@ -3,7 +3,7 @@
 [![CI](https://github.com/imazen/zenraw/actions/workflows/ci.yml/badge.svg)](https://github.com/imazen/zenraw/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/zenraw.svg?style=for-the-badge)](https://crates.io/crates/zenraw)
 [![docs.rs](https://img.shields.io/docsrs/zenraw?style=for-the-badge)](https://docs.rs/zenraw)
-[![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg?style=for-the-badge)](LICENSE-APACHE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg?style=for-the-badge)](LICENSE)
 [![MSRV: 1.93](https://img.shields.io/badge/MSRV-1.93-blue.svg?style=for-the-badge)](https://blog.rust-lang.org/)
 
 Camera RAW and DNG decoder in safe Rust. Scene-referred linear f32 output by default,
@@ -128,20 +128,9 @@ Review critical paths before production use.
 
 ## License
 
-Licensed under either of
+Licensed under the GNU Affero General Public License v3.0 or later ([LICENSE](LICENSE) or <https://www.gnu.org/licenses/agpl-3.0.html>).
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
-
-at your option.
+Commercial licenses are available from [Imazen](https://imazen.io).
 
 Note: the `rawloader` and `rawler` backends are LGPL-2.1 licensed. When you
-enable either feature, your binary links against LGPL code. This is compatible
-with Apache-2.0/MIT but imposes additional obligations if you distribute
-statically-linked binaries. See the respective crate licenses for details.
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in this work by you, as defined in the Apache-2.0 license, shall
-be dual licensed as above, without any additional terms or conditions.
+enable either feature, your binary links against LGPL code.
