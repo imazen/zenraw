@@ -1,15 +1,15 @@
 //! SIMD-accelerated inner loops for the decode pipeline.
 //!
-//! Uses archmage for safe AVX2+FMA dispatch on x86-64.
+//! Uses archmage for safe AVX2+FMA dispatch on x86-64 and NEON on aarch64.
 //! Falls back to scalar automatically when SIMD is unavailable.
 
 use alloc::vec::Vec;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use alloc::vec;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use archmage::prelude::*;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use magetypes::simd::f32x8;
 
 // ── Normalize ────────────────────────────────────────────────────────────
@@ -23,6 +23,10 @@ pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = X64V3Token::summon() {
         return normalize_uniform_avx2(token, data, black, inv_range);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = NeonToken::summon() {
+        return normalize_uniform_neon(token, data, black, inv_range);
     }
     data.iter()
         .map(|&s| ((s - black) * inv_range).clamp(0.0, 1.0))
@@ -39,6 +43,43 @@ fn normalize_uniform_avx2(token: X64V3Token, data: &[f32], black: f32, inv_range
 #[rite]
 fn normalize_uniform_inner(
     token: X64V3Token,
+    data: &[f32],
+    black: f32,
+    inv_range: f32,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; data.len()];
+    let black_v = f32x8::splat(token, black);
+    let inv_range_v = f32x8::splat(token, inv_range);
+    let zero = f32x8::zero(token);
+    let one = f32x8::splat(token, 1.0);
+
+    let (src_chunks, src_tail) = f32x8::partition_slice(token, data);
+    let (dst_chunks, dst_tail) = f32x8::partition_slice_mut(token, &mut out);
+
+    for (src, dst) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
+        let v = f32x8::load(token, src);
+        let normalized = (v - black_v) * inv_range_v;
+        let clamped = normalized.max(zero).min(one);
+        clamped.store(dst);
+    }
+
+    for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
+        *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
+    }
+
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn normalize_uniform_neon(token: NeonToken, data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
+    normalize_uniform_inner_neon(token, data, black, inv_range)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn normalize_uniform_inner_neon(
+    token: NeonToken,
     data: &[f32],
     black: f32,
     inv_range: f32,
