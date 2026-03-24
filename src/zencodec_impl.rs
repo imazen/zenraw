@@ -178,7 +178,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
 /// Per-operation decode job for RAW/DNG files.
 pub struct RawDecodeJob<'a> {
     config: &'a RawDecodeConfig,
-    stop: Option<&'a dyn enough::Stop>,
+    stop: Option<zencodec::StopToken>,
     limits: ResourceLimits,
 }
 
@@ -188,7 +188,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
     type StreamDec = Unsupported<At<RawError>>;
     type FullFrameDec = Unsupported<At<RawError>>;
 
-    fn with_stop(mut self, stop: &'a dyn enough::Stop) -> Self {
+    fn with_stop(mut self, stop: zencodec::StopToken) -> Self {
         self.stop = Some(stop);
         self
     }
@@ -199,7 +199,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
-        let stop: &dyn enough::Stop = self.stop.unwrap_or(&enough::Unstoppable);
+        let stop: &dyn enough::Stop = self.stop.as_ref().map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
         let info = crate::probe(data, stop)?;
         Ok(build_image_info(data, &info))
     }
@@ -287,14 +287,17 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
 pub struct RawDecoder<'a> {
     data: Cow<'a, [u8]>,
     config: RawDecodeConfig,
-    stop: Option<&'a dyn enough::Stop>,
+    stop: Option<zencodec::StopToken>,
 }
 
 impl<'a> Decode for RawDecoder<'a> {
     type Error = At<RawError>;
 
     fn decode(self) -> Result<DecodeOutput, Self::Error> {
-        let stop: &dyn enough::Stop = self.stop.unwrap_or(&enough::Unstoppable);
+        let stop: &dyn enough::Stop = match &self.stop {
+            Some(s) => s,
+            None => &enough::Unstoppable,
+        };
         let output = crate::decode(&self.data, &self.config, stop)?;
         let info = build_image_info(&self.data, &output.info);
         Ok(DecodeOutput::new(output.pixels, info))
