@@ -293,7 +293,6 @@ fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::C
 #[cfg(feature = "rawloader")]
 #[autoversion]
 fn malvar_interior(
-    _token: SimdToken,
     data: &[f32],
     rgb: &mut [f32],
     width: usize,

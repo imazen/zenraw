@@ -26,7 +26,7 @@ pub fn apply_color_pipeline(rgb: &mut [f32], wb_coeffs: [f32; 4], xyz_to_cam: [[
 ///
 /// Autoversioned: compiles for AVX2/NEON/scalar and dispatches at runtime.
 #[autoversion]
-fn apply_color_matrix(_token: SimdToken, rgb: &mut [f32], mat: [[f32; 3]; 3]) {
+fn apply_color_matrix(rgb: &mut [f32], mat: [[f32; 3]; 3]) {
     let pixel_count = rgb.len() / 3;
     for i in 0..pixel_count {
         let idx = i * 3;
@@ -186,7 +186,7 @@ pub fn f32_to_u8_srgb(src: &[f32]) -> alloc::vec::Vec<u8> {
 }
 
 #[autoversion]
-fn f32_to_u8_inner(_token: SimdToken, src: &[f32]) -> alloc::vec::Vec<u8> {
+fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
     src.iter()
         .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
         .collect()

@@ -9,28 +9,29 @@ categories = ["multimedia::images"]
 keywords = ["raw", "dng", "image", "decoder", "camera"]
 repository = "https://github.com/imazen/zenraw"
 readme = "README.md"
+exclude = ["CLAUDE.md", "CONTEXT-HANDOFF.md", "justfile", "Cross.toml", ".github/"]
 
 [dependencies]
-rawloader = { version = "0.37", optional = true }
+rawloader = { version = "0.37.1", optional = true }
 rawler = { version = "0.7.2", optional = true }
-thiserror = { version = "2.0", default-features = false }
+thiserror = { version = "2.0.18", default-features = false }
 whereat = { version = "0.1.4", default-features = false }
-enough = { version = "0.4", default-features = false }
+enough = { version = "0.4.2", default-features = false }
 zenpixels = { version = "0.2.0", default-features = false }
 zencodec = { version = "0.1.1", optional = true }
-archmage = { version = "0.9", default-features = false }
-magetypes = { version = "0.9", default-features = false }
-bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
-ultrahdr-core = { version = "0.2", path = "../ultrahdr/ultrahdr-core", default-features = false, features = ["transfer"], optional = true }
+archmage = { version = "0.9.12", default-features = false }
+magetypes = { version = "0.9.12", default-features = false }
+bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
+ultrahdr-core = { version = "0.2.0", default-features = false, features = ["transfer"], optional = true }
 
 # Metadata crates
-kamadak-exif = { version = "0.6", optional = true }
+kamadak-exif = { version = "0.6.1", optional = true }
 
 [dev-dependencies]
-zensim = { version = "0.2", path = "../zensim/zensim" }
-bytemuck = "1.25"
-image = { version = "0.25", default-features = false, features = ["png"] }
-criterion = { version = "0.8", features = ["html_reports"] }
+zensim = "0.2.0"
+bytemuck = "1.25.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 
 [[bench]]
 name = "decode_bench"
@@ -50,7 +51,4 @@ apple = ["exif", "xmp"]
 
 [profile.test]
 opt-level = 2
-
-[patch.crates-io]
-zensim = { path = "../zensim/zensim" }
 

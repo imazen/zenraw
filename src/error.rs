@@ -59,7 +59,7 @@ impl IntoBufferError for zenpixels::BufferError {
 
 impl IntoBufferError for whereat::At<zenpixels::BufferError> {
     fn into_buffer_error(self) -> zenpixels::BufferError {
-        self.into_inner()
+        self.decompose().0
     }
 }
 

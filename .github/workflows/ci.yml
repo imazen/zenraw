@@ -33,25 +33,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps for CI
-        shell: bash
-        run: |
-          # Use crates.io for published deps, remove unpublished ones
-          sed \
-            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
-            -e 's|, path = "\.\./zensim/zensim"||g' \
-            -e '/zencodec/d' \
-            -e '/ultrahdr-core/d' \
-            -e 's|"std", "rawloader", "ultrahdr"|"std", "rawloader"|' \
-            -e '/\[patch.crates-io\]/,$d' \
-            Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          rm -f Cargo.lock
-
       - name: Test (default features)
         run: cargo test
 
-      - name: Test (rawler + darktable + exif + xmp + apple)
-        run: cargo test --features "rawler,darktable,exif,xmp,apple"
+      - name: Test (all features)
+        run: cargo test --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr"
 
       - name: Check (no-default-features, std only)
         run: cargo check --no-default-features --features std
@@ -66,21 +52,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps for CI
-        shell: bash
-        run: |
-          sed \
-            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
-            -e 's|, path = "\.\./zensim/zensim"||g' \
-            -e '/zencodec/d' \
-            -e '/ultrahdr-core/d' \
-            -e 's|"std", "rawloader", "ultrahdr"|"std", "rawloader"|' \
-            -e '/\[patch.crates-io\]/,$d' \
-            Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          rm -f Cargo.lock
-
-      - name: Clippy (all testable features)
-        run: cargo clippy --all-targets --features "rawler,darktable,exif,xmp,apple" -- -D warnings
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr" -- -D warnings
 
   fmt:
     name: Format
@@ -102,19 +75,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
-
-      - name: Patch path deps for CI
-        shell: bash
-        run: |
-          sed \
-            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
-            -e 's|, path = "\.\./zensim/zensim"||g' \
-            -e '/zencodec/d' \
-            -e '/ultrahdr-core/d' \
-            -e 's|"std", "rawloader", "ultrahdr"|"std", "rawloader"|' \
-            -e '/\[patch.crates-io\]/,$d' \
-            Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
-          rm -f Cargo.lock
 
       - name: Check MSRV
         run: cargo hack check --rust-version
