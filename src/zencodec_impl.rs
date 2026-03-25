@@ -186,7 +186,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
     type Error = At<RawError>;
     type Dec = RawDecoder<'a>;
     type StreamDec = Unsupported<At<RawError>>;
-    type FullFrameDec = Unsupported<At<RawError>>;
+    type AnimationFrameDec = Unsupported<At<RawError>>;
 
     fn with_stop(mut self, stop: zencodec::StopToken) -> Self {
         self.stop = Some(stop);
@@ -199,7 +199,10 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
-        let stop: &dyn enough::Stop = self.stop.as_ref().map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        let stop: &dyn enough::Stop = self
+            .stop
+            .as_ref()
+            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
         let info = crate::probe(data, stop)?;
         Ok(build_image_info(data, &info))
     }
@@ -270,11 +273,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
         )))
     }
 
-    fn full_frame_decoder(
+    fn animation_frame_decoder(
         self,
         _data: Cow<'a, [u8]>,
         _preferred: &[PixelDescriptor],
-    ) -> Result<Self::FullFrameDec, Self::Error> {
+    ) -> Result<Self::AnimationFrameDec, Self::Error> {
         Err(at!(RawError::Unsupported(
             "animation decode not supported for RAW files".into()
         )))
