@@ -103,10 +103,16 @@ impl NoiseModel {
 
 ## Exposing in RawInfo
 
-zenraw should expose the noise model in `RawInfo` when available:
+zenraw should expose the noise model in `RawInfo` when available. The proposed additions below are **partially implemented**:
+
+- `baseline_exposure` — **implemented** in `RawInfo` (populated by the rawler backend and `dng_render.rs`)
+- `noise_profile`, `iso`, `baseline_noise`, `baseline_sharpness` — **not yet implemented**
+
 ```rust
 pub struct RawInfo {
     // ... existing fields ...
+    pub baseline_exposure: Option<f64>,   // IMPLEMENTED: DNG BaselineExposure in EV
+    // Proposed (not yet implemented):
     pub noise_profile: Option<NoiseModel>,
     pub iso: Option<u32>,
     pub baseline_noise: f64,      // relative noise (1.0 = baseline)
