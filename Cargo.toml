@@ -16,8 +16,8 @@ rawler = { version = "0.7.2", optional = true }
 thiserror = { version = "2.0", default-features = false }
 whereat = { version = "0.1.4", default-features = false }
 enough = { version = "0.4", default-features = false }
-zenpixels = { version = "0.2.0", path = "../zenpixels/zenpixels", default-features = false }
-zencodec = { version = "0.1", path = "../zencodec", optional = true }
+zenpixels = { version = "0.2.0", default-features = false }
+zencodec = { version = "0.1.0", optional = true }
 archmage = { version = "0.9", default-features = false }
 magetypes = { version = "0.9", default-features = false }
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
@@ -52,6 +52,5 @@ apple = ["exif", "xmp"]
 opt-level = 2
 
 [patch.crates-io]
-zenpixels = { path = "../zenpixels/zenpixels" }
 zensim = { path = "../zensim/zensim" }
 
