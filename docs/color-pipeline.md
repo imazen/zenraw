@@ -2,6 +2,8 @@
 
 The complete pipeline from raw sensor ADU values to display-ready sRGB.
 
+> **Note:** This document predates the DngPipeline implementation (dng_render.rs). The current pipeline supports PGTM, WB-baked ColorMatrix, and Apple ToneCurve paths.
+
 ## Current Implementation
 
 zenraw currently uses rawloader's color data and a simplified pipeline:
