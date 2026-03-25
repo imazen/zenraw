@@ -81,10 +81,12 @@ Plus many more via rawler. Detection works on file content, not extension.
 |---------|---------|-------------|
 | `std` | yes | Enable std (required for darktable, rawler) |
 | `rawloader` | yes | rawloader decode backend |
+| `ultrahdr` | yes | UltraHDR gain map support via ultrahdr-core |
 | `rawler` | no | rawler decode backend (broader camera support) |
 | `darktable` | no | darktable-cli backend (requires darktable installed) |
 | `exif` | no | EXIF metadata extraction via kamadak-exif |
 | `xmp` | no | XMP metadata extraction |
+| `apple` | no | Apple APPLEDNG/AMPF metadata (implies `exif` + `xmp`) |
 | `zencodec` | no | zencodec trait integration (DecoderConfig, ImageInfo) |
 
 ## Configuration
