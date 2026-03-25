@@ -378,14 +378,14 @@ fn regression_save_reference_pngs() {
         eprintln!("Saved: {}", dt_path.display());
 
         // Try zenraw (rawloader) too
-        if let Ok(data) = std::fs::read(path) {
-            if let Some((zr_pixels, zw, zh)) = zenraw_decode_srgb(&data) {
-                let flat: Vec<u8> = zr_pixels.iter().flat_map(|p| p.iter().copied()).collect();
-                let img = RgbImage::from_raw(zw, zh, flat).expect("valid image");
-                let zr_path = out_dir.join(format!("{stem}_zenraw.png"));
-                img.save(&zr_path).expect("save PNG");
-                eprintln!("Saved: {}", zr_path.display());
-            }
+        if let Ok(data) = std::fs::read(path)
+            && let Some((zr_pixels, zw, zh)) = zenraw_decode_srgb(&data)
+        {
+            let flat: Vec<u8> = zr_pixels.iter().flat_map(|p| p.iter().copied()).collect();
+            let img = RgbImage::from_raw(zw, zh, flat).expect("valid image");
+            let zr_path = out_dir.join(format!("{stem}_zenraw.png"));
+            img.save(&zr_path).expect("save PNG");
+            eprintln!("Saved: {}", zr_path.display());
         }
     }
 }

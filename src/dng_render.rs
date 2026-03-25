@@ -870,10 +870,10 @@ mod tests {
     fn test_mat3_invert_identity() {
         let id = mat3_identity();
         let inv = mat3_invert(&id).unwrap();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < 1e-10);
+                assert!((val - expected).abs() < 1e-10);
             }
         }
     }
@@ -1084,10 +1084,10 @@ mod tests {
             DngPipeline::from_metadata(&exif, dw, dh).expect("should build pipeline from EXIF");
 
         // Add tone curve
-        if let Some(ref profile) = dng_profile {
-            if let Some(ref tc) = profile.tone_curve {
-                pipeline = pipeline.with_tone_curve(tc);
-            }
+        if let Some(ref profile) = dng_profile
+            && let Some(ref tc) = profile.tone_curve
+        {
+            pipeline = pipeline.with_tone_curve(tc);
         }
 
         // Add PGTM
@@ -1131,8 +1131,10 @@ mod tests {
         let pgtm = crate::apple::extract_profile_gain_table_map(&data);
 
         // Decode with skip_color_pipeline = true (camera-space raw)
-        let mut config = crate::decode::RawDecodeConfig::default();
-        config.skip_color_pipeline = true;
+        let config = crate::decode::RawDecodeConfig {
+            skip_color_pipeline: true,
+            ..Default::default()
+        };
         let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) else {
             eprintln!("Skipping: rawloader cannot decode this DNG (10-bit LJPEG)");
             return;
@@ -1166,10 +1168,10 @@ mod tests {
         // Build pipeline
         let mut pipeline =
             DngPipeline::from_metadata(&exif, dw, dh).expect("should build pipeline from EXIF");
-        if let Some(ref profile) = dng_profile {
-            if let Some(ref tc) = profile.tone_curve {
-                pipeline = pipeline.with_tone_curve(tc);
-            }
+        if let Some(ref profile) = dng_profile
+            && let Some(ref tc) = profile.tone_curve
+        {
+            pipeline = pipeline.with_tone_curve(tc);
         }
         if let Some(pgtm) = pgtm {
             pipeline = pipeline.with_gain_table_map(pgtm);
@@ -1272,8 +1274,10 @@ mod tests {
         }
 
         // Decode camera-space raw and check channel balance
-        let mut config = crate::decode::RawDecodeConfig::default();
-        config.skip_color_pipeline = true;
+        let config = crate::decode::RawDecodeConfig {
+            skip_color_pipeline: true,
+            ..Default::default()
+        };
         if let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) {
             let w = output.pixels.width();
             let h = output.pixels.height();
