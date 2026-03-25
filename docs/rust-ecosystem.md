@@ -16,7 +16,7 @@ What exists, what's missing, and where zenraw fits.
 - **License:** LGPL-2.1
 - **Status:** Active development, alpha API, 500+ cameras
 - **Provides:** Full DNG reading AND writing, CR3/NEF/ARW/RAF/ORF/RW2 decode, LJPEG/JXL compression, camera database with TOML config, X-Trans support
-- **Caveats:** API not semver-stable, LGPL viral for static linking
+- **Caveats:** Pinned at 0.7.2 in zenraw (API stabilizing but not semver-guaranteed), LGPL viral for static linking
 - **repo:** https://github.com/dnglab/dnglab
 
 ### bayer / libbayer
