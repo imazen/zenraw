@@ -2,6 +2,8 @@
 
 Current state: v0.1.0 — functional decoder with bilinear/MHC demosaic, basic color pipeline via rawloader.
 
+> **Partially completed.** Several Phase 1 items have been implemented including the rawler backend, DngPipeline with PGTM, and WB-baked ColorMatrix. See architecture.md for current state.
+
 ## Phase 1: Correct Colors (High Impact)
 
 ### Replace MHC with RCD demosaic
