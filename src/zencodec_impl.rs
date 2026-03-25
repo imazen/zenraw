@@ -114,7 +114,9 @@ static DECODE_DESCRIPTORS: &[PixelDescriptor] =
 static RAW_DECODE_CAPABILITIES: DecodeCapabilities = DecodeCapabilities::EMPTY
     .with_exif(true)
     .with_stop(true)
-    .with_enforces_max_pixels(true);
+    .with_enforces_max_pixels(true)
+    .with_enforces_max_memory(true)
+    .with_enforces_max_input_bytes(true);
 
 // ── DecoderConfig ──────────────────────────────────────────────────────
 
@@ -232,6 +234,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
         data: Cow<'a, [u8]>,
         preferred: &[PixelDescriptor],
     ) -> Result<Self::Dec, Self::Error> {
+        // Check input size limits
+        self.limits
+            .check_input_size(data.len() as u64)
+            .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
+
         // Check if caller prefers linear f32
         let mut config = self.config.clone();
         for pref in preferred {
@@ -240,6 +247,25 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
                 break;
             }
         }
+
+        // Probe header for dimensions to check width/height/memory limits
+        let stop: &dyn enough::Stop = self
+            .stop
+            .as_ref()
+            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        let info = crate::probe(&data, stop)?;
+
+        // Check dimension limits (max_width, max_height, max_pixels)
+        self.limits
+            .check_dimensions(info.width, info.height)
+            .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
+
+        // Check memory limits — estimate output buffer size
+        let bytes_per_pixel: u64 = if config.apply_gamma { 3 } else { 12 }; // RGB8 or RGBF32
+        let estimated_bytes = info.width as u64 * info.height as u64 * bytes_per_pixel;
+        self.limits
+            .check_memory(estimated_bytes)
+            .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
 
         // Apply resource limits
         if let Some(max_px) = self.limits.max_pixels {
