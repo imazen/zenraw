@@ -42,6 +42,32 @@ jobs:
       - name: Check (no-default-features, std only)
         run: cargo check --no-default-features --features std
 
+  feature-perms:
+    name: Feature permutations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check (no-default-features, std only)
+        run: cargo check --no-default-features --features std
+
+      - name: Check (rawler,std)
+        run: cargo check --features "rawler,std"
+
+      - name: Check (zencodec)
+        run: cargo check --features zencodec
+
+      - name: Check (exif,xmp,apple)
+        run: cargo check --features "exif,xmp,apple"
+
+      - name: Check (zencodec,ultrahdr,exif)
+        run: cargo check --features "zencodec,ultrahdr,exif"
+
+      - name: Check (--all-features)
+        run: cargo check --all-features
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
