@@ -6,7 +6,8 @@
 use std::fs;
 use std::path::Path;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use zenbench::criterion_compat::*;
+use zenbench::{criterion_group, criterion_main};
 use enough::Unstoppable;
 use zenraw::{DemosaicMethod, RawDecodeConfig};
 
