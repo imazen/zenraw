@@ -148,7 +148,7 @@ impl Default for RawDecoderConfig {
 
 impl zencodec::decode::DecoderConfig for RawDecoderConfig {
     type Error = At<RawError>;
-    type Job<'a> = RawDecodeJob<'a>;
+    type Job = RawDecodeJob;
 
     fn formats() -> &'static [ImageFormat] {
         static FORMATS: [ImageFormat; 2] = [
@@ -166,9 +166,9 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         &RAW_DECODE_CAPABILITIES
     }
 
-    fn job(&self) -> Self::Job<'_> {
+    fn job(self) -> Self::Job {
         RawDecodeJob {
-            config: &self.inner,
+            config: self.inner,
             stop: None,
             limits: ResourceLimits::default(),
         }
@@ -178,13 +178,13 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
 // ── DecodeJob ──────────────────────────────────────────────────────────
 
 /// Per-operation decode job for RAW/DNG files.
-pub struct RawDecodeJob<'a> {
-    config: &'a RawDecodeConfig,
+pub struct RawDecodeJob {
+    config: RawDecodeConfig,
     stop: Option<zencodec::StopToken>,
     limits: ResourceLimits,
 }
 
-impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob<'a> {
+impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     type Error = At<RawError>;
     type Dec = RawDecoder<'a>;
     type StreamDec = Unsupported<At<RawError>>;
