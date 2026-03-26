@@ -87,6 +87,7 @@ fn demosaic_bilinear(data: &[f32], width: usize, height: usize, cfa: &rawloader:
 
 /// Green at a red or blue site: average of 4 neighbors (cross pattern).
 #[cfg(feature = "rawloader")]
+#[inline]
 fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
     let mut sum = 0.0f32;
     let mut count = 0u32;
@@ -113,6 +114,7 @@ fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, c
 
 /// R/B at a green site: average of 2 horizontal or 2 vertical neighbors.
 #[cfg(feature = "rawloader")]
+#[inline]
 fn rb_at_green_bilinear(
     data: &[f32],
     width: usize,
@@ -142,6 +144,7 @@ fn rb_at_green_bilinear(
 
 /// Opposite color at an R or B site (R at B, or B at R): average of 4 diagonal neighbors.
 #[cfg(feature = "rawloader")]
+#[inline]
 fn opposite_at_rb_bilinear(
     data: &[f32],
     width: usize,
@@ -175,6 +178,7 @@ fn opposite_at_rb_bilinear(
 }
 
 #[cfg(feature = "rawloader")]
+#[inline]
 fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
     let left = if col > 0 {
         data[row * width + col - 1]
@@ -195,6 +199,7 @@ fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
 }
 
 #[cfg(feature = "rawloader")]
+#[inline]
 fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usize) -> f32 {
     let top = if row > 0 {
         data[(row - 1) * width + col]
@@ -418,6 +423,7 @@ fn px(data: &[f32], width: usize, height: usize, row: isize, col: isize) -> f32 
 /// where Gc = sum of 4 green cross neighbors
 /// and Laplacian_cross = 4*center - top2 - bottom2 - left2 - right2
 #[cfg(feature = "rawloader")]
+#[inline]
 fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
     let r = row as isize;
     let c = col as isize;
@@ -451,6 +457,7 @@ fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col
 ///        0  0 -3/2  0  0
 /// Divide by 8
 #[cfg(feature = "rawloader")]
+#[inline]
 fn malvar_opposite_at_rb(
     data: &[f32],
     width: usize,
