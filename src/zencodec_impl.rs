@@ -148,7 +148,7 @@ impl Default for RawDecoderConfig {
 
 impl zencodec::decode::DecoderConfig for RawDecoderConfig {
     type Error = At<RawError>;
-    type Job = RawDecodeJob;
+    type Job<'a> = RawDecodeJob;
 
     fn formats() -> &'static [ImageFormat] {
         static FORMATS: [ImageFormat; 2] = [
@@ -166,7 +166,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         &RAW_DECODE_CAPABILITIES
     }
 
-    fn job(self) -> Self::Job {
+    fn job<'a>(self) -> Self::Job<'a> {
         RawDecodeJob {
             config: self.inner,
             stop: None,
