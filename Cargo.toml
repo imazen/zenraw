@@ -31,7 +31,7 @@ kamadak-exif = { version = "0.6.1", optional = true }
 zensim = "0.2.0"
 bytemuck = "1.25.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-zenbench = { version = "0.1.1", features = ["criterion-compat"] }
+zenbench = { version = "0.1.2", features = ["criterion-compat"] }
 
 [[bench]]
 name = "decode_bench"
