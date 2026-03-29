@@ -19,8 +19,8 @@ whereat = { version = "0.1.4", default-features = false }
 enough = { version = "0.4.2", default-features = false }
 zenpixels = { version = "0.2.0", default-features = false }
 zencodec = { version = "0.1.5", optional = true }
-archmage = { version = "0.9.12", default-features = false }
-magetypes = { version = "0.9.12", default-features = false }
+archmage = { version = "0.9.14", default-features = false }
+magetypes = { version = "0.9.14", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
 ultrahdr-core = { version = "0.2.0", default-features = false, features = ["transfer"], optional = true }
 
