@@ -19,7 +19,7 @@ use zenpixels::{PixelBuffer, PixelDescriptor};
 use rawler::imgop::xyz::Illuminant;
 
 use crate::color;
-use crate::decode::{RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
+use crate::decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
 use crate::error::{IntoBufferError, RawError, Result};
 
@@ -202,7 +202,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    // Step 4: Crop before color (auto_develop needs dimensions for DngPipeline)
+    // Step 4: Crop before color (Develop mode needs dimensions for DngPipeline)
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
         apply_rawler_crop(&rgb, width, height, &raw)
     } else {
@@ -226,21 +226,23 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     let is_dng = crate::decode::is_dng_data(data);
 
     // Step 6: Color pipeline
-    if config.auto_develop {
-        // Auto-develop: use DngPipeline with tone curve for display-ready output
-        auto_develop_output(
-            final_rgb,
-            final_w,
-            final_h,
-            &raw,
-            xyz_to_cam,
-            is_dng,
-            final_orient,
-        )
-    } else {
-        // Standard path: basic WB + color matrix
-        let mut colored = final_rgb;
-        if !config.skip_color_pipeline {
+    match config.output {
+        OutputMode::Develop => {
+            // Auto-develop: use DngPipeline with tone curve for display-ready output
+            auto_develop_output(
+                final_rgb,
+                final_w,
+                final_h,
+                &raw,
+                xyz_to_cam,
+                is_dng,
+                final_orient,
+                config,
+            )
+        }
+        OutputMode::Linear => {
+            // WB + color matrix, output f32
+            let mut colored = final_rgb;
             let wb = if let Some(override_wb) = config.wb_override {
                 [
                     override_wb[0],
@@ -252,22 +254,41 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
                 raw.wb_coeffs
             };
             color::apply_color_pipeline(&mut colored, wb, xyz_to_cam);
-        }
 
-        build_output(
-            colored,
-            final_w,
-            final_h,
-            config,
-            &raw,
-            xyz_to_cam,
-            is_dng,
-            final_orient,
-        )
+            // Apply exposure_ev if nonzero
+            if config.exposure_ev.abs() > 1e-6 {
+                let mult = 2.0f32.powf(config.exposure_ev);
+                for v in colored.iter_mut() {
+                    *v *= mult;
+                }
+            }
+
+            build_linear_output(
+                colored,
+                final_w,
+                final_h,
+                &raw,
+                xyz_to_cam,
+                is_dng,
+                final_orient,
+            )
+        }
+        OutputMode::CameraRaw => {
+            // No color processing — pass through camera-space data
+            build_linear_output(
+                final_rgb,
+                final_w,
+                final_h,
+                &raw,
+                xyz_to_cam,
+                is_dng,
+                final_orient,
+            )
+        }
     }
 }
 
-/// Auto-develop: render camera-space linear f32 to display-ready sRGB u8
+/// Auto-develop: render camera-space linear f32 to display-ready sRGB u16
 /// using DngPipeline with a filmic tone curve.
 #[allow(clippy::too_many_arguments)]
 fn auto_develop_output(
@@ -278,6 +299,7 @@ fn auto_develop_output(
     xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
+    config: &RawDecodeConfig,
 ) -> Result<RawDecodeOutput> {
     use crate::dng_render::DngPipeline;
 
@@ -321,22 +343,23 @@ fn auto_develop_output(
     };
 
     // Build color pipeline (DngPipeline for proper Bradford adaptation + WB)
-    let pipeline = DngPipeline::from_raw_info(&info);
+    let pipeline = DngPipeline::from_raw_info(&info, config.target);
 
-    let u8_data = if let Some(pipeline) = pipeline {
-        // DngPipeline handles: exposure + WB + color matrix → linear sRGB
+    let u16_data = if let Some(pipeline) = pipeline {
+        // DngPipeline handles: exposure + WB + color matrix → linear output primaries
         // We skip its tone curve and apply dt_sigmoid with hue preservation instead
         let mut pixels = camera_linear;
 
-        // 1. BaselineExposure
-        let bl_mult = 2.0f32.powf(pipeline.baseline_exposure as f32);
-        if (bl_mult - 1.0).abs() > 1e-6 {
+        // 1. BaselineExposure + user exposure_ev
+        let total_ev = pipeline.baseline_exposure as f32 + config.exposure_ev;
+        let ev_mult = 2.0f32.powf(total_ev);
+        if (ev_mult - 1.0).abs() > 1e-6 {
             for v in pixels.iter_mut() {
-                *v *= bl_mult;
+                *v *= ev_mult;
             }
         }
 
-        // 2. Camera → sRGB color matrix (WB baked in)
+        // 2. Camera → output color matrix (WB baked in)
         crate::dng_render::apply_matrix_rgb(&mut pixels, &pipeline.camera_to_output);
 
         // Clamp negatives (matrix can produce them)
@@ -354,21 +377,30 @@ fn auto_develop_output(
         let params = crate::dt_sigmoid::default_params();
         crate::dt_sigmoid::apply_dt_sigmoid(&mut pixels, &params);
 
-        // 5. sRGB gamma
-        crate::dng_render::linear_to_srgb_u8(&pixels)
+        // 5. sRGB gamma → u16
+        crate::dng_render::linear_to_srgb_u16(&pixels)
     } else {
         // Fallback: basic color pipeline + gamma if DngPipeline can't be built
         let mut rgb = camera_linear;
         color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, xyz_to_cam);
+
+        // Apply exposure_ev if nonzero
+        if config.exposure_ev.abs() > 1e-6 {
+            let mult = 2.0f32.powf(config.exposure_ev);
+            for v in rgb.iter_mut() {
+                *v *= mult;
+            }
+        }
+
         color::apply_srgb_gamma(&mut rgb);
-        color::f32_to_u8_srgb(&rgb)
+        color::f32_to_u16(&rgb)
     };
 
     let buf = PixelBuffer::from_vec(
-        u8_data,
+        u16_data,
         width as u32,
         height as u32,
-        PixelDescriptor::RGB8_SRGB,
+        PixelDescriptor::RGB16_SRGB,
     )
     .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
@@ -532,7 +564,7 @@ fn decode_non_bayer(
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    if !config.skip_color_pipeline {
+    if config.output != OutputMode::CameraRaw {
         let wb = if let Some(override_wb) = config.wb_override {
             [
                 override_wb[0],
@@ -544,6 +576,14 @@ fn decode_non_bayer(
             raw.wb_coeffs
         };
         color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam);
+
+        // Apply exposure_ev if nonzero
+        if config.exposure_ev.abs() > 1e-6 {
+            let mult = 2.0f32.powf(config.exposure_ev);
+            for v in rgb.iter_mut() {
+                *v *= mult;
+            }
+        }
     }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -566,30 +606,41 @@ fn decode_non_bayer(
         (cropped_rgb, out_w, out_h, raw_orient)
     };
 
-    build_output(
-        final_rgb,
-        final_w,
-        final_h,
-        config,
-        &raw,
-        xyz_to_cam,
-        is_dng,
-        final_orient,
-    )
+    match config.output {
+        OutputMode::Develop => {
+            // For non-bayer, use basic develop (no DngPipeline)
+            build_develop_output(
+                final_rgb,
+                final_w,
+                final_h,
+                &raw,
+                xyz_to_cam,
+                is_dng,
+                final_orient,
+            )
+        }
+        OutputMode::Linear | OutputMode::CameraRaw => build_linear_output(
+            final_rgb,
+            final_w,
+            final_h,
+            &raw,
+            xyz_to_cam,
+            is_dng,
+            final_orient,
+        ),
+    }
 }
 
-/// Build final output from processed RGB data.
+/// Build RawInfo from rawler RawImage metadata.
 #[allow(clippy::too_many_arguments)]
-fn build_output(
-    rgb: Vec<f32>,
+fn build_raw_info(
     width: usize,
     height: usize,
-    config: &RawDecodeConfig,
     raw: &rawler::RawImage,
     xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
-) -> Result<RawDecodeOutput> {
+) -> RawInfo {
     let cfa_pattern = extract_cfa_pattern(raw);
     let black = raw.blacklevel.as_bayer_array();
     let white = raw.whitelevel.as_bayer_array();
@@ -620,7 +671,7 @@ fn build_output(
         _ => SensorLayout::Unknown,
     };
 
-    let info = RawInfo {
+    RawInfo {
         width: width as u32,
         height: height as u32,
         make: raw.clean_make.clone(),
@@ -639,35 +690,59 @@ fn build_output(
         active_area,
         baseline_exposure: None,
         sensor_layout,
-    };
-
-    if config.apply_gamma {
-        let mut gamma_rgb = rgb;
-        color::apply_srgb_gamma(&mut gamma_rgb);
-        let u8_data = color::f32_to_u8_srgb(&gamma_rgb);
-
-        let buf = PixelBuffer::from_vec(
-            u8_data,
-            width as u32,
-            height as u32,
-            PixelDescriptor::RGB8_SRGB,
-        )
-        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
-
-        Ok(RawDecodeOutput { pixels: buf, info })
-    } else {
-        let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&rgb).to_vec();
-
-        let buf = PixelBuffer::from_vec(
-            byte_data,
-            width as u32,
-            height as u32,
-            PixelDescriptor::RGBF32_LINEAR,
-        )
-        .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
-
-        Ok(RawDecodeOutput { pixels: buf, info })
     }
+}
+
+/// Build linear f32 output from processed RGB data.
+#[allow(clippy::too_many_arguments)]
+fn build_linear_output(
+    rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    raw: &rawler::RawImage,
+    xyz_to_cam: [[f32; 3]; 4],
+    is_dng: bool,
+    orientation: u16,
+) -> Result<RawDecodeOutput> {
+    let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
+    let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&rgb).to_vec();
+
+    let buf = PixelBuffer::from_vec(
+        byte_data,
+        width as u32,
+        height as u32,
+        PixelDescriptor::RGBF32_LINEAR,
+    )
+    .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+
+    Ok(RawDecodeOutput { pixels: buf, info })
+}
+
+/// Build display-ready sRGB u16 output (simple path without DngPipeline).
+#[allow(clippy::too_many_arguments)]
+fn build_develop_output(
+    rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    raw: &rawler::RawImage,
+    xyz_to_cam: [[f32; 3]; 4],
+    is_dng: bool,
+    orientation: u16,
+) -> Result<RawDecodeOutput> {
+    let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
+    let mut gamma_rgb = rgb;
+    color::apply_srgb_gamma(&mut gamma_rgb);
+    let u16_data = color::f32_to_u16(&gamma_rgb);
+
+    let buf = PixelBuffer::from_vec(
+        u16_data,
+        width as u32,
+        height as u32,
+        PixelDescriptor::RGB16_SRGB,
+    )
+    .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+
+    Ok(RawDecodeOutput { pixels: buf, info })
 }
 
 /// Convert rawler Orientation to EXIF u16 value.

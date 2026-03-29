@@ -17,7 +17,7 @@ use zencodec::{
 };
 use zenpixels::PixelDescriptor;
 
-use crate::decode::{self, RawDecodeConfig};
+use crate::decode::{self, OutputMode, RawDecodeConfig};
 use crate::error::RawError;
 
 // ── Format definition ──────────────────────────────────────────────────
@@ -107,7 +107,7 @@ fn build_image_info(data: &[u8], raw_info: &decode::RawInfo) -> ImageInfo {
 // ── Supported output descriptors ───────────────────────────────────────
 
 static DECODE_DESCRIPTORS: &[PixelDescriptor] =
-    &[PixelDescriptor::RGB8_SRGB, PixelDescriptor::RGBF32_LINEAR];
+    &[PixelDescriptor::RGB16_SRGB, PixelDescriptor::RGBF32_LINEAR];
 
 // ── Capabilities ───────────────────────────────────────────────────────
 
@@ -212,11 +212,10 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         let info = self.probe(data)?;
 
-        // Scene-referred: linear f32 by default, sRGB u8 only when gamma requested
-        let descriptor = if self.config.apply_gamma {
-            PixelDescriptor::RGB8_SRGB
-        } else {
-            PixelDescriptor::RGBF32_LINEAR
+        let descriptor = match self.config.output {
+            OutputMode::Develop => PixelDescriptor::RGB16_SRGB,
+            // TODO: .with_primaries() for non-sRGB targets
+            OutputMode::Linear | OutputMode::CameraRaw => PixelDescriptor::RGBF32_LINEAR,
         };
 
         // When orientation is applied, output has display dimensions (may be swapped)
@@ -243,7 +242,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         let mut config = self.config.clone();
         for pref in preferred {
             if pref.format == zenpixels::PixelFormat::RgbF32 {
-                config.apply_gamma = false;
+                config.output = OutputMode::Linear;
                 break;
             }
         }
@@ -261,7 +260,10 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
 
         // Check memory limits — estimate output buffer size
-        let bytes_per_pixel: u64 = if config.apply_gamma { 3 } else { 12 }; // RGB8 or RGBF32
+        let bytes_per_pixel: u64 = match config.output {
+            OutputMode::Develop => 6,                         // RGB16
+            OutputMode::Linear | OutputMode::CameraRaw => 12, // RGBF32
+        };
         let estimated_bytes = info.width as u64 * info.height as u64 * bytes_per_pixel;
         self.limits
             .check_memory(estimated_bytes)

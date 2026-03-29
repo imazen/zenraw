@@ -75,7 +75,7 @@ fn bench_decode_gamma(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode");
     group.sample_size(10);
 
-    let config = RawDecodeConfig::default().with_gamma(true);
+    let config = RawDecodeConfig::default(); // Develop mode (default) applies gamma
 
     // Just use the DNG — it's a good representative
     let Some(data) = load_sample("iphone12pro.dng") else {

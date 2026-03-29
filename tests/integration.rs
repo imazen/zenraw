@@ -4,7 +4,7 @@
 //! when available, real DNG/RAW files.
 
 use enough::Unstoppable;
-use zenraw::{DemosaicMethod, RawDecodeConfig, RawError};
+use zenraw::{DemosaicMethod, OutputMode, RawDecodeConfig, RawError};
 
 // ── Format detection tests ─────────────────────────────────────────────
 
@@ -77,12 +77,12 @@ fn config_builder() {
     let config = RawDecodeConfig::new()
         .with_demosaic(DemosaicMethod::Bilinear)
         .with_max_pixels(1_000_000)
-        .with_gamma(false)
+        .with_output(OutputMode::Linear)
         .with_crop(false);
 
     assert_eq!(config.demosaic, DemosaicMethod::Bilinear);
     assert_eq!(config.max_pixels, 1_000_000);
-    assert!(!config.apply_gamma);
+    assert_eq!(config.output, OutputMode::Linear);
     assert!(!config.apply_crop);
 }
 
@@ -91,7 +91,7 @@ fn config_defaults() {
     let config = RawDecodeConfig::default();
     assert_eq!(config.demosaic, DemosaicMethod::MalvarHeCutler);
     assert_eq!(config.max_pixels, 200_000_000);
-    assert!(!config.apply_gamma); // scene-referred: linear f32 by default
+    assert_eq!(config.output, OutputMode::Develop);
     assert!(config.apply_crop);
 }
 
@@ -257,18 +257,18 @@ fn decode_real_raw_file() {
         info.width, info.height, info.make, info.model, info.cfa_pattern
     );
 
-    // Test decode with default settings (scene-referred linear f32)
+    // Test decode with default settings (display-ready u16 sRGB)
     let config = RawDecodeConfig::default();
     let output = zenraw::decode(&data, &config, &Unstoppable).expect("decode should succeed");
     assert_eq!(
         output.pixels.descriptor(),
-        zenpixels::PixelDescriptor::RGBF32_LINEAR
+        zenpixels::PixelDescriptor::RGB16_SRGB
     );
     assert!(output.info.width > 0);
     assert!(output.info.height > 0);
 
     // Test decode with linear f32
-    let config_linear = RawDecodeConfig::new().with_gamma(false);
+    let config_linear = RawDecodeConfig::new().with_output(OutputMode::Linear);
     let output_linear = zenraw::decode(&data, &config_linear, &Unstoppable).expect("linear decode");
     assert_eq!(
         output_linear.pixels.descriptor(),

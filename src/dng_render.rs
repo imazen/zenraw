@@ -387,6 +387,22 @@ pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
     output
 }
 
+/// Convert linear f32 \[0,1\] RGB data to sRGB-gamma u16 \[0,65535\] byte data.
+pub(crate) fn linear_to_srgb_u16(linear: &[f32]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(linear.len() * 2);
+    for &v in linear {
+        let v = v.clamp(0.0, 1.0);
+        let srgb = if v <= 0.003_130_8 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        };
+        let val = (srgb * 65535.0 + 0.5) as u16;
+        output.extend_from_slice(&val.to_ne_bytes());
+    }
+    output
+}
+
 // ── Full DNG rendering pipeline ──────────────────────────────────────
 
 /// Configuration for the DNG rendering pipeline.
@@ -470,7 +486,7 @@ impl DngPipeline {
     /// uses the `xyz_to_cam` matrix and WB coefficients that both backends
     /// always provide. Produces correct colors via the dcraw-style pipeline
     /// (row-normalized matrices with WB baked in).
-    pub fn from_raw_info(info: &crate::decode::RawInfo) -> Option<Self> {
+    pub fn from_raw_info(info: &crate::decode::RawInfo, output: OutputPrimaries) -> Option<Self> {
         // Extract 3×3 color matrix (drop 4th row)
         let cm = info.color_matrix;
         let color_matrix: Mat3 = [
@@ -493,9 +509,8 @@ impl DngPipeline {
             (wb_g / wb[2].max(1e-10)) as f64,
         ];
 
-        // Build the combined camera→sRGB matrix with WB baked in
+        // Build the combined camera→output matrix with WB baked in
         let cm_inv = mat3_invert(&color_matrix)?;
-        let output = OutputPrimaries::Srgb;
         let output_from_xyz = mat3_invert(output.to_xyz_d50())?;
 
         // Bradford adaptation from camera white to D50
@@ -1119,7 +1134,7 @@ mod tests {
 
     #[test]
     fn test_full_pipeline_real_appledng() {
-        // End-to-end test: decode APPLEDNG with skip_color_pipeline, then render via DngPipeline
+        // End-to-end test: decode APPLEDNG with CameraRaw mode, then render via DngPipeline
         let path = "/mnt/v/heic/46CD6167-C36B-4F98-B386-2300D8E840F0.DNG";
         let Ok(data) = std::fs::read(path) else {
             eprintln!("Skipping: APPLEDNG file not found");
@@ -1130,9 +1145,9 @@ mod tests {
         let dng_profile = crate::apple::extract_dng_profile(&data);
         let pgtm = crate::apple::extract_profile_gain_table_map(&data);
 
-        // Decode with skip_color_pipeline = true (camera-space raw)
+        // Decode with CameraRaw mode (camera-space raw)
         let config = crate::decode::RawDecodeConfig {
-            skip_color_pipeline: true,
+            output: crate::decode::OutputMode::CameraRaw,
             ..Default::default()
         };
         let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) else {
@@ -1275,7 +1290,7 @@ mod tests {
 
         // Decode camera-space raw and check channel balance
         let config = crate::decode::RawDecodeConfig {
-            skip_color_pipeline: true,
+            output: crate::decode::OutputMode::CameraRaw,
             ..Default::default()
         };
         if let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) {

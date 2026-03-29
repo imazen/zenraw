@@ -5,7 +5,7 @@
 //! not present (run `just fetch-samples` first).
 
 use enough::Unstoppable;
-use zenraw::{RawDecodeConfig, RawDecodeOutput};
+use zenraw::{OutputMode, RawDecodeConfig, RawDecodeOutput};
 
 const SAMPLES_DIR: &str = "/mnt/v/input/raw-samples";
 
@@ -15,15 +15,15 @@ fn load_sample(name: &str) -> Option<Vec<u8>> {
     std::fs::read(&path).ok()
 }
 
-/// Decode with default config (scene-referred linear f32).
+/// Decode with linear f32 config (scene-referred linear f32).
 fn decode_linear(data: &[u8]) -> RawDecodeOutput {
-    let config = RawDecodeConfig::default();
+    let config = RawDecodeConfig::new().with_output(OutputMode::Linear);
     zenraw::decode(data, &config, &Unstoppable).expect("decode should succeed")
 }
 
-/// Decode with sRGB gamma (display-referred u8).
+/// Decode with sRGB (display-referred u16).
 fn decode_srgb(data: &[u8]) -> RawDecodeOutput {
-    let config = RawDecodeConfig::new().with_gamma(true);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
     zenraw::decode(data, &config, &Unstoppable).expect("sRGB decode should succeed")
 }
 
@@ -82,32 +82,36 @@ fn verify_linear_stats(output: &RawDecodeOutput, format_name: &str) {
     assert!(min >= 0.0, "{format_name}: negative values (min={min})");
 }
 
-/// Verify sRGB u8 output.
+/// Verify sRGB u16 output.
 fn verify_srgb_output(output: &RawDecodeOutput, format_name: &str) {
     assert_eq!(
         output.pixels.descriptor(),
-        zenpixels::PixelDescriptor::RGB8_SRGB,
-        "{format_name}: expected RGB8_SRGB"
+        zenpixels::PixelDescriptor::RGB16_SRGB,
+        "{format_name}: expected RGB16_SRGB"
     );
 
     let bytes = output.pixels.copy_to_contiguous_bytes();
     let pixel_count = output.info.width as usize * output.info.height as usize;
     assert_eq!(
         bytes.len(),
-        pixel_count * 3,
-        "{format_name}: wrong byte count for sRGB"
+        pixel_count * 6, // 3 channels × 2 bytes per u16
+        "{format_name}: wrong byte count for sRGB u16"
     );
 
-    // Check not all black or all white
-    let sum: u64 = bytes.iter().map(|&b| b as u64).sum();
-    let mean = sum as f64 / bytes.len() as f64;
-    eprintln!("  {format_name} sRGB: mean={mean:.1}/255");
+    // Check not all black or all white — interpret as u16
+    let samples: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+        .collect();
+    let sum: u64 = samples.iter().map(|&s| s as u64).sum();
+    let mean = sum as f64 / samples.len() as f64;
+    eprintln!("  {format_name} sRGB: mean={mean:.1}/65535");
     assert!(
-        mean > 1.0,
+        mean > 256.0,
         "{format_name}: sRGB output is all black (mean={mean})"
     );
     assert!(
-        mean < 254.0,
+        mean < 65279.0,
         "{format_name}: sRGB output is all white (mean={mean})"
     );
 }
@@ -542,11 +546,10 @@ fn all_formats_bilinear_vs_malvar() {
             continue;
         };
 
-        // Decode with both demosaic methods
-        let config_malvar = RawDecodeConfig::new().with_gamma(true);
-        let config_bilinear = RawDecodeConfig::new()
-            .with_gamma(true)
-            .with_demosaic(zenraw::DemosaicMethod::Bilinear);
+        // Decode with both demosaic methods (Develop mode → u16 sRGB)
+        let config_malvar = RawDecodeConfig::new();
+        let config_bilinear =
+            RawDecodeConfig::new().with_demosaic(zenraw::DemosaicMethod::Bilinear);
 
         let Ok(malvar) = zenraw::decode(&data, &config_malvar, &Unstoppable) else {
             continue;
@@ -565,14 +568,14 @@ fn all_formats_bilinear_vs_malvar() {
             "{name}: height mismatch"
         );
 
-        // Both should be sRGB
+        // Both should be sRGB u16
         assert_eq!(
             malvar.pixels.descriptor(),
-            zenpixels::PixelDescriptor::RGB8_SRGB
+            zenpixels::PixelDescriptor::RGB16_SRGB
         );
         assert_eq!(
             bilinear.pixels.descriptor(),
-            zenpixels::PixelDescriptor::RGB8_SRGB
+            zenpixels::PixelDescriptor::RGB16_SRGB
         );
 
         // They should differ (different algorithms) but not drastically
@@ -580,18 +583,28 @@ fn all_formats_bilinear_vs_malvar() {
         let b_bytes = bilinear.pixels.copy_to_contiguous_bytes();
         assert_eq!(m_bytes.len(), b_bytes.len());
 
-        let diff: u64 = m_bytes
+        // Compare as u16 samples
+        let m_samples: Vec<u16> = m_bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .collect();
+        let b_samples: Vec<u16> = b_bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .collect();
+
+        let diff: u64 = m_samples
             .iter()
-            .zip(b_bytes.iter())
-            .map(|(&a, &b)| (a as i16 - b as i16).unsigned_abs() as u64)
+            .zip(b_samples.iter())
+            .map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs() as u64)
             .sum();
-        let mad = diff as f64 / m_bytes.len() as f64;
+        let mad = diff as f64 / m_samples.len() as f64;
 
-        eprintln!("{name}: Malvar vs Bilinear MAD = {mad:.2}");
+        eprintln!("{name}: Malvar vs Bilinear MAD = {mad:.2} (u16 scale)");
 
-        // They should be similar but not identical
+        // They should be similar but not identical (scaled from u8 threshold: 20 * 257 ≈ 5140)
         assert!(
-            mad < 20.0,
+            mad < 5200.0,
             "{name}: demosaic methods differ too much (MAD={mad})"
         );
     }

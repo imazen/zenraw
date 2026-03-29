@@ -156,12 +156,22 @@ fn darktable_decode_srgb(path: &Path) -> Option<(Vec<[u8; 3]>, u32, u32)> {
 fn zenraw_decode_srgb(data: &[u8]) -> Option<(Vec<[u8; 3]>, u32, u32)> {
     let data = data.to_vec(); // owned for catch_unwind
     let result = std::panic::catch_unwind(|| {
-        let config = RawDecodeConfig::new().with_gamma(true);
+        // Develop mode outputs u16 sRGB — convert to u8 for comparison
+        let config = RawDecodeConfig::new();
         let output = zenraw::decode(&data, &config, &enough::Unstoppable).ok()?;
         let w = output.info.width;
         let h = output.info.height;
         let bytes = output.pixels.copy_to_contiguous_bytes();
-        let pixels: Vec<[u8; 3]> = bytes.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+        // Convert u16 to u8 by taking high byte
+        let pixels: Vec<[u8; 3]> = bytes
+            .chunks_exact(6) // 3 channels × 2 bytes
+            .map(|c| {
+                let r = u16::from_ne_bytes([c[0], c[1]]);
+                let g = u16::from_ne_bytes([c[2], c[3]]);
+                let b = u16::from_ne_bytes([c[4], c[5]]);
+                [(r >> 8) as u8, (g >> 8) as u8, (b >> 8) as u8]
+            })
+            .collect();
         Some((pixels, w, h))
     });
     result.ok().flatten()

@@ -5,8 +5,10 @@
 //! - **`rawler`** — broader support: CR3, X-Trans, JXL-compressed DNG, ~300+ cameras
 //! - **`darktable`** — shells out to darktable-cli for 900+ cameras with full pipeline
 //!
-//! Output is **scene-referred linear f32** (`RGBF32_LINEAR`) by default.
-//! Enable `apply_gamma` for display-referred sRGB u8 output.
+//! Output is controlled by [`OutputMode`]:
+//! - **Develop** (default): display-ready u16 sRGB
+//! - **Linear**: scene-referred linear f32
+//! - **CameraRaw**: raw camera f32 values
 //!
 //! # Supported formats
 //!
@@ -94,8 +96,9 @@ mod zencodec_impl;
 pub use zencodec_impl::{DNG_FORMAT, RAW_FORMAT, RawDecoderConfig};
 
 pub use classify::{FileFormat, classify};
-pub use decode::{RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
+pub use decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 pub use demosaic::DemosaicMethod;
+pub use dng_render::OutputPrimaries;
 pub use error::RawError;
 
 // ── Public decode/probe dispatch ──────────────────────────────────────
@@ -103,7 +106,7 @@ pub use error::RawError;
 /// Decode a RAW/DNG file to a pixel buffer.
 ///
 /// Uses the best available backend: rawler > rawloader.
-/// Both produce scene-referred linear f32 by default.
+/// Default output is display-ready u16 sRGB ([`OutputMode::Develop`]).
 #[allow(clippy::needless_return)]
 pub fn decode(
     data: &[u8],
