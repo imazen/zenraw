@@ -85,7 +85,7 @@ fn detect_format(data: &[u8]) -> ImageFormat {
 /// Populates orientation, bit depth, and XMP metadata (when the xmp feature is enabled).
 fn build_image_info(data: &[u8], raw_info: &decode::RawInfo) -> ImageInfo {
     let format = detect_format(data);
-    let orientation = Orientation::from_exif(raw_info.orientation);
+    let orientation = Orientation::from_exif(raw_info.orientation as u8).unwrap_or_default();
 
     let mut info = ImageInfo::new(raw_info.width, raw_info.height, format)
         .with_sequence(ImageSequence::Single)
