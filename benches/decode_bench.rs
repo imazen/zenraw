@@ -6,9 +6,9 @@
 use std::fs;
 use std::path::Path;
 
+use enough::Unstoppable;
 use zenbench::criterion_compat::*;
 use zenbench::{criterion_group, criterion_main};
-use enough::Unstoppable;
 use zenraw::{DemosaicMethod, RawDecodeConfig};
 
 const SAMPLES_DIR: &str = "/mnt/v/input/raw-samples";
