@@ -15,12 +15,12 @@ exclude = ["CLAUDE.md", "CONTEXT-HANDOFF.md", "justfile", "Cross.toml", ".github
 rawloader = { version = "0.37.1", optional = true }
 rawler = { version = "0.7.2", optional = true }
 thiserror = { version = "2.0.18", default-features = false }
-whereat = { version = "0.1.4", default-features = false }
-enough = { version = "0.4.2", default-features = false }
+whereat = { version = "0.1.5", default-features = false }
+enough = { version = "0.4.3", default-features = false }
 zenpixels = { version = "0.2.1", default-features = false }
 zencodec = { version = "0.1.8", optional = true }
-archmage = { version = "0.9.14", default-features = false }
-magetypes = { version = "0.9.14", default-features = false }
+archmage = { version = "0.9.15", default-features = false }
+magetypes = { version = "0.9.15", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
 ultrahdr-core = { version = "0.2.0", default-features = false, features = ["transfer"], optional = true }
 
@@ -28,7 +28,7 @@ ultrahdr-core = { version = "0.2.0", default-features = false, features = ["tran
 kamadak-exif = { version = "0.6.1", optional = true }
 
 [dev-dependencies]
-zensim = "0.2.3"
+zensim = "0.2.4"
 bytemuck = "1.25.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 zenbench = { version = "0.1.2", features = ["criterion-compat"] }
