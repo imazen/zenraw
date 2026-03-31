@@ -22,7 +22,7 @@ zencodec = { version = "0.1.8", optional = true }
 archmage = { version = "0.9.15", default-features = false }
 magetypes = { version = "0.9.15", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
-ultrahdr-core = { version = "0.2.0", default-features = false, features = ["transfer"], optional = true }
+ultrahdr-core = { version = "0.3.0", default-features = false, features = ["transfer"], optional = true }
 
 # Metadata crates
 kamadak-exif = { version = "0.6.1", optional = true }
