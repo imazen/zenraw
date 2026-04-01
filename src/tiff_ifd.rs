@@ -235,8 +235,12 @@ impl TiffStructure {
 
 impl IfdEntry {
     /// Total byte size of this entry's value data.
+    ///
+    /// Uses checked arithmetic to prevent overflow on 32-bit platforms.
+    /// Returns `usize::MAX` on overflow, which causes subsequent bounds
+    /// checks to fail safely.
     pub fn data_size(&self) -> usize {
-        tiff_type_size(self.dtype) * self.count as usize
+        tiff_type_size(self.dtype).saturating_mul(self.count as usize)
     }
 
     /// Whether the value fits inline in the 4-byte value/offset field.
@@ -308,22 +312,21 @@ pub fn read_long_values(data: &[u8], entry: &IfdEntry, byte_order: ByteOrder) ->
         Some(b) => b,
         None => return values,
     };
-    let count = entry.count as usize;
     match entry.dtype {
         3 => {
-            // SHORT values
+            // SHORT values — cap iteration count by actual data length
+            let max_count = bytes.len() / 2;
+            let count = (entry.count as usize).min(max_count);
             for i in 0..count {
-                if i * 2 + 2 <= bytes.len() {
-                    values.push(read_u16(bytes, i * 2, byte_order) as u32);
-                }
+                values.push(read_u16(bytes, i * 2, byte_order) as u32);
             }
         }
         4 => {
-            // LONG values
+            // LONG values — cap iteration count by actual data length
+            let max_count = bytes.len() / 4;
+            let count = (entry.count as usize).min(max_count);
             for i in 0..count {
-                if i * 4 + 4 <= bytes.len() {
-                    values.push(read_u32(bytes, i * 4, byte_order));
-                }
+                values.push(read_u32(bytes, i * 4, byte_order));
             }
         }
         _ => {}
@@ -352,12 +355,12 @@ pub fn read_rational_values(data: &[u8], entry: &IfdEntry, byte_order: ByteOrder
         Some(b) => b,
         None => return values,
     };
+    // Cap iteration count by actual data length (8 bytes per rational)
+    let max_count = bytes.len() / 8;
+    let count = (entry.count as usize).min(max_count);
     let signed = entry.dtype == 10;
-    for i in 0..entry.count as usize {
+    for i in 0..count {
         let off = i * 8;
-        if off + 8 > bytes.len() {
-            break;
-        }
         let num = read_u32(bytes, off, byte_order);
         let den = read_u32(bytes, off + 4, byte_order);
         let val = if signed {
@@ -380,11 +383,11 @@ pub fn read_float_values(data: &[u8], entry: &IfdEntry, byte_order: ByteOrder) -
         Some(b) => b,
         None => return values,
     };
-    for i in 0..entry.count as usize {
+    // Cap iteration count by actual data length (4 bytes per float)
+    let max_count = bytes.len() / 4;
+    let count = (entry.count as usize).min(max_count);
+    for i in 0..count {
         let off = i * 4;
-        if off + 4 > bytes.len() {
-            break;
-        }
         let bits = read_u32(bytes, off, byte_order);
         values.push(f32::from_bits(bits));
     }
@@ -401,11 +404,11 @@ pub fn read_double_values(data: &[u8], entry: &IfdEntry, byte_order: ByteOrder) 
         Some(b) => b,
         None => return values,
     };
-    for i in 0..entry.count as usize {
+    // Cap iteration count by actual data length (8 bytes per double)
+    let max_count = bytes.len() / 8;
+    let count = (entry.count as usize).min(max_count);
+    for i in 0..count {
         let off = i * 8;
-        if off + 8 > bytes.len() {
-            break;
-        }
         let hi = read_u32(bytes, off, byte_order) as u64;
         let lo = read_u32(bytes, off + 4, byte_order) as u64;
         let bits = if byte_order == ByteOrder::BigEndian {
