@@ -6,13 +6,15 @@
 
 #![cfg(feature = "darktable")]
 
+mod helpers;
+
 use std::path::{Path, PathBuf};
 
 use image::RgbImage;
 use zensim::{RgbSlice, Zensim, ZensimProfile};
 
 use zenraw::RawDecodeConfig;
-use zenraw::darktable::{DtColorProfile, DtConfig};
+use helpers::darktable::{DtColorProfile, DtConfig};
 
 // ── Test corpus discovery ─────────────────────────────────────────────
 
@@ -139,13 +141,13 @@ fn mean_abs_diff(a: &[[u8; 3]], b: &[[u8; 3]]) -> f64 {
 
 /// Decode a file with darktable and return sRGB u8 pixels.
 fn darktable_decode_srgb(path: &Path) -> Option<(Vec<[u8; 3]>, u32, u32)> {
-    if !zenraw::darktable::is_available() {
+    if !helpers::darktable::is_available() {
         return None;
     }
     let config = DtConfig::new().with_color_profile(DtColorProfile::LinearRec709);
-    let output = zenraw::darktable::decode_file(path, &config).ok()?;
-    let w = output.info.width;
-    let h = output.info.height;
+    let output = helpers::darktable::decode_file(path, &config).ok()?;
+    let w = output.width;
+    let h = output.height;
     let bytes = output.pixels.copy_to_contiguous_bytes();
     let pixels = linear_f32_to_srgb_u8(&bytes, w, h);
     Some((pixels, w, h))
@@ -202,7 +204,7 @@ fn log_result(name: &str, zsim: f64, mad: f64, w: u32, h: u32) {
 /// Compare darktable vs zenraw (rawloader) output for files rawloader can handle.
 #[test]
 fn regression_rawloader_vs_darktable() {
-    if !zenraw::darktable::is_available() {
+    if !helpers::darktable::is_available() {
         eprintln!("Skipping: darktable-cli not found");
         return;
     }
@@ -302,7 +304,7 @@ fn regression_rawloader_vs_darktable() {
 /// Test darktable output consistency across multiple DNG files.
 #[test]
 fn regression_darktable_dng_batch() {
-    if !zenraw::darktable::is_available() {
+    if !helpers::darktable::is_available() {
         eprintln!("Skipping: darktable-cli not found");
         return;
     }
@@ -316,11 +318,11 @@ fn regression_darktable_dng_batch() {
     let mut decoded = 0;
     for path in &files {
         let config = DtConfig::default();
-        match zenraw::darktable::decode_file(path, &config) {
+        match helpers::darktable::decode_file(path, &config) {
             Ok(output) => {
                 let name = path.file_name().unwrap().to_str().unwrap_or("?");
-                let w = output.info.width;
-                let h = output.info.height;
+                let w = output.width;
+                let h = output.height;
 
                 // Verify reasonable output
                 let bytes = output.pixels.copy_to_contiguous_bytes();
@@ -356,7 +358,7 @@ fn regression_darktable_dng_batch() {
 /// Save darktable reference PNGs for manual inspection.
 #[test]
 fn regression_save_reference_pngs() {
-    if !zenraw::darktable::is_available() {
+    if !helpers::darktable::is_available() {
         eprintln!("Skipping: darktable-cli not found");
         return;
     }

@@ -1,4 +1,4 @@
-//! darktable-cli backend for scene-referred RAW decoding.
+//! darktable-cli backend for scene-referred RAW decoding — **test helper only**.
 //!
 //! Shells out to `darktable-cli` for high-quality RAW processing with access to
 //! 900+ cameras, advanced demosaicing, highlight recovery, and lens correction.
@@ -6,26 +6,42 @@
 //! Output is linear scene-referred f32 in Rec.709 primaries (sRGB gamut, linear
 //! transfer) by default, matching [`zenpixels::PixelDescriptor::RGBF32_LINEAR`].
 //!
+//! This module is intentionally **test-only** — it is not part of the public
+//! library API.  Spawning a subprocess, polling with `thread::sleep`, and writing
+//! temporary files make it unsuitable for production server use.
+//!
 //! # Requirements
 //!
 //! - `darktable-cli` must be in `$PATH` (darktable 4.0+ recommended, 5.0+ preferred)
-//! - Feature-gated behind `darktable`
+//! - Only compiled when the `darktable` Cargo feature is enabled
 
-extern crate std;
-
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
+// Test helpers intentionally expose more API surface than any single test uses.
+#![allow(dead_code)]
 
 use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
-use whereat::at;
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
-use crate::decode::{RawDecodeOutput, RawInfo};
-use crate::error::{IntoBufferError, RawError, Result};
+use zenraw::RawError;
+
+type Result<T> = std::result::Result<T, RawError>;
+
+/// Output from a darktable-cli decode operation.
+///
+/// A simpler alternative to [`zenraw::decode::RawDecodeOutput`] for test use;
+/// only carries the fields the comparison tests actually need.
+pub struct DtDecodeOutput {
+    /// Decoded pixel buffer (linear f32 RGB or sRGB u8 depending on profile).
+    pub pixels: PixelBuffer,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Whether the source file was a DNG.
+    pub is_dng: bool,
+}
 
 /// darktable output ICC profile type.
 #[derive(Clone, Debug, Default)]
@@ -143,19 +159,16 @@ pub fn version() -> Option<String> {
 /// Decode a RAW file from disk using darktable-cli.
 ///
 /// Produces scene-referred linear f32 output by default (PFM interchange).
-pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
-    let cli = find_cli(config.cli_path.as_deref()).ok_or_else(|| {
-        at!(RawError::Unsupported(
-            "darktable-cli not found in PATH".into()
-        ))
-    })?;
+pub fn decode_file(path: &Path, config: &DtConfig) -> Result<DtDecodeOutput> {
+    let cli = find_cli(config.cli_path.as_deref())
+        .ok_or_else(|| RawError::Unsupported("darktable-cli not found in PATH".into()))?;
 
     // Validate input exists
     if !path.exists() {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(RawError::InvalidInput(format!(
             "file not found: {}",
             path.display()
-        ))));
+        )));
     }
 
     // Create unique temp directory per invocation to avoid parallel conflicts
@@ -164,14 +177,16 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let tmp_dir = std::env::temp_dir().join(format!("zenraw_dt_{pid}_{id}"));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|e| RawError::Decode(format!("failed to create temp dir: {e}")))?;
 
     let out_path = tmp_dir.join("output.pfm");
 
     // Write XMP sidecar if provided
     let xmp_path = if let Some(ref xmp) = config.xmp {
         let p = tmp_dir.join("sidecar.xmp");
-        std::fs::write(&p, xmp).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+        std::fs::write(&p, xmp)
+            .map_err(|e| RawError::Decode(format!("failed to write XMP sidecar: {e}")))?;
         Some(p)
     } else {
         None
@@ -189,7 +204,8 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
 
     // Use isolated config to avoid user presets interfering
     let dt_config = tmp_dir.join("dt_config");
-    std::fs::create_dir_all(&dt_config).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::create_dir_all(&dt_config)
+        .map_err(|e| RawError::Decode(format!("failed to create dt config dir: {e}")))?;
 
     cmd.args([
         "--apply-custom-presets",
@@ -210,9 +226,7 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     // Run darktable-cli with timeout to prevent indefinite blocking
     let result = (|| -> Result<(Vec<f32>, u32, u32)> {
         let mut child = cmd.spawn().map_err(|e| {
-            at!(RawError::Decode(format!(
-                "failed to run darktable-cli: {e}"
-            )))
+            RawError::Decode(format!("failed to run darktable-cli: {e}"))
         })?;
 
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
@@ -224,30 +238,31 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
                     if start.elapsed() >= timeout {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err(at!(RawError::Decode(format!(
+                        return Err(RawError::Decode(format!(
                             "darktable-cli timed out after {}s",
                             config.timeout_secs
-                        ))));
+                        )));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => {
-                    return Err(at!(RawError::Decode(format!(
+                    return Err(RawError::Decode(format!(
                         "failed to wait on darktable-cli: {e}"
-                    ))));
+                    )));
                 }
             }
         };
 
         if !status.success() {
-            return Err(at!(RawError::Decode(format!(
+            return Err(RawError::Decode(format!(
                 "darktable-cli exited with {status}"
-            ))));
+            )));
         }
 
         // Parse PFM output
-        let pfm_data = std::fs::read(&out_path)
-            .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
+        let pfm_data = std::fs::read(&out_path).map_err(|e| {
+            RawError::Decode(format!("failed to read PFM output: {e}"))
+        })?;
 
         parse_pfm(&pfm_data)
     })();
@@ -260,10 +275,10 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     // Check limits
     let total = width as u64 * height as u64;
     if total > config.max_pixels {
-        return Err(at!(RawError::LimitExceeded(format!(
+        return Err(RawError::LimitExceeded(format!(
             "image {width}x{height} = {total} pixels exceeds limit of {}",
             config.max_pixels
-        ))));
+        )));
     }
 
     // Build PixelBuffer
@@ -279,49 +294,26 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
             .collect();
         PixelBuffer::from_vec(u8_data, width, height, descriptor)
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?
+            .map_err(|e| RawError::Decode(format!("failed to create pixel buffer: {e}")))?
     } else {
         let byte_data: Vec<u8> = pixels_f32.iter().flat_map(|&v| v.to_ne_bytes()).collect();
         PixelBuffer::from_vec(byte_data, width, height, descriptor)
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?
+            .map_err(|e| RawError::Decode(format!("failed to create pixel buffer: {e}")))?
     };
 
-    // Extract camera info from filename (darktable doesn't emit it in PFM)
-    let filename = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_dng = ext.eq_ignore_ascii_case("dng");
 
-    Ok(RawDecodeOutput {
+    Ok(DtDecodeOutput {
         pixels: buf,
-        info: RawInfo {
-            width,
-            height,
-            make: String::new(),
-            model: filename,
-            sensor_width: width,
-            sensor_height: height,
-            cfa_pattern: String::new(),
-            is_dng,
-            orientation: 1,
-            bit_depth: None, // darktable outputs processed pixels, not raw sensor data
-            wb_coeffs: [1.0, 1.0, 1.0, 1.0],
-            color_matrix: [[0.0; 3]; 4],
-            black_levels: [0.0; 4],
-            white_levels: [0.0; 4],
-            crop_rect: None,
-            active_area: None,
-            baseline_exposure: None,
-            sensor_layout: crate::decode::SensorLayout::Unknown,
-        },
+        width,
+        height,
+        is_dng,
     })
 }
 
 /// Decode RAW bytes using darktable-cli (writes to temp file, decodes, cleans up).
-pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
+pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<DtDecodeOutput> {
     // Detect extension from magic bytes
     let ext = detect_extension(data);
 
@@ -331,10 +323,12 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
     let id = BYTES_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let tmp_dir = std::env::temp_dir().join(format!("zenraw_dt_bytes_{pid}_{id}"));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|e| RawError::Decode(format!("failed to create temp dir: {e}")))?;
 
     let input_path = tmp_dir.join(format!("input.{ext}"));
-    std::fs::write(&input_path, data).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::write(&input_path, data)
+        .map_err(|e| RawError::Decode(format!("failed to write input to temp file: {e}")))?;
 
     let result = decode_file(&input_path, config);
 
@@ -358,9 +352,9 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     read_line(&mut cursor, &mut header)?;
     let magic = header.trim();
     if magic != "PF" {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(RawError::InvalidInput(format!(
             "not a color PFM file (magic: {magic:?})"
-        ))));
+        )));
     }
 
     // Read dimensions
@@ -368,16 +362,16 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     read_line(&mut cursor, &mut header)?;
     let dims: Vec<&str> = header.split_whitespace().collect();
     if dims.len() != 2 {
-        return Err(at!(RawError::InvalidInput(
-            "invalid PFM dimensions line".into()
-        )));
+        return Err(RawError::InvalidInput(
+            "invalid PFM dimensions line".into(),
+        ));
     }
     let width: u32 = dims[0]
         .parse()
-        .map_err(|_| at!(RawError::InvalidInput("invalid PFM width".into())))?;
+        .map_err(|_| RawError::InvalidInput("invalid PFM width".into()))?;
     let height: u32 = dims[1]
         .parse()
-        .map_err(|_| at!(RawError::InvalidInput("invalid PFM height".into())))?;
+        .map_err(|_| RawError::InvalidInput("invalid PFM height".into()))?;
 
     // Read scale
     header.clear();
@@ -385,7 +379,7 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     let scale: f64 = header
         .trim()
         .parse()
-        .map_err(|_| at!(RawError::InvalidInput("invalid PFM scale".into())))?;
+        .map_err(|_| RawError::InvalidInput("invalid PFM scale".into()))?;
     let is_little_endian = scale < 0.0;
     let _abs_scale = scale.abs();
 
@@ -398,32 +392,30 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
         .checked_mul(height as u64)
         .and_then(|n| n.checked_mul(3))
         .ok_or_else(|| {
-            at!(RawError::LimitExceeded(format!(
-                "PFM dimensions overflow: {width}x{height}"
-            )))
+            RawError::LimitExceeded(format!("PFM dimensions overflow: {width}x{height}"))
         })?;
     let expected = total.checked_mul(4).ok_or_else(|| {
-        at!(RawError::LimitExceeded(format!(
+        RawError::LimitExceeded(format!(
             "PFM byte count overflow: {width}x{height}x3x4"
-        )))
+        ))
     })?;
 
     // Reject unreasonably large images before allocation (200M pixels max)
     if total / 3 > 200_000_000 {
-        return Err(at!(RawError::LimitExceeded(format!(
+        return Err(RawError::LimitExceeded(format!(
             "PFM dimensions {width}x{height} = {} pixels exceeds 200M limit",
             total / 3
-        ))));
+        )));
     }
 
     let total = total as usize;
     let expected = expected as usize;
 
     if pixel_data.len() < expected {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(RawError::InvalidInput(format!(
             "PFM data too short: expected {expected} bytes, got {}",
             pixel_data.len()
-        ))));
+        )));
     }
 
     // Parse f32 values — PFM stores rows bottom-to-top
@@ -458,12 +450,12 @@ fn read_line(cursor: &mut std::io::Cursor<&[u8]>, buf: &mut String) -> Result<()
     loop {
         if cursor
             .read(&mut byte)
-            .map_err(|e| at!(RawError::Decode(e.to_string())))?
+            .map_err(|e| RawError::Decode(e.to_string()))?
             == 0
         {
-            return Err(at!(RawError::InvalidInput(
-                "unexpected EOF in PFM header".into()
-            )));
+            return Err(RawError::InvalidInput(
+                "unexpected EOF in PFM header".into(),
+            ));
         }
         if byte[0] == b'\n' {
             break;
@@ -475,21 +467,31 @@ fn read_line(cursor: &mut std::io::Cursor<&[u8]>, buf: &mut String) -> Result<()
 
 // ── Utilities ───────────────────────────────────────────────────────────
 
-/// Find darktable-cli binary.
+/// Find darktable-cli binary by searching `$PATH` directly.
+///
+/// Avoids spawning `which` or any other external process.
 fn find_cli(custom: Option<&str>) -> Option<String> {
-    if let Some(path) = custom
-        && Path::new(path).exists()
-    {
-        return Some(path.to_string());
+    if let Some(path) = custom {
+        if Path::new(path).exists() {
+            return Some(path.to_string());
+        }
     }
 
-    // Search PATH
-    if let Ok(output) = Command::new("which").arg("darktable-cli").output()
-        && output.status.success()
-    {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
-            return Some(path);
+    // Search PATH entries directly — no subprocess needed
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join("darktable-cli");
+        if candidate.exists() {
+            if let Some(s) = candidate.to_str() {
+                return Some(s.to_string());
+            }
+        }
+        // Also check with .exe extension (Windows)
+        let candidate_exe = dir.join("darktable-cli.exe");
+        if candidate_exe.exists() {
+            if let Some(s) = candidate_exe.to_str() {
+                return Some(s.to_string());
+            }
         }
     }
 
@@ -497,7 +499,7 @@ fn find_cli(custom: Option<&str>) -> Option<String> {
 }
 
 /// Detect RAW file extension from magic bytes.
-fn detect_extension(data: &[u8]) -> &'static str {
+pub fn detect_extension(data: &[u8]) -> &'static str {
     if data.len() < 12 {
         return "raw";
     }

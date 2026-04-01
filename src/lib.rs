@@ -76,9 +76,6 @@ pub(crate) mod tiff_ifd;
 #[cfg(feature = "rawler")]
 mod rawler_backend;
 
-#[cfg(feature = "darktable")]
-pub mod darktable;
-
 #[cfg(feature = "exif")]
 pub mod exif;
 
