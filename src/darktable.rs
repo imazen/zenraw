@@ -63,6 +63,8 @@ pub struct DtConfig {
     pub xmp: Option<String>,
     /// Maximum pixel count before rejecting.
     pub max_pixels: u64,
+    /// Subprocess timeout in seconds. Default: 120.
+    pub timeout_secs: u64,
 }
 
 impl Default for DtConfig {
@@ -72,6 +74,7 @@ impl Default for DtConfig {
             color_profile: DtColorProfile::default(),
             xmp: None,
             max_pixels: 200_000_000,
+            timeout_secs: 120,
         }
     }
 }
@@ -107,6 +110,13 @@ impl DtConfig {
     #[must_use]
     pub fn with_max_pixels(mut self, max: u64) -> Self {
         self.max_pixels = max;
+        self
+    }
+
+    /// Set subprocess timeout in seconds (default: 120).
+    #[must_use]
+    pub fn with_timeout_secs(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
         self
     }
 }
@@ -197,30 +207,55 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     // Disable auto-workflow (sigmoid/filmic) for pure linear output
     cmd.args(["--conf", "plugins/darkroom/workflow=none"]);
 
-    // Run darktable-cli
-    let output = cmd.output().map_err(|e| {
-        at!(RawError::Decode(format!(
-            "failed to run darktable-cli: {e}"
-        )))
-    })?;
+    // Run darktable-cli with timeout to prevent indefinite blocking
+    let result = (|| -> Result<(Vec<f32>, u32, u32)> {
+        let mut child = cmd.spawn().map_err(|e| {
+            at!(RawError::Decode(format!(
+                "failed to run darktable-cli: {e}"
+            )))
+        })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(at!(RawError::Decode(format!(
-            "darktable-cli exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ))));
-    }
+        let timeout = std::time::Duration::from_secs(config.timeout_secs);
+        let start = std::time::Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(at!(RawError::Decode(format!(
+                            "darktable-cli timed out after {}s",
+                            config.timeout_secs
+                        ))));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(at!(RawError::Decode(format!(
+                        "failed to wait on darktable-cli: {e}"
+                    ))));
+                }
+            }
+        };
 
-    // Parse PFM output
-    let pfm_data = std::fs::read(&out_path)
-        .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
+        if !status.success() {
+            return Err(at!(RawError::Decode(format!(
+                "darktable-cli exited with {status}"
+            ))));
+        }
 
-    // Clean up entire temp directory (best effort)
+        // Parse PFM output
+        let pfm_data = std::fs::read(&out_path)
+            .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
+
+        parse_pfm(&pfm_data)
+    })();
+
+    // Clean up entire temp directory on ALL paths (best effort)
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
-    let (pixels_f32, width, height) = parse_pfm(&pfm_data)?;
+    let (pixels_f32, width, height) = result?;
 
     // Check limits
     let total = width as u64 * height as u64;
@@ -290,7 +325,12 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
     // Detect extension from magic bytes
     let ext = detect_extension(data);
 
-    let tmp_dir = std::env::temp_dir().join("zenraw_dt");
+    // Use unique-per-invocation temp dir to avoid race conditions
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static BYTES_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = BYTES_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tmp_dir = std::env::temp_dir().join(format!("zenraw_dt_bytes_{pid}_{id}"));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Decode(e.to_string())))?;
 
     let input_path = tmp_dir.join(format!("input.{ext}"));
@@ -298,8 +338,8 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
 
     let result = decode_file(&input_path, config);
 
-    // Clean up input
-    let _ = std::fs::remove_file(&input_path);
+    // Clean up entire temp directory (best effort)
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     result
 }
@@ -352,7 +392,33 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     // Read binary pixel data
     let pos = cursor.position() as usize;
     let pixel_data = &data[pos..];
-    let expected = width as usize * height as usize * 3 * 4; // 3 channels * 4 bytes per f32
+
+    // Validate dimensions with checked arithmetic BEFORE allocating
+    let total = (width as u64)
+        .checked_mul(height as u64)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or_else(|| {
+            at!(RawError::LimitExceeded(format!(
+                "PFM dimensions overflow: {width}x{height}"
+            )))
+        })?;
+    let expected = total.checked_mul(4).ok_or_else(|| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM byte count overflow: {width}x{height}x3x4"
+        )))
+    })?;
+
+    // Reject unreasonably large images before allocation (200M pixels max)
+    if total / 3 > 200_000_000 {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM dimensions {width}x{height} = {} pixels exceeds 200M limit",
+            total / 3
+        ))));
+    }
+
+    let total = total as usize;
+    let expected = expected as usize;
+
     if pixel_data.len() < expected {
         return Err(at!(RawError::InvalidInput(format!(
             "PFM data too short: expected {expected} bytes, got {}",
@@ -361,7 +427,6 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     }
 
     // Parse f32 values — PFM stores rows bottom-to-top
-    let total = width as usize * height as usize * 3;
     let mut pixels = Vec::with_capacity(total);
 
     let row_bytes = width as usize * 3 * 4;
