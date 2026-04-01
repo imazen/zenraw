@@ -16,7 +16,12 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::vec::Vec;
+
+use whereat::at;
+
+use crate::error::{RawError, Result};
 
 // ── D50 / D65 constants ─────────────────────────────────────────────
 
@@ -730,9 +735,17 @@ impl DngPipeline {
     /// 4. Camera → sRGB color matrix
     /// 5. ProfileToneCurve (if present) or clamp
     /// 6. sRGB gamma encoding
-    pub fn render(&self, raw_linear: &[f32]) -> Vec<u8> {
+    pub fn render(&self, raw_linear: &[f32]) -> Result<Vec<u8>> {
         let npix = (self.width as usize) * (self.height as usize);
-        assert_eq!(raw_linear.len(), npix * 3, "pixel count mismatch");
+        if raw_linear.len() != npix * 3 {
+            return Err(at!(RawError::InvalidInput(format!(
+                "pixel count mismatch: expected {} ({}x{}x3), got {}",
+                npix * 3,
+                self.width,
+                self.height,
+                raw_linear.len()
+            ))));
+        }
 
         let mut pixels = raw_linear.to_vec();
 
@@ -772,7 +785,7 @@ impl DngPipeline {
         }
 
         // 5. sRGB gamma encoding
-        linear_to_srgb_u8(&pixels)
+        Ok(linear_to_srgb_u8(&pixels))
     }
 
     /// Render with luminance-preserving tone curve application.
@@ -780,9 +793,17 @@ impl DngPipeline {
     /// Like `render()` but applies the tone curve on luminance only,
     /// preserving color ratios. Often produces better visual results
     /// than per-channel application.
-    pub fn render_lum_preserving(&self, raw_linear: &[f32]) -> Vec<u8> {
+    pub fn render_lum_preserving(&self, raw_linear: &[f32]) -> Result<Vec<u8>> {
         let npix = (self.width as usize) * (self.height as usize);
-        assert_eq!(raw_linear.len(), npix * 3, "pixel count mismatch");
+        if raw_linear.len() != npix * 3 {
+            return Err(at!(RawError::InvalidInput(format!(
+                "pixel count mismatch: expected {} ({}x{}x3), got {}",
+                npix * 3,
+                self.width,
+                self.height,
+                raw_linear.len()
+            ))));
+        }
 
         let mut pixels = raw_linear.to_vec();
 
@@ -837,7 +858,7 @@ impl DngPipeline {
         }
 
         // 5. sRGB gamma
-        linear_to_srgb_u8(&pixels)
+        Ok(linear_to_srgb_u8(&pixels))
     }
 }
 
@@ -1061,7 +1082,7 @@ mod tests {
             })
             .collect();
 
-        let srgb = pipeline.render(&raw);
+        let srgb = pipeline.render(&raw).unwrap();
 
         let r = srgb[0];
         let g = srgb[1];
@@ -1193,7 +1214,7 @@ mod tests {
         }
 
         eprintln!("Rendering via DngPipeline...");
-        let srgb = pipeline.render_lum_preserving(camera_raw);
+        let srgb = pipeline.render_lum_preserving(camera_raw).unwrap();
         eprintln!("Output: {} bytes", srgb.len());
 
         // Verify output is not all black or all white
@@ -1340,7 +1361,7 @@ mod tests {
             (n[1] * ab[1] * 0.05) as f32,
             (n[2] * ab[2] * 0.05) as f32,
         ];
-        let srgb = test_pipe.render(&raw_patch);
+        let srgb = test_pipe.render(&raw_patch).unwrap();
         eprintln!(
             "CBFA neutral render: R={} G={} B={}",
             srgb[0], srgb[1], srgb[2]
@@ -1436,8 +1457,8 @@ mod tests {
 
         // Red-ish pixel
         let raw = vec![0.3f32, 0.1, 0.05];
-        let per_ch = pipeline.render(&raw);
-        let lum_pres = pipeline.render_lum_preserving(&raw);
+        let per_ch = pipeline.render(&raw).unwrap();
+        let lum_pres = pipeline.render_lum_preserving(&raw).unwrap();
 
         eprintln!(
             "Per-channel: R={} G={} B={}",
