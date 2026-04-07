@@ -357,11 +357,14 @@ pub(crate) fn decode(
     // Step 1: Parse
     // rawloader can panic on malformed inputs, so catch those and convert to errors
     let data_vec = data.to_vec();
-    let raw = std::panic::catch_unwind(move || {
-        rawloader::decode(&mut std::io::Cursor::new(&data_vec))
-    })
-    .map_err(|_| at!(RawError::Decode("rawloader panicked on malformed input".into())))?
-    .map_err(|e| at!(RawError::from(e)))?;
+    let raw =
+        std::panic::catch_unwind(move || rawloader::decode(&mut std::io::Cursor::new(&data_vec)))
+            .map_err(|_| {
+                at!(RawError::Decode(
+                    "rawloader panicked on malformed input".into()
+                ))
+            })?
+            .map_err(|e| at!(RawError::from(e)))?;
 
     let width = raw.width;
     let height = raw.height;
