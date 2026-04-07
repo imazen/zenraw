@@ -133,6 +133,13 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<RawDecodeOutput> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
+    // RAW files have substantial headers; reject obviously-too-short inputs
+    if data.len() < 64 {
+        return Err(at!(RawError::Decode(
+            "input too short to be a valid RAW file".into()
+        )));
+    }
+
     // Step 1: Parse
     let source = RawSource::new_from_slice(data);
     let params = RawDecodeParams::default();

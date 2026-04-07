@@ -346,9 +346,22 @@ pub(crate) fn decode(
 ) -> Result<RawDecodeOutput> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
+    // RAW files have substantial headers; reject obviously-too-short inputs
+    // before passing to rawloader, which can panic on very short data.
+    if data.len() < 64 {
+        return Err(at!(RawError::Decode(
+            "input too short to be a valid RAW file".into()
+        )));
+    }
+
     // Step 1: Parse
-    let raw =
-        rawloader::decode(&mut std::io::Cursor::new(data)).map_err(|e| at!(RawError::from(e)))?;
+    // rawloader can panic on malformed inputs, so catch those and convert to errors
+    let data_vec = data.to_vec();
+    let raw = std::panic::catch_unwind(move || {
+        rawloader::decode(&mut std::io::Cursor::new(&data_vec))
+    })
+    .map_err(|_| at!(RawError::Decode("rawloader panicked on malformed input".into())))?
+    .map_err(|e| at!(RawError::from(e)))?;
 
     let width = raw.width;
     let height = raw.height;

@@ -1,0 +1,34 @@
+[package]
+name = "zenraw-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.9"
+enough = "0.4.3"
+
+[dependencies.zenraw]
+path = ".."
+default-features = false
+features = ["std", "rawloader"]
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_classify"
+path = "fuzz_targets/fuzz_classify.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode"
+path = "fuzz_targets/fuzz_decode.rs"
+doc = false
