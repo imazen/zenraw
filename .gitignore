@@ -5,9 +5,10 @@ Cargo.lock
 # Rust build artifacts
 target/
 
-# Fuzz build artifacts and crashes
+# Fuzz build artifacts, crashes, and corpus
 fuzz/target/
 fuzz/artifacts/
+fuzz/corpus/
 
 # Profiling
 perf.data
