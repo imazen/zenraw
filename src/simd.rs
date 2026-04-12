@@ -94,3 +94,81 @@ pub(crate) fn linear_to_srgb(x: f32) -> f32 {
         1.055 * x.powf(1.0 / 2.4) - 0.055
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_uniform_basic() {
+        let data = [100.0, 200.0, 300.0, 400.0, 500.0];
+        let black = 100.0;
+        let inv_range = 1.0 / 400.0; // white = 500
+        let result = normalize_uniform(&data, black, inv_range);
+        assert_eq!(result.len(), 5);
+        assert!((result[0] - 0.0).abs() < 1e-6); // at black
+        assert!((result[1] - 0.25).abs() < 1e-6);
+        assert!((result[2] - 0.5).abs() < 1e-6);
+        assert!((result[3] - 0.75).abs() < 1e-6);
+        assert!((result[4] - 1.0).abs() < 1e-6); // at white
+    }
+
+    #[test]
+    fn normalize_uniform_clamps() {
+        let data = [-10.0, 0.0, 50.0, 100.0, 200.0];
+        let black = 0.0;
+        let inv_range = 1.0 / 100.0;
+        let result = normalize_uniform(&data, black, inv_range);
+        assert_eq!(result[0], 0.0); // below black → clamped to 0
+        assert_eq!(result[4], 1.0); // above white → clamped to 1
+    }
+
+    #[test]
+    fn normalize_uniform_many_elements() {
+        // Enough elements to exercise SIMD (8-wide) + scalar tail
+        let data: Vec<f32> = (0..35).map(|i| i as f32 * 10.0).collect();
+        let black = 0.0;
+        let inv_range = 1.0 / 340.0;
+        let result = normalize_uniform(&data, black, inv_range);
+        assert_eq!(result.len(), 35);
+        for &v in &result {
+            assert!((0.0..=1.0).contains(&v), "out of range: {v}");
+        }
+        assert!((result[0] - 0.0).abs() < 1e-6);
+        assert!((result[34] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn normalize_uniform_empty() {
+        let result = normalize_uniform(&[], 0.0, 1.0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn extract_rgb_cpp3() {
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let result = extract_rgb_from_cpp(&data, 2, 3);
+        assert_eq!(result, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn extract_rgb_cpp4_drops_alpha() {
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 99.0, 4.0, 5.0, 6.0, 88.0];
+        let result = extract_rgb_from_cpp(&data, 2, 4);
+        assert_eq!(result, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn extract_rgb_cpp6() {
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let result = extract_rgb_from_cpp(&data, 1, 6);
+        assert_eq!(result, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn extract_rgb_short_data_pads_zeros() {
+        let data: Vec<f32> = vec![1.0]; // only 1 element but expects cpp=3
+        let result = extract_rgb_from_cpp(&data, 1, 3);
+        assert_eq!(result, vec![1.0, 0.0, 0.0]);
+    }
+}

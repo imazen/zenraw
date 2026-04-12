@@ -4,7 +4,7 @@
 //! when available, real DNG/RAW files.
 
 use enough::Unstoppable;
-use zenraw::{DemosaicMethod, OutputMode, RawDecodeConfig, RawError};
+use zenraw::{DemosaicMethod, OutputMode, OutputPrimaries, RawDecodeConfig, RawError};
 
 // ── Format detection tests ─────────────────────────────────────────────
 
@@ -280,6 +280,33 @@ fn decode_real_raw_file() {
     let output_bilinear =
         zenraw::decode(&data, &config_bilinear, &Unstoppable).expect("bilinear decode");
     assert!(output_bilinear.info.width > 0);
+
+    // Test decode with Display P3 target
+    let config_p3 = RawDecodeConfig::new().with_target(OutputPrimaries::DisplayP3);
+    let output_p3 = zenraw::decode(&data, &config_p3, &Unstoppable).expect("P3 decode");
+    assert_eq!(
+        output_p3.pixels.descriptor().primaries,
+        zenpixels::ColorPrimaries::DisplayP3
+    );
+
+    // Test decode with BT.2020 linear
+    let config_bt2020 = RawDecodeConfig::new()
+        .with_target(OutputPrimaries::Bt2020)
+        .with_output(OutputMode::Linear);
+    let output_bt2020 =
+        zenraw::decode(&data, &config_bt2020, &Unstoppable).expect("BT.2020 decode");
+    assert_eq!(
+        output_bt2020.pixels.descriptor().primaries,
+        zenpixels::ColorPrimaries::Bt2020
+    );
+
+    // Test CameraRaw reports Unknown primaries
+    let config_raw = RawDecodeConfig::new().with_output(OutputMode::CameraRaw);
+    let output_raw = zenraw::decode(&data, &config_raw, &Unstoppable).expect("CameraRaw decode");
+    assert_eq!(
+        output_raw.pixels.descriptor().primaries,
+        zenpixels::ColorPrimaries::Unknown
+    );
 
     eprintln!("All decode modes successful for {}", path.display());
 }

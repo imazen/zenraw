@@ -72,3 +72,54 @@ impl From<rawloader::RawLoaderError> for RawError {
 
 /// Result type alias for zenraw operations with location tracking.
 pub type Result<T> = core::result::Result<T, whereat::At<RawError>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_display_variants() {
+        let e = RawError::Decode("bad jpeg".into());
+        assert!(e.to_string().contains("bad jpeg"));
+
+        let e = RawError::InvalidInput("wrong size".into());
+        assert!(e.to_string().contains("wrong size"));
+
+        let e = RawError::Unsupported("no CR3".into());
+        assert!(e.to_string().contains("no CR3"));
+
+        let e = RawError::LimitExceeded("too big".into());
+        assert!(e.to_string().contains("too big"));
+
+        let e = RawError::Buffer(zenpixels::BufferError::InvalidDimensions);
+        assert!(e.to_string().contains("buffer error"));
+    }
+
+    #[test]
+    fn from_stop_reason() {
+        let reason = enough::StopReason::Cancelled;
+        let e: RawError = reason.into();
+        assert!(matches!(e, RawError::Stopped(_)));
+    }
+
+    #[test]
+    fn from_buffer_error() {
+        let be = zenpixels::BufferError::InvalidDimensions;
+        let e: RawError = be.into();
+        assert!(matches!(e, RawError::Buffer(_)));
+    }
+
+    #[test]
+    fn into_buffer_error_bare() {
+        let be = zenpixels::BufferError::InvalidDimensions;
+        let result = be.into_buffer_error();
+        assert!(matches!(result, zenpixels::BufferError::InvalidDimensions));
+    }
+
+    #[test]
+    fn into_buffer_error_at() {
+        let at_be = whereat::at!(zenpixels::BufferError::InvalidDimensions);
+        let result = at_be.into_buffer_error();
+        assert!(matches!(result, zenpixels::BufferError::InvalidDimensions));
+    }
+}
