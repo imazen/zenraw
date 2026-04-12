@@ -19,6 +19,9 @@ extern crate alloc;
 use alloc::format;
 use alloc::vec::Vec;
 
+// Re-export zenpixels for to_color_primaries()
+use zenpixels::ColorPrimaries;
+
 use whereat::at;
 
 use crate::error::{RawError, Result};
@@ -85,6 +88,15 @@ impl OutputPrimaries {
             Self::Srgb => &SRGB_TO_XYZ_D50,
             Self::DisplayP3 => &DISPLAY_P3_TO_XYZ_D50,
             Self::Bt2020 => &BT2020_TO_XYZ_D50,
+        }
+    }
+
+    /// Convert to the corresponding [`zenpixels::ColorPrimaries`] value.
+    pub fn to_color_primaries(self) -> ColorPrimaries {
+        match self {
+            Self::Srgb => ColorPrimaries::Bt709,
+            Self::DisplayP3 => ColorPrimaries::DisplayP3,
+            Self::Bt2020 => ColorPrimaries::Bt2020,
         }
     }
 }

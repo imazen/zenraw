@@ -260,7 +260,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             } else {
                 raw.wb_coeffs
             };
-            color::apply_color_pipeline(&mut colored, wb, xyz_to_cam);
+            color::apply_color_pipeline(&mut colored, wb, xyz_to_cam, config.target);
 
             // Apply exposure_ev if nonzero
             if config.exposure_ev.abs() > 1e-6 {
@@ -278,6 +278,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
                 xyz_to_cam,
                 is_dng,
                 final_orient,
+                config.target.to_color_primaries(),
             )
         }
         OutputMode::CameraRaw => {
@@ -290,6 +291,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
                 xyz_to_cam,
                 is_dng,
                 final_orient,
+                zenpixels::ColorPrimaries::Unknown,
             )
         }
     }
@@ -389,7 +391,7 @@ fn auto_develop_output(
     } else {
         // Fallback: basic color pipeline + gamma if DngPipeline can't be built
         let mut rgb = camera_linear;
-        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, xyz_to_cam);
+        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, xyz_to_cam, config.target);
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
@@ -407,7 +409,7 @@ fn auto_develop_output(
         u16_data,
         width as u32,
         height as u32,
-        PixelDescriptor::RGB16_SRGB,
+        PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
     )
     .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
@@ -582,7 +584,7 @@ fn decode_non_bayer(
         } else {
             raw.wb_coeffs
         };
-        color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam);
+        color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam, config.target);
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
@@ -613,6 +615,8 @@ fn decode_non_bayer(
         (cropped_rgb, out_w, out_h, raw_orient)
     };
 
+    let primaries = config.target.to_color_primaries();
+
     match config.output {
         OutputMode::Develop => {
             // For non-bayer, use basic develop (no DngPipeline)
@@ -624,6 +628,7 @@ fn decode_non_bayer(
                 xyz_to_cam,
                 is_dng,
                 final_orient,
+                primaries,
             )
         }
         OutputMode::Linear | OutputMode::CameraRaw => build_linear_output(
@@ -634,6 +639,7 @@ fn decode_non_bayer(
             xyz_to_cam,
             is_dng,
             final_orient,
+            primaries,
         ),
     }
 }
@@ -710,6 +716,7 @@ fn build_linear_output(
     xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
+    primaries: zenpixels::ColorPrimaries,
 ) -> Result<RawDecodeOutput> {
     let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
     let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&rgb).to_vec();
@@ -718,14 +725,14 @@ fn build_linear_output(
         byte_data,
         width as u32,
         height as u32,
-        PixelDescriptor::RGBF32_LINEAR,
+        PixelDescriptor::RGBF32_LINEAR.with_primaries(primaries),
     )
     .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
     Ok(RawDecodeOutput { pixels: buf, info })
 }
 
-/// Build display-ready sRGB u16 output (simple path without DngPipeline).
+/// Build display-ready u16 output (simple path without DngPipeline).
 #[allow(clippy::too_many_arguments)]
 fn build_develop_output(
     rgb: Vec<f32>,
@@ -735,6 +742,7 @@ fn build_develop_output(
     xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
+    primaries: zenpixels::ColorPrimaries,
 ) -> Result<RawDecodeOutput> {
     let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
     let mut gamma_rgb = rgb;
@@ -745,7 +753,7 @@ fn build_develop_output(
         u16_data,
         width as u32,
         height as u32,
-        PixelDescriptor::RGB16_SRGB,
+        PixelDescriptor::RGB16_SRGB.with_primaries(primaries),
     )
     .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 

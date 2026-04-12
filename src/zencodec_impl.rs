@@ -212,11 +212,15 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         let info = self.probe(data)?;
 
-        let descriptor = match self.config.output {
-            OutputMode::Develop => PixelDescriptor::RGB16_SRGB,
-            // TODO: .with_primaries() for non-sRGB targets
-            OutputMode::Linear | OutputMode::CameraRaw => PixelDescriptor::RGBF32_LINEAR,
-        };
+        let descriptor =
+            match self.config.output {
+                OutputMode::Develop => PixelDescriptor::RGB16_SRGB
+                    .with_primaries(self.config.target.to_color_primaries()),
+                OutputMode::Linear => PixelDescriptor::RGBF32_LINEAR
+                    .with_primaries(self.config.target.to_color_primaries()),
+                OutputMode::CameraRaw => PixelDescriptor::RGBF32_LINEAR
+                    .with_primaries(zenpixels::ColorPrimaries::Unknown),
+            };
 
         // When orientation is applied, output has display dimensions (may be swapped)
         let (w, h) = if self.config.apply_orientation {

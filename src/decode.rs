@@ -407,8 +407,7 @@ pub(crate) fn decode(
         } else {
             raw.wb_coeffs
         };
-        // TODO: pass config.target through for non-sRGB primaries in rawloader backend
-        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
+        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam, config.target);
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
@@ -497,20 +496,33 @@ pub(crate) fn decode(
                 u16_data,
                 final_w as u32,
                 final_h as u32,
-                PixelDescriptor::RGB16_SRGB,
+                PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
             )
             .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
-        OutputMode::Linear | OutputMode::CameraRaw => {
+        OutputMode::Linear => {
             let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
 
             let buf = PixelBuffer::from_vec(
                 byte_data,
                 final_w as u32,
                 final_h as u32,
-                PixelDescriptor::RGBF32_LINEAR,
+                PixelDescriptor::RGBF32_LINEAR.with_primaries(config.target.to_color_primaries()),
+            )
+            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+
+            Ok(RawDecodeOutput { pixels: buf, info })
+        }
+        OutputMode::CameraRaw => {
+            let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
+
+            let buf = PixelBuffer::from_vec(
+                byte_data,
+                final_w as u32,
+                final_h as u32,
+                PixelDescriptor::RGBF32_LINEAR.with_primaries(zenpixels::ColorPrimaries::Unknown),
             )
             .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
@@ -566,8 +578,7 @@ fn decode_non_bayer(
         } else {
             raw.wb_coeffs
         };
-        // TODO: pass config.target through for non-sRGB primaries in rawloader backend
-        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam);
+        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam, config.target);
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
@@ -650,20 +661,33 @@ fn decode_non_bayer(
                 u16_data,
                 final_w as u32,
                 final_h as u32,
-                PixelDescriptor::RGB16_SRGB,
+                PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
             )
             .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
-        OutputMode::Linear | OutputMode::CameraRaw => {
+        OutputMode::Linear => {
             let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
 
             let buf = PixelBuffer::from_vec(
                 byte_data,
                 final_w as u32,
                 final_h as u32,
-                PixelDescriptor::RGBF32_LINEAR,
+                PixelDescriptor::RGBF32_LINEAR.with_primaries(config.target.to_color_primaries()),
+            )
+            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+
+            Ok(RawDecodeOutput { pixels: buf, info })
+        }
+        OutputMode::CameraRaw => {
+            let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
+
+            let buf = PixelBuffer::from_vec(
+                byte_data,
+                final_w as u32,
+                final_h as u32,
+                PixelDescriptor::RGBF32_LINEAR.with_primaries(zenpixels::ColorPrimaries::Unknown),
             )
             .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
 

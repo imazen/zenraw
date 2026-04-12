@@ -123,7 +123,7 @@ fn color_pipeline_public_api() {
         [0.1, 0.2, 0.7],
         [0.0, 0.0, 0.0],
     ];
-    zenraw::color::apply_color_pipeline(&mut rgb, wb, xtc);
+    zenraw::color::apply_color_pipeline(&mut rgb, wb, xtc, zenraw::OutputPrimaries::Srgb);
     // All values should be in [0, 1]
     for &v in &rgb {
         assert!((0.0..=1.0).contains(&v), "value out of range: {v}");
@@ -175,7 +175,7 @@ fn full_pipeline_synthetic_data() {
         [0.1, 0.2, 0.7],
         [0.0, 0.0, 0.0],
     ];
-    zenraw::color::apply_color_pipeline(&mut rgb, wb, xtc);
+    zenraw::color::apply_color_pipeline(&mut rgb, wb, xtc, zenraw::OutputPrimaries::Srgb);
 
     // All values should be clamped
     for &v in &rgb {

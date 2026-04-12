@@ -3,23 +3,31 @@
 //! After demosaicing, camera RGB values need:
 //! 1. White balance application
 //! 2. Camera-to-XYZ color matrix transform
-//! 3. XYZ-to-linear-sRGB conversion
+//! 3. XYZ-to-output-primaries conversion
 //! 4. Clamp to [0, 1]
 //!
 //! This module performs steps 1-4 in a single pass over the pixel data.
 
 use archmage::prelude::*;
 
+use crate::dng_render::OutputPrimaries;
+
 /// Apply the full color pipeline to demosaiced camera RGB data in-place.
 ///
-/// Transforms camera RGB → white-balanced camera RGB → XYZ → linear sRGB.
+/// Transforms camera RGB → white-balanced camera RGB → XYZ → linear output primaries.
 ///
 /// `rgb`: interleaved f32 RGB data (3 components per pixel)
 /// `wb_coeffs`: white balance multipliers [R, G, B, E] from rawloader
 /// `xyz_to_cam`: 4×3 matrix (XYZ→camera) from rawloader — we invert it
-pub fn apply_color_pipeline(rgb: &mut [f32], wb_coeffs: [f32; 4], xyz_to_cam: [[f32; 3]; 4]) {
-    let cam_to_srgb = compute_cam_to_srgb_matrix(wb_coeffs, xyz_to_cam);
-    apply_color_matrix(rgb, cam_to_srgb);
+/// `target`: output color primaries (sRGB, Display P3, or BT.2020)
+pub fn apply_color_pipeline(
+    rgb: &mut [f32],
+    wb_coeffs: [f32; 4],
+    xyz_to_cam: [[f32; 3]; 4],
+    target: OutputPrimaries,
+) {
+    let cam_to_output = compute_cam_to_output_matrix(wb_coeffs, xyz_to_cam, target);
+    apply_color_matrix(rgb, cam_to_output);
 }
 
 /// Apply a 3×3 color matrix to interleaved RGB data with clamping.
@@ -44,17 +52,21 @@ fn apply_color_matrix(rgb: &mut [f32], mat: [[f32; 3]; 3]) {
     }
 }
 
-/// Compute the combined white-balance + camera-to-sRGB matrix.
+/// Compute the combined white-balance + camera-to-output matrix.
 ///
 /// The pipeline is:
-///   camera_rgb → WB(camera_rgb) → XYZ → sRGB_linear
+///   camera_rgb → WB(camera_rgb) → XYZ → linear output primaries
 ///
 /// cam_to_xyz = inverse(xyz_to_cam)  (3×3, first 3 rows of the 4×3)
-/// srgb_from_xyz is the standard Bradford-adapted D65 matrix
+/// xyz_to_output is the standard D65 matrix for the target color space
 /// WB is a diagonal matrix with wb_coeffs normalized by the green channel
 ///
-/// Combined: srgb_from_xyz × cam_to_xyz × WB_diag
-fn compute_cam_to_srgb_matrix(wb_coeffs: [f32; 4], xyz_to_cam: [[f32; 3]; 4]) -> [[f32; 3]; 3] {
+/// Combined: xyz_to_output × cam_to_xyz × WB_diag
+fn compute_cam_to_output_matrix(
+    wb_coeffs: [f32; 4],
+    xyz_to_cam: [[f32; 3]; 4],
+    target: OutputPrimaries,
+) -> [[f32; 3]; 3] {
     // Normalize WB coefficients relative to green
     let wb_g = wb_coeffs[1];
     let wb = if wb_g > 0.0 {
@@ -76,42 +88,59 @@ fn compute_cam_to_srgb_matrix(wb_coeffs: [f32; 4], xyz_to_cam: [[f32; 3]; 4]) ->
     // cam_to_xyz = inverse(xtc_norm)
     let cam_to_xyz = invert_3x3(xtc_norm);
 
-    // Standard XYZ→linear sRGB matrix (D65, IEC 61966-2-1)
-    // Standard IEC 61966-2-1 XYZ→linear sRGB matrix (D65 adapted).
-    // Values rounded to f32 representable precision.
-    #[allow(clippy::excessive_precision)]
-    let xyz_to_srgb = [
-        [3.2404542, -1.5371385, -0.4985314],
-        [-0.9692660, 1.8760108, 0.0415560],
-        [0.0556434, -0.2040259, 1.0572252],
-    ];
+    let xyz_to_output = xyz_to_rgb_d65(target);
 
-    // cam_to_srgb = xyz_to_srgb × cam_to_xyz
-    let cam_to_srgb = mat_mul(xyz_to_srgb, cam_to_xyz);
+    // cam_to_output = xyz_to_output × cam_to_xyz
+    let cam_to_output = mat_mul(xyz_to_output, cam_to_xyz);
 
-    // Normalize cam_to_srgb rows to sum to 1.
+    // Normalize rows to sum to 1.
     // This ensures that equal-channel input (a neutral) maps to equal
-    // sRGB output, so WB column-multiply produces correct neutrals.
-    let cam_to_srgb = normalize_rows(cam_to_srgb);
+    // output, so WB column-multiply produces correct neutrals.
+    let cam_to_output = normalize_rows(cam_to_output);
 
     // Apply white balance: multiply each column by the WB factor
     [
         [
-            cam_to_srgb[0][0] * wb[0],
-            cam_to_srgb[0][1] * wb[1],
-            cam_to_srgb[0][2] * wb[2],
+            cam_to_output[0][0] * wb[0],
+            cam_to_output[0][1] * wb[1],
+            cam_to_output[0][2] * wb[2],
         ],
         [
-            cam_to_srgb[1][0] * wb[0],
-            cam_to_srgb[1][1] * wb[1],
-            cam_to_srgb[1][2] * wb[2],
+            cam_to_output[1][0] * wb[0],
+            cam_to_output[1][1] * wb[1],
+            cam_to_output[1][2] * wb[2],
         ],
         [
-            cam_to_srgb[2][0] * wb[0],
-            cam_to_srgb[2][1] * wb[1],
-            cam_to_srgb[2][2] * wb[2],
+            cam_to_output[2][0] * wb[0],
+            cam_to_output[2][1] * wb[1],
+            cam_to_output[2][2] * wb[2],
         ],
     ]
+}
+
+/// XYZ→linear RGB matrix (D65 illuminant) for the given output primaries.
+#[allow(clippy::excessive_precision)]
+fn xyz_to_rgb_d65(target: OutputPrimaries) -> [[f32; 3]; 3] {
+    match target {
+        // IEC 61966-2-1 sRGB / BT.709
+        OutputPrimaries::Srgb => [
+            [3.2404542, -1.5371385, -0.4985314],
+            [-0.9692660, 1.8760108, 0.0415560],
+            [0.0556434, -0.2040259, 1.0572252],
+        ],
+        // Display P3 (D65 white point)
+        OutputPrimaries::DisplayP3 => [
+            [2.4934969, -0.9313836, -0.4027108],
+            [-0.8294890, 1.7626641, 0.0236247],
+            [0.0358458, -0.0761724, 0.9568845],
+        ],
+        // BT.2020 / BT.2100 (D65 white point)
+        OutputPrimaries::Bt2020 => [
+            [1.7166512, -0.3556708, -0.2533663],
+            [-0.6666844, 1.6164812, 0.0157685],
+            [0.0176399, -0.0427706, 0.9421031],
+        ],
+    }
 }
 
 /// Normalize each row of a 3×3 matrix to sum to 1.
@@ -308,7 +337,7 @@ mod tests {
             [0.0, 0.0, 1.0],
             [0.0, 0.0, 0.0],
         ];
-        apply_color_pipeline(&mut rgb, wb, xtc);
+        apply_color_pipeline(&mut rgb, wb, xtc, OutputPrimaries::Srgb);
         for &v in &rgb {
             assert!((0.0..=1.0).contains(&v), "Out of range: {v}");
         }
