@@ -25,13 +25,11 @@ fn find_raw_file() -> Option<Vec<u8>> {
             if matches!(
                 ext.to_lowercase().as_str(),
                 "dng" | "cr2" | "nef" | "arw" | "rw2" | "orf"
-            ) {
-                if let Ok(data) = std::fs::read(&path) {
-                    if zenraw::is_raw_file(&data) {
-                        eprintln!("Using: {}", path.display());
-                        return Some(data);
-                    }
-                }
+            ) && let Ok(data) = std::fs::read(&path)
+                && zenraw::is_raw_file(&data)
+            {
+                eprintln!("Using: {}", path.display());
+                return Some(data);
             }
         }
     }
