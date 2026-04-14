@@ -233,11 +233,16 @@ pub fn read_xmp_metadata(data: &[u8]) -> Option<XmpMetadata> {
 // ── Internal helpers ─────────────────────────────────────────────────
 
 /// Find a byte pattern in a slice, returning the offset.
+///
+/// Uses `memchr::memmem::find`, which dispatches to SIMD (SSE2/AVX2/NEON) under
+/// the hood. This matters because XMP markers can sit near the end of a
+/// multi-gigabyte DNG, and the naive `haystack.windows().position()` variant
+/// scanned byte by byte.
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|w| w == needle)
+    memchr::memmem::find(haystack, needle)
 }
 
 #[cfg(test)]

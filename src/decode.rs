@@ -804,19 +804,17 @@ pub(crate) fn is_dng_data(data: &[u8]) -> bool {
     if !is_tiff {
         return false;
     }
-    // Look for DNGVersion tag (0xC612) in the first 4KB
+    // Look for DNGVersion tag (0xC612) in the first 4KB.
+    // TIFF endianness determines byte order of the 2-byte tag id on disk:
+    // little-endian TIFF stores it as [0x12, 0xC6]; big-endian as [0xC6, 0x12].
     let search_len = data.len().min(4096);
-    let le = data[0] == b'I';
-    for i in 0..search_len.saturating_sub(1) {
-        if le {
-            if data[i] == 0x12 && data[i + 1] == 0xC6 {
-                return true;
-            }
-        } else if data[i] == 0xC6 && data[i + 1] == 0x12 {
-            return true;
-        }
-    }
-    false
+    let haystack = &data[..search_len];
+    let needle: &[u8] = if data[0] == b'I' {
+        &[0x12, 0xC6]
+    } else {
+        &[0xC6, 0x12]
+    };
+    memchr::memmem::find(haystack, needle).is_some()
 }
 
 /// Convert rawloader Orientation to EXIF u16 value.

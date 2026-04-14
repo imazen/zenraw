@@ -517,17 +517,16 @@ fn detect_extension(data: &[u8]) -> &'static str {
         || (data[0] == b'M' && data[1] == b'M' && data[2] == 0 && data[3] == 42);
 
     if is_tiff {
-        // Scan for DNGVersion tag
+        // Scan for DNGVersion tag (0xC612) in the first 4KB; endianness determines byte order.
         let search_len = data.len().min(4096);
-        let le = data[0] == b'I';
-        for i in 0..search_len.saturating_sub(1) {
-            if le {
-                if data[i] == 0x12 && data[i + 1] == 0xC6 {
-                    return "dng";
-                }
-            } else if data[i] == 0xC6 && data[i + 1] == 0x12 {
-                return "dng";
-            }
+        let haystack = &data[..search_len];
+        let needle: &[u8] = if data[0] == b'I' {
+            &[0x12, 0xC6]
+        } else {
+            &[0xC6, 0x12]
+        };
+        if memchr::memmem::find(haystack, needle).is_some() {
+            return "dng";
         }
         // Generic TIFF-based RAW — could be CR2, NEF, ARW, etc.
         // darktable handles them all with .raw or the original extension

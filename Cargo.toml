@@ -22,6 +22,7 @@ zencodec = { version = "0.1.13", optional = true }
 archmage = { version = "0.9.15", default-features = false }
 magetypes = { version = "0.9.15", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
+memchr = { version = "2.8.0", default-features = false }
 ultrahdr-core = { version = "0.3.0", default-features = false, features = ["transfer"], optional = true }
 
 # Metadata crates
