@@ -136,7 +136,9 @@ pub fn classify(data: &[u8]) -> FileFormat {
     }
 
     // Olympus ORF (TIFF variant with different magic)
-    if data[0] == b'I' && data[1] == b'I' && data[2] == 0x52 && data[3] == 0x4F {
+    // Two known variants: "IIRO" (0x52 0x4F) and "IIRS" (0x52 0x53)
+    if data[0] == b'I' && data[1] == b'I' && data[2] == 0x52 && (data[3] == 0x4F || data[3] == 0x53)
+    {
         return FileFormat::Orf;
     }
 

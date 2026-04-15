@@ -861,7 +861,9 @@ pub(crate) fn is_raw_file(data: &[u8]) -> bool {
     }
 
     // Olympus ORF (uses TIFF-like but with different magic in some variants)
-    if data[0] == b'I' && data[1] == b'I' && data[2] == 0x52 && data[3] == 0x4F {
+    // Two known variants: "IIRO" (0x52 0x4F) and "IIRS" (0x52 0x53)
+    if data[0] == b'I' && data[1] == b'I' && data[2] == 0x52 && (data[3] == 0x4F || data[3] == 0x53)
+    {
         return true;
     }
 
