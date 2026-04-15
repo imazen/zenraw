@@ -442,7 +442,7 @@ pub struct DngPipeline {
     /// Image dimensions.
     pub width: u32,
     pub height: u32,
-    /// ProfileToneCurve LUT (4097 entries, maps [0,1]→[0,1]).
+    /// ProfileToneCurve LUT (4097 entries, maps \[0,1\]→\[0,1\]).
     pub tone_curve: Option<Vec<f32>>,
     /// ProfileGainTableMap for Smart HDR.
     #[cfg(feature = "apple")]
