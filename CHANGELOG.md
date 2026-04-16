@@ -7,15 +7,15 @@
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
 
 ### Added
-- Wire `OutputPrimaries` through all color pipelines and descriptors (172c238)
-- Probe-vs-decode parity tests (6ddd8d3)
+- Thread `OutputPrimaries` through color pipelines and `PixelDescriptor` so callers can request sRGB, Display P3, or BT.2020 output from both the rawloader-backed and rawler-backed decode paths (172c238)
+- Probe-vs-decode parity tests verifying `classify`, `is_raw_file`, and `probe` agree with actual decode capability across DNG, NEF, CR2, ARW, ORF, RW2, and RAF (6ddd8d3)
 
 ### Changed
-- Use `memchr` SIMD for DNG header scan and XMP marker search (c5035b5)
-- Improve test coverage from 74% to 78% across all modules (47d50df)
+- Use `memchr::memmem` for the DNG header scan and XMP packet marker search; large multi-MB DNG XMP-miss scans drop from ~3 ms to ~65 us on a 5 MB FiveK DNG (c5035b5)
+- Improve test coverage from 74% to 78% across `simd`, `error`, and `zencodec_impl`, and add a rawloader-only CI job so `decode.rs` is exercised without the rawler feature (47d50df)
 
 ### Fixed
-- Detect Olympus ORF "IIRS" magic variant (0x52 0x53) (45eb9cd)
+- Detect Olympus ORF `IIRS` magic variant (`0x52 0x53`) alongside the existing `IIRO` so `classify()` and `is_raw_file()` correctly recognize cameras like the C5050Z (45eb9cd)
 - Collapse nested `if` statements to satisfy `clippy::collapsible_if` on Rust 1.94 (c56778a)
 
 ## [0.1.2] - 2026-04-10
