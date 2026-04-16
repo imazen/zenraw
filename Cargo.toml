@@ -9,7 +9,7 @@ categories = ["multimedia::images"]
 keywords = ["raw", "dng", "image", "decoder", "camera"]
 repository = "https://github.com/imazen/zenraw"
 readme = "README.md"
-exclude = ["CLAUDE.md", "CONTEXT-HANDOFF.md", "FEEDBACK.md", ".claude/", ".superwork/", ".zenbench/", "copter-report/", ".github/", "Cross.toml", "justfile", "Cargo.toml.original.txt", "fuzz/"]
+exclude = ["CLAUDE.md", "CONTEXT-HANDOFF.md", "FEEDBACK.md", ".claude/", ".superwork/", ".zenbench/", "copter-report/", ".github/", "Cross.toml", "justfile", "Cargo.toml.original.txt", "fuzz/", "docs/reference-research.md"]
 
 [dependencies]
 rawloader = { version = "0.37.1", optional = true }
