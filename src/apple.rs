@@ -196,41 +196,41 @@ pub(crate) fn parse_apple_makernote(makernote_bytes: &[u8]) -> Option<AppleMaker
                 // AE_STABLE is often UNDEFINED (bplist), just check if present
                 result.ae_stable = Some(!value_data.is_empty());
             }
-            makernote_tags::SIGNAL_TO_NOISE_RATIO => {
-                if dtype == 5 && value_data.len() >= 8 {
-                    let num = tiff_ifd_read_u32(&value_data, 0, byte_order);
-                    let den = tiff_ifd_read_u32(&value_data, 4, byte_order);
-                    result.signal_to_noise_ratio = Some(num as f64 / den.max(1) as f64);
-                }
+            makernote_tags::SIGNAL_TO_NOISE_RATIO
+                if dtype == 5 && value_data.len() >= 8 =>
+            {
+                let num = tiff_ifd_read_u32(&value_data, 0, byte_order);
+                let den = tiff_ifd_read_u32(&value_data, 4, byte_order);
+                result.signal_to_noise_ratio = Some(num as f64 / den.max(1) as f64);
             }
-            makernote_tags::ACCELERATION_VECTOR => {
-                if (dtype == 10 || dtype == 5) && count >= 3 {
-                    let mut accel = Vec::new();
-                    for j in 0..count as usize {
-                        let off = j * 8;
-                        if off + 8 > value_data.len() {
-                            break;
-                        }
-                        let num = tiff_ifd_read_u32(&value_data, off, byte_order) as i32;
-                        let den = tiff_ifd_read_u32(&value_data, off + 4, byte_order) as i32;
-                        accel.push(num as f64 / den.max(1) as f64);
+            makernote_tags::ACCELERATION_VECTOR
+                if (dtype == 10 || dtype == 5) && count >= 3 =>
+            {
+                let mut accel = Vec::new();
+                for j in 0..count as usize {
+                    let off = j * 8;
+                    if off + 8 > value_data.len() {
+                        break;
                     }
-                    result.acceleration_vector = Some(accel);
+                    let num = tiff_ifd_read_u32(&value_data, off, byte_order) as i32;
+                    let den = tiff_ifd_read_u32(&value_data, off + 4, byte_order) as i32;
+                    accel.push(num as f64 / den.max(1) as f64);
                 }
+                result.acceleration_vector = Some(accel);
             }
             makernote_tags::BURST_UUID
             | makernote_tags::IMAGE_UNIQUE_ID
-            | makernote_tags::LIVE_PHOTO_ID => {
-                if dtype == 2 {
-                    let s = String::from_utf8_lossy(&value_data)
-                        .trim_end_matches('\0')
-                        .to_string();
-                    match tag {
-                        makernote_tags::BURST_UUID => result.burst_uuid = Some(s),
-                        makernote_tags::IMAGE_UNIQUE_ID => result.image_unique_id = Some(s),
-                        makernote_tags::LIVE_PHOTO_ID => result.live_photo_id = Some(s),
-                        _ => {}
-                    }
+            | makernote_tags::LIVE_PHOTO_ID
+                if dtype == 2 =>
+            {
+                let s = String::from_utf8_lossy(&value_data)
+                    .trim_end_matches('\0')
+                    .to_string();
+                match tag {
+                    makernote_tags::BURST_UUID => result.burst_uuid = Some(s),
+                    makernote_tags::IMAGE_UNIQUE_ID => result.image_unique_id = Some(s),
+                    makernote_tags::LIVE_PHOTO_ID => result.live_photo_id = Some(s),
+                    _ => {}
                 }
             }
             _ => {}
