@@ -2,9 +2,10 @@
 
 ## [Unreleased]
 
-### QUEUED BREAKING CHANGES
-<!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
-     Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
+## [0.2.0] - 2026-04-17
+
+### BREAKING CHANGES
+- `apply_color_pipeline()` gained a 4th parameter
 
 ### Added
 - Thread `OutputPrimaries` through color pipelines and `PixelDescriptor` so callers can request sRGB, Display P3, or BT.2020 output from both the rawloader-backed and rawler-backed decode paths (172c238)
