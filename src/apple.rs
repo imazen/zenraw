@@ -511,11 +511,7 @@ pub(crate) fn extract_semantic_mattes(file_data: &[u8]) -> Vec<SemanticMatte> {
 const MAX_IFD_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
 
 fn extract_ifd_image_data(file_data: &[u8], ifd: &tiff_ifd::Ifd, byte_order: ByteOrder) -> Vec<u8> {
-    fn collect(
-        file_data: &[u8],
-        offsets: &[u32],
-        counts: &[u32],
-    ) -> Vec<u8> {
+    fn collect(file_data: &[u8], offsets: &[u32], counts: &[u32]) -> Vec<u8> {
         // Sum byte counts in u64 with a hard cap. A malicious TIFF can declare
         // many strips with u32::MAX byte counts each — without the cap we'd
         // either wrap a usize sum on 32-bit targets or Vec::with_capacity a

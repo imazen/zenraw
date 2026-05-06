@@ -117,7 +117,7 @@ impl Default for RawDecodeConfig {
     fn default() -> Self {
         Self {
             demosaic: DemosaicMethod::default(),
-            max_pixels: 200_000_000,             // 200 megapixels
+            max_pixels: 200_000_000,              // 200 megapixels
             max_decode_bytes: 1024 * 1024 * 1024, // 1 GiB intermediate working-set
             output: OutputMode::Develop,
             target: OutputPrimaries::Srgb,
@@ -351,13 +351,15 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         Some(p) if p > limit => {
             return Err(at!(RawError::LimitExceeded(alloc::format!(
                 "image {}x{} = {p} pixels exceeds probe limit of {limit}",
-                raw.width, raw.height
+                raw.width,
+                raw.height
             ))));
         }
         None => {
             return Err(at!(RawError::LimitExceeded(alloc::format!(
                 "image {}x{} dimensions overflow",
-                raw.width, raw.height
+                raw.width,
+                raw.height
             ))));
         }
         _ => {}
@@ -969,9 +971,11 @@ mod tests {
 
     #[test]
     fn enforce_decode_limits_rejects_oversized_pixels() {
-        let mut cfg = RawDecodeConfig::default();
-        cfg.max_pixels = 1_000_000;
-        cfg.max_decode_bytes = u64::MAX;
+        let cfg = RawDecodeConfig {
+            max_pixels: 1_000_000,
+            max_decode_bytes: u64::MAX,
+            ..RawDecodeConfig::default()
+        };
         let err = enforce_decode_limits(2000, 2000, &cfg).unwrap_err();
         match err.decompose().0 {
             RawError::LimitExceeded(msg) => assert!(msg.contains("pixels exceeds limit")),
@@ -981,10 +985,12 @@ mod tests {
 
     #[test]
     fn enforce_decode_limits_rejects_oversized_working_set() {
-        let mut cfg = RawDecodeConfig::default();
-        cfg.max_pixels = u64::MAX;
-        // 100 MiB working-set budget
-        cfg.max_decode_bytes = 100 * 1024 * 1024;
+        let cfg = RawDecodeConfig {
+            max_pixels: u64::MAX,
+            // 100 MiB working-set budget
+            max_decode_bytes: 100 * 1024 * 1024,
+            ..RawDecodeConfig::default()
+        };
         // 10000 × 10000 × 12 bytes = 1.2 GB — exceeds 100 MiB
         let err = enforce_decode_limits(10_000, 10_000, &cfg).unwrap_err();
         match err.decompose().0 {

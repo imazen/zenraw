@@ -458,13 +458,11 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     // Validate dimensions with checked arithmetic BEFORE allocating.
     // Build up via checked_mul step by step so overflow at any tier is caught
     // (and on 32-bit usize targets we still catch it via the as_usize tail).
-    let total_pixels = (width as u64)
-        .checked_mul(height as u64)
-        .ok_or_else(|| {
-            at!(RawError::LimitExceeded(format!(
-                "PFM dimensions overflow: {width}x{height}"
-            )))
-        })?;
+    let total_pixels = (width as u64).checked_mul(height as u64).ok_or_else(|| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM dimensions overflow: {width}x{height}"
+        )))
+    })?;
     let total = total_pixels.checked_mul(3).ok_or_else(|| {
         at!(RawError::LimitExceeded(format!(
             "PFM channel count overflow: {width}x{height}x3"
@@ -655,10 +653,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let id = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "zenraw_read_pfm_ok_{}_{id}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("zenraw_read_pfm_ok_{}_{id}", std::process::id()));
         let payload = b"PF\n1 1\n-1.0\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
         {
             let mut f = std::fs::File::create(&path).unwrap();
