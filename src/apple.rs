@@ -809,13 +809,30 @@ pub fn extract_profile_gain_table_map(data: &[u8]) -> Option<ProfileGainTableMap
     }
 
     // Gain table: grid_rows × grid_cols × tonal_points × f32
+    //
+    // Use checked u64 arithmetic to defend against attacker-controlled u32×u32×u32
+    // overflow on 32-bit targets (and to bound peak RAM on 64-bit targets where
+    // the multiplication wouldn't overflow but would still allocate gigabytes).
+    // Cap at 16 Mi entries (~64 MiB f32 table) — comfortably above any plausible
+    // PGTM grid (Apple uses ~50×50×64 ≈ 160k) but small enough to reject malicious
+    // headers like 0x10000 × 0x10000 × 0x10000.
+    const PGTM_MAX_ENTRIES: u64 = 16 * 1024 * 1024;
     let table_start = 64;
-    let table_len = grid_rows as usize * grid_cols as usize * tonal_points as usize;
-    let table_bytes = table_len * 4;
-
-    if table_start + table_bytes > raw.len() {
+    let entries = (grid_rows as u64)
+        .checked_mul(grid_cols as u64)
+        .and_then(|n| n.checked_mul(tonal_points as u64))?;
+    if entries == 0 || entries > PGTM_MAX_ENTRIES {
         return None;
     }
+    let table_bytes = entries.checked_mul(4)?;
+    let table_end = (table_start as u64).checked_add(table_bytes)?;
+    if table_end > raw.len() as u64 {
+        return None;
+    }
+
+    let table_len = entries as usize;
+    let table_bytes = table_bytes as usize;
+    debug_assert_eq!(table_bytes, table_len * 4);
 
     let mut table = Vec::with_capacity(table_len);
     for i in 0..table_len {
@@ -1402,6 +1419,75 @@ mod tests {
         } else {
             eprintln!("No DNG profile found");
         }
+    }
+
+    /// Build a minimal TIFF + SubIFD chain whose ProfileGainTableMap (0xCD2D)
+    /// declares grid_rows × grid_cols × tonal_points that overflow u32 when
+    /// multiplied — without any matching tail bytes. The parser must reject
+    /// rather than allocate a gigantic table.
+    #[test]
+    fn pgtm_grid_dims_overflow_rejected() {
+        // Construct synthetic UNDEFINED entry payload: 64 bytes header where
+        // grid_rows=grid_cols=tonal_points=0xFFFFFFFF. usize multiplication of
+        // these would wrap on any target; u64 multiplication overflows past 2^64.
+        // The table section is empty.
+        let mut raw_payload = Vec::with_capacity(64);
+        raw_payload.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // grid_rows
+        raw_payload.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // grid_cols
+        raw_payload.extend_from_slice(&0.0f64.to_be_bytes()); // spacing_v
+        raw_payload.extend_from_slice(&0.0f64.to_be_bytes()); // spacing_h
+        raw_payload.extend_from_slice(&0.0f64.to_be_bytes()); // origin_v
+        raw_payload.extend_from_slice(&0.0f64.to_be_bytes()); // origin_h
+        raw_payload.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // tonal_points
+        // 5 × f32 input weights
+        for _ in 0..5 {
+            raw_payload.extend_from_slice(&0.0f32.to_be_bytes());
+        }
+        assert_eq!(raw_payload.len(), 64);
+
+        // Build a minimal big-endian TIFF: header → IFD0 (1 entry: SubIFDs) →
+        // SubIFD0 (1 entry: tag 0xCD2D, type UNDEFINED=7, count=64, payload offset).
+        // We only need TiffStructure::find_entry to reach the SubIFD entry and
+        // read_entry_bytes to point into the payload.
+        let mut tiff = Vec::new();
+        // Big-endian header: "MM" 0x002A, IFD0 offset = 8
+        tiff.extend_from_slice(&[0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08]);
+        // IFD0: 1 entry (SubIFDs tag 0x014A, type LONG=4, count=1, value=offset to subifd)
+        let sub_ifd_offset_pos = tiff.len() + 2 + 12; // we'll backfill
+        tiff.extend_from_slice(&[0x00, 0x01]); // 1 entry
+        tiff.extend_from_slice(&[0x01, 0x4A]); // tag SubIFDs
+        tiff.extend_from_slice(&[0x00, 0x04]); // type LONG
+        tiff.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // count=1
+        // value: pointer to the SubIFD; backfilled below
+        let sub_ifd_ptr_pos = tiff.len();
+        tiff.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        tiff.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // next IFD = 0
+        let _ = sub_ifd_offset_pos;
+
+        let sub_ifd_start = tiff.len() as u32;
+        // Patch IFD0 SubIFDs value
+        tiff[sub_ifd_ptr_pos..sub_ifd_ptr_pos + 4].copy_from_slice(&sub_ifd_start.to_be_bytes());
+
+        // SubIFD: 1 entry (tag 0xCD2D, type UNDEFINED=7, count=64, value=offset to payload)
+        tiff.extend_from_slice(&[0x00, 0x01]); // 1 entry
+        tiff.extend_from_slice(&[0xCD, 0x2D]); // PROFILE_GAIN_TABLE_MAP
+        tiff.extend_from_slice(&[0x00, 0x07]); // type UNDEFINED
+        tiff.extend_from_slice(&[0x00, 0x00, 0x00, 0x40]); // count=64
+        let payload_ptr_pos = tiff.len();
+        tiff.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // value: payload offset
+        tiff.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // next IFD = 0
+
+        let payload_offset = tiff.len() as u32;
+        tiff[payload_ptr_pos..payload_ptr_pos + 4].copy_from_slice(&payload_offset.to_be_bytes());
+        tiff.extend_from_slice(&raw_payload);
+
+        // Parser must return None (overflow / oversized table) instead of
+        // attempting Vec::with_capacity for grid_rows × grid_cols × tonal_points.
+        let result = extract_profile_gain_table_map(&tiff);
+        assert!(
+            result.is_none(),
+            "PGTM with overflowing grid dims must be rejected, got {result:?}"
+        );
     }
 
     #[test]
