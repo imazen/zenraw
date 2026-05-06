@@ -65,6 +65,14 @@ pub struct DtConfig {
     pub max_pixels: u64,
     /// Subprocess timeout in seconds. Default: 120.
     pub timeout_secs: u64,
+    /// Maximum bytes to read from the PFM file darktable-cli writes.
+    ///
+    /// Default: 4 GiB. The PFM is RGB f32 — at the 200 MP `max_pixels`
+    /// default the legitimate ceiling is 200_000_000 × 3 × 4 ≈ 2.4 GiB plus
+    /// header — so 4 GiB has headroom without unbounded disk-fill DoS where a
+    /// hostile input causes darktable to write a giant file we then load
+    /// whole-cloth into RAM.
+    pub max_pfm_bytes: u64,
 }
 
 impl Default for DtConfig {
@@ -75,6 +83,7 @@ impl Default for DtConfig {
             xmp: None,
             max_pixels: 200_000_000,
             timeout_secs: 120,
+            max_pfm_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
         }
     }
 }
@@ -110,6 +119,13 @@ impl DtConfig {
     #[must_use]
     pub fn with_max_pixels(mut self, max: u64) -> Self {
         self.max_pixels = max;
+        self
+    }
+
+    /// Set the maximum PFM byte size to read from darktable-cli output (default: 4 GiB).
+    #[must_use]
+    pub fn with_max_pfm_bytes(mut self, max: u64) -> Self {
+        self.max_pfm_bytes = max;
         self
     }
 
@@ -245,10 +261,8 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             ))));
         }
 
-        // Parse PFM output
-        let pfm_data = std::fs::read(&out_path)
-            .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
-
+        // Parse PFM output, bounded by max_pfm_bytes.
+        let pfm_data = read_pfm_bounded(&out_path, config.max_pfm_bytes)?;
         parse_pfm(&pfm_data)
     })();
 
@@ -350,6 +364,40 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
 ///
 /// Format: "PF\n<width> <height>\n<scale>\n<binary f32 RGB data>"
 /// Scale > 0 = big-endian, scale < 0 = little-endian.
+/// Read the PFM darktable-cli produced, bounded by `max_bytes`.
+///
+/// A hostile input could coax darktable-cli into writing a large PFM (oversized
+/// canvas, plugin misconfiguration, etc). `std::fs::read` would (a) fill disk
+/// transparently and (b) then load the entire file into RAM in one shot. Cap
+/// up front via metadata + a belt-and-suspenders `Read::take` so a TOCTOU
+/// between metadata and open still can't drag in more than the cap.
+fn read_pfm_bounded(out_path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    let metadata = std::fs::metadata(out_path)
+        .map_err(|e| at!(RawError::Decode(format!("failed to stat PFM output: {e}"))))?;
+    if metadata.len() > max_bytes {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM output {} bytes exceeds budget of {max_bytes}",
+            metadata.len(),
+        ))));
+    }
+    let file = std::fs::File::open(out_path)
+        .map_err(|e| at!(RawError::Decode(format!("failed to open PFM output: {e}"))))?;
+    // +1 byte trip-wire: if Read::take reads exactly max+1 we know the file
+    // grew between stat and open or metadata lied.
+    let cap = max_bytes.saturating_add(1);
+    let mut limited = file.take(cap);
+    let mut pfm_data = Vec::with_capacity(metadata.len().min(max_bytes) as usize);
+    limited
+        .read_to_end(&mut pfm_data)
+        .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
+    if pfm_data.len() as u64 > max_bytes {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM output exceeded {max_bytes} bytes mid-read"
+        ))));
+    }
+    Ok(pfm_data)
+}
+
 fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     let mut cursor = std::io::Cursor::new(data);
     let mut header = String::new();
@@ -539,6 +587,52 @@ fn detect_extension(data: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_pfm_bounded_rejects_oversized_metadata() {
+        // Write a 4 KiB scratch file and require a 1 KiB cap — must reject
+        // before any allocation.
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let id = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "zenraw_read_pfm_oversize_{}_{id}",
+            std::process::id()
+        ));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(&vec![0u8; 4096]).unwrap();
+        }
+
+        let err = read_pfm_bounded(&path, 1024).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        match err.decompose().0 {
+            RawError::LimitExceeded(msg) => assert!(msg.contains("exceeds budget")),
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_pfm_bounded_accepts_within_budget() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let id = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "zenraw_read_pfm_ok_{}_{id}",
+            std::process::id()
+        ));
+        let payload = b"PF\n1 1\n-1.0\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(payload).unwrap();
+        }
+
+        let bytes = read_pfm_bounded(&path, 4096).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(bytes.len(), payload.len());
+    }
 
     #[test]
     fn pfm_round_trip() {
