@@ -427,6 +427,20 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
         .parse()
         .map_err(|_| at!(RawError::InvalidInput("invalid PFM height".into())))?;
 
+    // Reject zero-dim and dimensions individually past 200M to defend the
+    // arithmetic below independently of the multiplied total. A pathological
+    // 1×u32::MAX would multiply within u64 but blow row_bytes / row_start.
+    if width == 0 || height == 0 {
+        return Err(at!(RawError::InvalidInput(format!(
+            "PFM dimensions {width}x{height} not positive"
+        ))));
+    }
+    if width > 200_000 || height > 200_000 {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM dimension out of range: {width}x{height}"
+        ))));
+    }
+
     // Read scale
     header.clear();
     read_line(&mut cursor, &mut header)?;
@@ -441,31 +455,45 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     let pos = cursor.position() as usize;
     let pixel_data = &data[pos..];
 
-    // Validate dimensions with checked arithmetic BEFORE allocating
-    let total = (width as u64)
+    // Validate dimensions with checked arithmetic BEFORE allocating.
+    // Build up via checked_mul step by step so overflow at any tier is caught
+    // (and on 32-bit usize targets we still catch it via the as_usize tail).
+    let total_pixels = (width as u64)
         .checked_mul(height as u64)
-        .and_then(|n| n.checked_mul(3))
         .ok_or_else(|| {
             at!(RawError::LimitExceeded(format!(
                 "PFM dimensions overflow: {width}x{height}"
             )))
         })?;
+    let total = total_pixels.checked_mul(3).ok_or_else(|| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM channel count overflow: {width}x{height}x3"
+        )))
+    })?;
     let expected = total.checked_mul(4).ok_or_else(|| {
         at!(RawError::LimitExceeded(format!(
             "PFM byte count overflow: {width}x{height}x3x4"
         )))
     })?;
 
-    // Reject unreasonably large images before allocation (200M pixels max)
-    if total / 3 > 200_000_000 {
+    // Reject unreasonably large images before allocation (200M pixels max).
+    if total_pixels > 200_000_000 {
         return Err(at!(RawError::LimitExceeded(format!(
-            "PFM dimensions {width}x{height} = {} pixels exceeds 200M limit",
-            total / 3
+            "PFM dimensions {width}x{height} = {total_pixels} pixels exceeds 200M limit"
         ))));
     }
 
-    let total = total as usize;
-    let expected = expected as usize;
+    // Convert to usize via try_into to catch u64→usize narrowing on 32-bit.
+    let total: usize = usize::try_from(total).map_err(|_| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM total {total} doesn't fit in usize"
+        )))
+    })?;
+    let expected: usize = usize::try_from(expected).map_err(|_| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM expected size {expected} doesn't fit in usize"
+        )))
+    })?;
 
     if pixel_data.len() < expected {
         return Err(at!(RawError::InvalidInput(format!(
@@ -474,12 +502,20 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
         ))));
     }
 
-    // Parse f32 values — PFM stores rows bottom-to-top
+    // Parse f32 values — PFM stores rows bottom-to-top.
     let mut pixels = Vec::with_capacity(total);
 
-    let row_bytes = width as usize * 3 * 4;
+    // row_bytes and row_start are bounded by `expected` (already checked
+    // above) — pre-computing once keeps the inner loop branch-free.
+    let row_bytes = (width as usize)
+        .checked_mul(3 * 4)
+        .ok_or_else(|| at!(RawError::LimitExceeded("PFM row bytes overflow".into())))?;
     for row in (0..height as usize).rev() {
-        let row_start = row * row_bytes;
+        let row_start = row.checked_mul(row_bytes).ok_or_else(|| {
+            at!(RawError::LimitExceeded(format!(
+                "PFM row offset overflow at row {row}"
+            )))
+        })?;
         for i in 0..width as usize * 3 {
             let offset = row_start + i * 4;
             let bytes = [
@@ -632,6 +668,40 @@ mod tests {
         let bytes = read_pfm_bounded(&path, 4096).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(bytes.len(), payload.len());
+    }
+
+    #[test]
+    fn pfm_rejects_zero_dimension() {
+        let pfm = b"PF\n0 1\n-1.0\n";
+        let err = parse_pfm(pfm).unwrap_err();
+        match err.decompose().0 {
+            RawError::InvalidInput(msg) => assert!(msg.contains("not positive")),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pfm_rejects_huge_dimension() {
+        // A 1 × 4_294_967_295 PFM passes the older "total / 3" gate (since
+        // 1 × 4_294_967_295 × 3 / 3 = ~4.3 G, > 200M, so rejected) but the
+        // pre-fix multiplications `width * 3 * 4` and `row * row_bytes`
+        // could overflow on small targets. With explicit per-dim bounds we
+        // bail at the dim-range check.
+        let pfm = b"PF\n1 4294967295\n-1.0\n";
+        let err = parse_pfm(pfm).unwrap_err();
+        match err.decompose().0 {
+            RawError::LimitExceeded(msg) => assert!(msg.contains("dimension")),
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pfm_rejects_oversized_total() {
+        // 1000 × 1000 = 1M pixels — but bumping to 100k × 100k = 10G pixels
+        // hits the "exceeds 200M limit" guard.
+        let pfm = b"PF\n100000 100000\n-1.0\n";
+        let err = parse_pfm(pfm).unwrap_err();
+        assert!(matches!(err.decompose().0, RawError::LimitExceeded(_)));
     }
 
     #[test]
