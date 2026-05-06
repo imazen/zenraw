@@ -1,8 +1,13 @@
 # zenraw development tasks
 
-# Run all tests with all features
+# Run all tests with all features (excluding fixture-dependent integration tests)
 test:
     cargo test --features rawler,darktable,exif,xmp,apple
+
+# Run integration tests requiring external RAW fixtures
+# (FiveK at /mnt/v/input/fivek/dng + raw.pixls.us samples — run `just fetch-samples` first)
+test-fixtures:
+    cargo test --features rawler,darktable,exif,xmp,apple,integration-fixtures
 
 # Run regression tests (requires darktable-cli + test files)
 regress:

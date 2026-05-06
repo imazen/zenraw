@@ -57,6 +57,11 @@ ultrahdr = ["dep:ultrahdr-core"]
 exif = ["dep:kamadak-exif"]
 xmp = ["std"]
 apple = ["exif", "xmp"]
+# Enables tests that require external RAW fixture files (FiveK DNG corpus
+# at /mnt/v/input/fivek/dng and raw.pixls.us samples at /mnt/v/input/raw-samples).
+# CI does not enable this — fixtures are not on GitHub runners. Run locally
+# via `cargo test --features rawler,integration-fixtures` after `just fetch-samples`.
+integration-fixtures = []
 
 [profile.test]
 opt-level = 2

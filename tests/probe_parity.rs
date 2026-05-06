@@ -3,17 +3,31 @@
 //! Verifies that zenraw's detection/classification functions agree with
 //! actual decode capability: if we detect a format, we can decode it,
 //! and if we can decode it, our detectors correctly identify it.
+//!
+//! Tests that require external RAW fixture files (FiveK DNG corpus at
+//! `/mnt/v/input/fivek/dng` and raw.pixls.us samples at
+//! `/mnt/v/input/raw-samples/`) are gated behind the
+//! `integration-fixtures` cargo feature so CI does not silently skip
+//! or panic on missing fixtures. Run locally with
+//! `cargo test --features rawler,integration-fixtures` after
+//! `just fetch-samples`.
 
 use enough::Unstoppable;
-use zenraw::{FileFormat, OutputMode, RawDecodeConfig, classify};
+use zenraw::{FileFormat, classify};
+#[cfg(feature = "integration-fixtures")]
+use zenraw::{OutputMode, RawDecodeConfig};
 
+#[cfg(feature = "integration-fixtures")]
 const SAMPLES_DIR: &str = "/mnt/v/input/raw-samples";
+#[cfg(feature = "integration-fixtures")]
 const FIVEK_DIR: &str = "/mnt/v/input/fivek/dng";
 
+#[cfg(feature = "integration-fixtures")]
 fn load_sample(name: &str) -> Option<Vec<u8>> {
     std::fs::read(format!("{SAMPLES_DIR}/{name}")).ok()
 }
 
+#[cfg(feature = "integration-fixtures")]
 fn load_first_fivek_dng() -> Option<(String, Vec<u8>)> {
     let entries = std::fs::read_dir(FIVEK_DIR).ok()?;
     for entry in entries.filter_map(|e| e.ok()).take(3) {
@@ -32,12 +46,15 @@ fn load_first_fivek_dng() -> Option<(String, Vec<u8>)> {
 
 // ── DNG detection agrees with decode ─────────────────────────────────
 
+#[cfg(feature = "integration-fixtures")]
 #[test]
 fn dng_classify_agrees_with_probe_and_decode() {
-    let Some((name, data)) = load_first_fivek_dng() else {
-        eprintln!("Skipping: no FiveK DNG files found at {FIVEK_DIR}");
-        return;
-    };
+    let (name, data) = load_first_fivek_dng().unwrap_or_else(|| {
+        panic!(
+            "integration-fixtures enabled but no FiveK DNG files found at {FIVEK_DIR}; \
+             run `just fetch-samples` and ensure the FiveK corpus is present"
+        )
+    });
 
     // classify should identify as DNG
     let fmt = classify(&data);
@@ -100,6 +117,7 @@ fn dng_classify_agrees_with_probe_and_decode() {
 
 // ── Non-DNG RAW detection agrees with decode ────────────────────────
 
+#[cfg(feature = "integration-fixtures")]
 #[test]
 fn non_dng_raw_classify_agrees_with_probe_and_decode() {
     let samples: &[&str] = &[
@@ -112,9 +130,10 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
     ];
 
     let mut tested = 0;
+    let mut missing: Vec<&str> = Vec::new();
     for &name in samples {
         let Some(data) = load_sample(name) else {
-            eprintln!("{name}: skipping (file not found)");
+            missing.push(name);
             continue;
         };
 
@@ -196,7 +215,12 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
         tested += 1;
     }
 
-    assert!(tested > 0, "no non-DNG RAW samples were available");
+    assert!(
+        missing.is_empty(),
+        "integration-fixtures enabled but missing samples in {SAMPLES_DIR}: {missing:?}; \
+         run `just fetch-samples`"
+    );
+    assert!(tested > 0, "no non-DNG RAW samples were tested");
     eprintln!("Tested {tested}/{} non-DNG formats", samples.len());
 }
 
@@ -234,13 +258,15 @@ fn non_raw_correctly_rejected() {
 
 // ── XMP extraction parity ───────────────────────────────────────────
 
-#[cfg(feature = "xmp")]
+#[cfg(all(feature = "xmp", feature = "integration-fixtures"))]
 #[test]
 fn xmp_extraction_consistent_across_methods() {
-    let Some((name, data)) = load_first_fivek_dng() else {
-        eprintln!("Skipping: no FiveK DNG files found at {FIVEK_DIR}");
-        return;
-    };
+    let (name, data) = load_first_fivek_dng().unwrap_or_else(|| {
+        panic!(
+            "integration-fixtures enabled but no FiveK DNG files found at {FIVEK_DIR}; \
+             run `just fetch-samples` and ensure the FiveK corpus is present"
+        )
+    });
 
     // extract_xmp returns the raw XML string
     let xmp_raw = zenraw::xmp::extract_xmp(&data);
@@ -279,7 +305,7 @@ fn xmp_extraction_consistent_across_methods() {
 /// Verify XMP extraction works on multiple sample formats and that
 /// the presence/absence of XMP is consistent between extract_xmp and
 /// read_xmp_metadata.
-#[cfg(feature = "xmp")]
+#[cfg(all(feature = "xmp", feature = "integration-fixtures"))]
 #[test]
 fn xmp_cross_format_consistency() {
     let samples = [
@@ -290,8 +316,10 @@ fn xmp_cross_format_consistency() {
     ];
 
     let mut tested = 0;
+    let mut missing: Vec<&str> = Vec::new();
     for name in &samples {
         let Some(data) = load_sample(name) else {
+            missing.push(name);
             continue;
         };
 
@@ -317,9 +345,11 @@ fn xmp_cross_format_consistency() {
         tested += 1;
     }
 
-    if tested == 0 {
-        eprintln!("Skipping: no sample files available");
-    } else {
-        eprintln!("XMP consistency verified for {tested} formats");
-    }
+    assert!(
+        missing.is_empty(),
+        "integration-fixtures enabled but missing samples in {SAMPLES_DIR}: {missing:?}; \
+         run `just fetch-samples`"
+    );
+    assert!(tested > 0, "no sample files were tested");
+    eprintln!("XMP consistency verified for {tested} formats");
 }
