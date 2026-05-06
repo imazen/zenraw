@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use enough::Stop;
-#[cfg(feature = "rawloader")]
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
 use whereat::at;
 use zenpixels::PixelBuffer;
 #[cfg(feature = "rawloader")]
@@ -58,6 +58,17 @@ pub struct RawDecodeConfig {
     pub demosaic: DemosaicMethod,
     /// Maximum pixel count (width × height) before rejecting.
     pub max_pixels: u64,
+    /// Maximum decoder working-set in bytes for the per-job RGB f32 buffer.
+    ///
+    /// Bounds the peak allocation for the intermediate `RGB f32` buffer that
+    /// demosaicing and the color pipeline produce (`width * height * 3 * 4`
+    /// bytes). At the 200 MP `max_pixels` default a 32-bit-per-channel RGB
+    /// buffer is 2.4 GiB — well past what a server should fan out per request.
+    /// Default: 1 GiB.
+    ///
+    /// Decoders reject inputs whose RGB f32 working-set exceeds this cap
+    /// before allocating, regardless of `max_pixels`.
+    pub max_decode_bytes: u64,
     /// Output rendering mode.
     ///
     /// - [`Develop`](OutputMode::Develop) (default): display-ready u16 sRGB
@@ -106,7 +117,8 @@ impl Default for RawDecodeConfig {
     fn default() -> Self {
         Self {
             demosaic: DemosaicMethod::default(),
-            max_pixels: 200_000_000, // 200 megapixels
+            max_pixels: 200_000_000,             // 200 megapixels
+            max_decode_bytes: 1024 * 1024 * 1024, // 1 GiB intermediate working-set
             output: OutputMode::Develop,
             target: OutputPrimaries::Srgb,
             exposure_ev: 0.0,
@@ -134,6 +146,16 @@ impl RawDecodeConfig {
     #[must_use]
     pub fn with_max_pixels(mut self, max: u64) -> Self {
         self.max_pixels = max;
+        self
+    }
+
+    /// Set maximum allowed RGB f32 working-set bytes.
+    ///
+    /// Defaults to 1 GiB. Decode rejects images whose
+    /// `width * height * 3 * 4` exceeds this before allocating.
+    #[must_use]
+    pub fn with_max_decode_bytes(mut self, max: u64) -> Self {
+        self.max_decode_bytes = max;
         self
     }
 
@@ -206,6 +228,46 @@ pub struct RawDecodeOutput {
     pub info: RawInfo,
 }
 
+/// Reject the decode early if image dimensions blow past `max_pixels` OR the
+/// `RGB f32` working-set bytes blow past `max_decode_bytes`.
+///
+/// Both backends (rawloader, rawler) must call this *before* calling into
+/// `normalize_raw_data` / `demosaic_to_rgb_f32`, which together allocate
+/// `width * height * 3 * 4` bytes of f32 RGB. Without the byte cap, a 200 MP
+/// image still demosaics to 2.4 GiB peak — too generous for untrusted input.
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
+pub(crate) fn enforce_decode_limits(
+    width: u64,
+    height: u64,
+    config: &RawDecodeConfig,
+) -> Result<()> {
+    let pixels = width.checked_mul(height).ok_or_else(|| {
+        at!(RawError::LimitExceeded(alloc::format!(
+            "image {width}x{height} dimensions overflow"
+        )))
+    })?;
+    if pixels > config.max_pixels {
+        return Err(at!(RawError::LimitExceeded(alloc::format!(
+            "image {width}x{height} = {pixels} pixels exceeds limit of {}",
+            config.max_pixels
+        ))));
+    }
+
+    // Working-set bound: the RGB f32 buffer is the largest intermediate.
+    let rgb_bytes = pixels.checked_mul(3 * 4).ok_or_else(|| {
+        at!(RawError::LimitExceeded(alloc::format!(
+            "image {width}x{height} RGB f32 byte count overflows u64"
+        )))
+    })?;
+    if rgb_bytes > config.max_decode_bytes {
+        return Err(at!(RawError::LimitExceeded(alloc::format!(
+            "image {width}x{height} requires {rgb_bytes} bytes RGB f32, exceeds budget of {}",
+            config.max_decode_bytes
+        ))));
+    }
+    Ok(())
+}
+
 /// Sensor data layout.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -272,12 +334,34 @@ pub struct RawInfo {
 /// Probe a RAW/DNG file for metadata without decoding pixels.
 ///
 /// Returns metadata about the image (dimensions, camera info, etc.).
+///
+/// Even though probing skips demosaic, the underlying RAW parsers allocate
+/// per-pixel sensor buffers internally — so we still bound the dimensions
+/// against [`RawDecodeConfig::max_pixels`].
 #[cfg(feature = "rawloader")]
 pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     let raw =
         rawloader::decode(&mut std::io::Cursor::new(data)).map_err(|e| at!(RawError::from(e)))?;
+
+    let pixels = (raw.width as u64).checked_mul(raw.height as u64);
+    let limit = RawDecodeConfig::default().max_pixels;
+    match pixels {
+        Some(p) if p > limit => {
+            return Err(at!(RawError::LimitExceeded(alloc::format!(
+                "image {}x{} = {p} pixels exceeds probe limit of {limit}",
+                raw.width, raw.height
+            ))));
+        }
+        None => {
+            return Err(at!(RawError::LimitExceeded(alloc::format!(
+                "image {}x{} dimensions overflow",
+                raw.width, raw.height
+            ))));
+        }
+        _ => {}
+    }
 
     let is_dng = is_dng_data(data);
 
@@ -370,13 +454,7 @@ pub(crate) fn decode(
     let height = raw.height;
 
     // Check limits
-    let pixels = width as u64 * height as u64;
-    if pixels > config.max_pixels {
-        return Err(at!(RawError::LimitExceeded(alloc::format!(
-            "image {width}x{height} = {pixels} pixels exceeds limit of {}",
-            config.max_pixels
-        ))));
-    }
+    enforce_decode_limits(width as u64, height as u64, config)?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -883,4 +961,55 @@ pub(crate) fn is_raw_file(data: &[u8]) -> bool {
     }
 
     false
+}
+
+#[cfg(all(test, any(feature = "rawloader", feature = "rawler")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enforce_decode_limits_rejects_oversized_pixels() {
+        let mut cfg = RawDecodeConfig::default();
+        cfg.max_pixels = 1_000_000;
+        cfg.max_decode_bytes = u64::MAX;
+        let err = enforce_decode_limits(2000, 2000, &cfg).unwrap_err();
+        match err.decompose().0 {
+            RawError::LimitExceeded(msg) => assert!(msg.contains("pixels exceeds limit")),
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enforce_decode_limits_rejects_oversized_working_set() {
+        let mut cfg = RawDecodeConfig::default();
+        cfg.max_pixels = u64::MAX;
+        // 100 MiB working-set budget
+        cfg.max_decode_bytes = 100 * 1024 * 1024;
+        // 10000 × 10000 × 12 bytes = 1.2 GB — exceeds 100 MiB
+        let err = enforce_decode_limits(10_000, 10_000, &cfg).unwrap_err();
+        match err.decompose().0 {
+            RawError::LimitExceeded(msg) => {
+                assert!(
+                    msg.contains("RGB f32") || msg.contains("budget"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enforce_decode_limits_rejects_overflow() {
+        let cfg = RawDecodeConfig::default();
+        // u64::MAX × u64::MAX overflows
+        let err = enforce_decode_limits(u64::MAX, 2, &cfg).unwrap_err();
+        assert!(matches!(err.decompose().0, RawError::LimitExceeded(_)));
+    }
+
+    #[test]
+    fn enforce_decode_limits_accepts_default_size() {
+        let cfg = RawDecodeConfig::default();
+        // 24 MP (typical full-frame RAW) — well under 200 MP and 1 GiB budget
+        enforce_decode_limits(6000, 4000, &cfg).expect("24 MP should fit");
+    }
 }
