@@ -504,7 +504,47 @@ pub(crate) fn extract_semantic_mattes(file_data: &[u8]) -> Vec<SemanticMatte> {
     mattes
 }
 
+/// Hard cap on per-image strip/tile byte total before [`extract_ifd_image_data`]
+/// will allocate. 256 MiB is generous for any Apple semantic matte / DNG SubIFD
+/// payload (mattes are typically under 10 MiB) and well below the file size cap
+/// the surrounding decoder paths enforce.
+const MAX_IFD_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+
 fn extract_ifd_image_data(file_data: &[u8], ifd: &tiff_ifd::Ifd, byte_order: ByteOrder) -> Vec<u8> {
+    fn collect(
+        file_data: &[u8],
+        offsets: &[u32],
+        counts: &[u32],
+    ) -> Vec<u8> {
+        // Sum byte counts in u64 with a hard cap. A malicious TIFF can declare
+        // many strips with u32::MAX byte counts each — without the cap we'd
+        // either wrap a usize sum on 32-bit targets or Vec::with_capacity a
+        // multi-GiB buffer on 64-bit targets.
+        let mut total: u64 = 0;
+        for &c in counts {
+            total = match total.checked_add(c as u64) {
+                Some(v) if v <= MAX_IFD_IMAGE_BYTES => v,
+                _ => return Vec::new(),
+            };
+        }
+        let total = total as usize;
+        let mut data = Vec::with_capacity(total);
+
+        for (off, cnt) in offsets.iter().zip(counts.iter()) {
+            let start = *off as usize;
+            let cnt = *cnt as usize;
+            // Use checked_add so a malicious offset+count near usize::MAX
+            // can't wrap into the file buffer.
+            let Some(end) = start.checked_add(cnt) else {
+                continue;
+            };
+            if end <= file_data.len() {
+                data.extend_from_slice(&file_data[start..end]);
+            }
+        }
+        data
+    }
+
     // Try strip-based first
     let strip_offsets = ifd.entries.iter().find(|e| e.tag == tags::STRIP_OFFSETS);
     let strip_counts = ifd
@@ -515,18 +555,7 @@ fn extract_ifd_image_data(file_data: &[u8], ifd: &tiff_ifd::Ifd, byte_order: Byt
     if let (Some(off_entry), Some(cnt_entry)) = (strip_offsets, strip_counts) {
         let offsets = tiff_ifd::read_long_values(file_data, off_entry, byte_order);
         let counts = tiff_ifd::read_long_values(file_data, cnt_entry, byte_order);
-
-        let total: usize = counts.iter().map(|&c| c as usize).sum();
-        let mut data = Vec::with_capacity(total);
-
-        for (off, cnt) in offsets.iter().zip(counts.iter()) {
-            let start = *off as usize;
-            let end = start + *cnt as usize;
-            if end <= file_data.len() {
-                data.extend_from_slice(&file_data[start..end]);
-            }
-        }
-        return data;
+        return collect(file_data, &offsets, &counts);
     }
 
     // Try tile-based
@@ -536,18 +565,7 @@ fn extract_ifd_image_data(file_data: &[u8], ifd: &tiff_ifd::Ifd, byte_order: Byt
     if let (Some(off_entry), Some(cnt_entry)) = (tile_offsets, tile_counts) {
         let offsets = tiff_ifd::read_long_values(file_data, off_entry, byte_order);
         let counts = tiff_ifd::read_long_values(file_data, cnt_entry, byte_order);
-
-        let total: usize = counts.iter().map(|&c| c as usize).sum();
-        let mut data = Vec::with_capacity(total);
-
-        for (off, cnt) in offsets.iter().zip(counts.iter()) {
-            let start = *off as usize;
-            let end = start + *cnt as usize;
-            if end <= file_data.len() {
-                data.extend_from_slice(&file_data[start..end]);
-            }
-        }
-        return data;
+        return collect(file_data, &offsets, &counts);
     }
 
     Vec::new()
@@ -1425,6 +1443,57 @@ mod tests {
     /// declares grid_rows × grid_cols × tonal_points that overflow u32 when
     /// multiplied — without any matching tail bytes. The parser must reject
     /// rather than allocate a gigantic table.
+    /// Build an Ifd whose StripByteCounts entry advertises a payload total
+    /// that exceeds the 256 MiB cap. extract_ifd_image_data must return an
+    /// empty Vec rather than allocating gigabytes (or wrapping a usize sum).
+    #[test]
+    fn extract_ifd_image_data_rejects_oversized_total() {
+        use crate::tiff_ifd::{ByteOrder, Ifd, IfdEntry};
+
+        // Two strips, each declaring u32::MAX bytes — sum is ~8 GiB, far past
+        // the 256 MiB cap. Counts are stored inline (count=2 LONGs ≠ inline
+        // for LONG type, since 2*4 > 4 bytes), so we lay them out at offsets
+        // we control inside the synthetic file buffer.
+        //
+        // File layout:
+        //   [0..512]   zeroed header padding (so strip offsets land somewhere
+        //              valid even if collect didn't bail)
+        //   [512..520] strip_byte_counts payload: [u32::MAX, u32::MAX] BE
+        //   [520..528] strip_offsets payload: [0, 0] BE
+        let mut file_data = vec![0u8; 1024];
+        file_data[512..516].copy_from_slice(&u32::MAX.to_be_bytes());
+        file_data[516..520].copy_from_slice(&u32::MAX.to_be_bytes());
+        // strip_offsets values: zero (would be in-range but we never reach there)
+        for slot in [520, 524] {
+            file_data[slot..slot + 4].copy_from_slice(&0u32.to_be_bytes());
+        }
+
+        let strip_counts_entry = IfdEntry {
+            tag: tags::STRIP_BYTE_COUNTS,
+            dtype: 4, // LONG
+            count: 2,
+            value_offset: 512u32.to_be_bytes(),
+        };
+        let strip_offsets_entry = IfdEntry {
+            tag: tags::STRIP_OFFSETS,
+            dtype: 4,
+            count: 2,
+            value_offset: 520u32.to_be_bytes(),
+        };
+        let ifd = Ifd {
+            offset: 0,
+            entries: vec![strip_offsets_entry, strip_counts_entry],
+            next_ifd_offset: 0,
+        };
+
+        let out = extract_ifd_image_data(&file_data, &ifd, ByteOrder::BigEndian);
+        assert!(
+            out.is_empty(),
+            "oversized strip total must be rejected (got {} bytes)",
+            out.len()
+        );
+    }
+
     #[test]
     fn pgtm_grid_dims_overflow_rejected() {
         // Construct synthetic UNDEFINED entry payload: 64 bytes header where
