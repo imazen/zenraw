@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `tests/fuzz_regression.rs` regression-harness template ported from
+  zenwebp (DEDUP-J). Walks `fuzz/regression/` (incl. per-target subdirs)
+  and runs every seed through `classify` and `decode` (with the same
+  format-filtering the fuzz target uses) on the stable toolchain — no
+  nightly required. Created `fuzz/regression/README.md` documenting how
+  to add minimized crash seeds.
+
 ## [0.2.0] - 2026-04-17
 
 ### BREAKING CHANGES
