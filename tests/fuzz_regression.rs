@@ -2,7 +2,7 @@
 //! entry point. Shared scaffolding lives in `zen-fuzz-regress`.
 
 use enough::Unstoppable;
-use zen_fuzz_regress::RegressionSuite;
+use zenutils_fuzz::RegressionSuite;
 use zenraw::{classify, FileFormat, RawDecodeConfig};
 
 #[test]

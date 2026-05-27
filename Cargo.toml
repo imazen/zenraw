@@ -37,7 +37,7 @@ ultrahdr-core = { version = "0.3.0", default-features = false, features = ["tran
 kamadak-exif = { version = "0.6.1", optional = true }
 
 [dev-dependencies]
-zen-fuzz-regress = { path = "../zen-fuzz-regress", version = "0.1.0" }
+zenutils-fuzz = "0.1.0"
 zensim = { version = "0.2.4"}
 bytemuck = "1.25.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
