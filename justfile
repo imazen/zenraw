@@ -8,6 +8,15 @@ test:
 regress:
     cargo test --features rawler,darktable regression -- --nocapture
 
+# Run probe-vs-decode parity tests against the local RAW sample corpus.
+# Gated on ZENRAW_RAW_SAMPLES_DIR (see tests/probe_parity.rs): CI leaves it
+# unset so the corpus-dependent assertions skip cleanly. Run `just
+# fetch-samples` first to populate the corpus.
+test-raw-parity:
+    ZENRAW_RAW_SAMPLES_DIR=/mnt/v/input/raw-samples \
+        cargo test --features rawler,darktable,exif,xmp,apple,zencodec,ultrahdr \
+        --test probe_parity -- --nocapture
+
 # Run unit tests only (fast)
 unit:
     cargo test --lib

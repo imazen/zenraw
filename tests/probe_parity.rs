@@ -7,11 +7,37 @@
 use enough::Unstoppable;
 use zenraw::{FileFormat, OutputMode, RawDecodeConfig, classify};
 
-const SAMPLES_DIR: &str = "/mnt/v/input/raw-samples";
+/// Env var that points at the non-DNG RAW sample corpus.
+///
+/// The corpus is local-only block storage (not in CI), so these tests are
+/// gated on the caller setting this variable — the skip decision is visible
+/// in the CI -> justfile -> test chain, never a silent runtime check. See the
+/// `test-raw-parity` justfile target for the canonical local path.
+const SAMPLES_DIR_ENV: &str = "ZENRAW_RAW_SAMPLES_DIR";
 const FIVEK_DIR: &str = "/mnt/v/input/fivek/dng";
 
-fn load_sample(name: &str) -> Option<Vec<u8>> {
-    std::fs::read(format!("{SAMPLES_DIR}/{name}")).ok()
+/// Resolve the RAW sample corpus directory from the environment.
+///
+/// Returns `None` when `ZENRAW_RAW_SAMPLES_DIR` is unset — the caller is
+/// expected to print a skip message and `return`. When it IS set, the corpus
+/// is treated as required: missing sample files are hard failures, not skips.
+fn samples_dir() -> Option<String> {
+    match std::env::var(SAMPLES_DIR_ENV) {
+        Ok(dir) if !dir.is_empty() => Some(dir),
+        _ => None,
+    }
+}
+
+/// Load a required sample from the corpus directory.
+///
+/// The caller has already established (via [`samples_dir`]) that the corpus
+/// was requested, so a missing/unreadable file is a hard failure — the caller
+/// asked for the corpus and a listed sample is absent.
+fn load_required_sample(dir: &str, name: &str) -> Vec<u8> {
+    let path = format!("{dir}/{name}");
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!("{SAMPLES_DIR_ENV}={dir} is set, but required sample {path} could not be read: {e}")
+    })
 }
 
 fn load_first_fivek_dng() -> Option<(String, Vec<u8>)> {
@@ -102,6 +128,14 @@ fn dng_classify_agrees_with_probe_and_decode() {
 
 #[test]
 fn non_dng_raw_classify_agrees_with_probe_and_decode() {
+    let Some(dir) = samples_dir() else {
+        eprintln!(
+            "{SAMPLES_DIR_ENV} not set — skipping non-DNG RAW parity test \
+             (run `just test-raw-parity` to exercise it)"
+        );
+        return;
+    };
+
     let samples: &[&str] = &[
         "nikon_d40.nef",
         "canon_350d.cr2",
@@ -113,10 +147,9 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
 
     let mut tested = 0;
     for &name in samples {
-        let Some(data) = load_sample(name) else {
-            eprintln!("{name}: skipping (file not found)");
-            continue;
-        };
+        // Env var is set, so the corpus was requested: a missing listed
+        // sample is a hard failure, not a silent skip.
+        let data = load_required_sample(&dir, name);
 
         // classify should not return DNG for non-DNG files
         let fmt = classify(&data);
@@ -282,6 +315,14 @@ fn xmp_extraction_consistent_across_methods() {
 #[cfg(feature = "xmp")]
 #[test]
 fn xmp_cross_format_consistency() {
+    let Some(dir) = samples_dir() else {
+        eprintln!(
+            "{SAMPLES_DIR_ENV} not set — skipping XMP cross-format parity test \
+             (run `just test-raw-parity` to exercise it)"
+        );
+        return;
+    };
+
     let samples = [
         "nikon_d40.nef",
         "canon_350d.cr2",
@@ -291,9 +332,8 @@ fn xmp_cross_format_consistency() {
 
     let mut tested = 0;
     for name in &samples {
-        let Some(data) = load_sample(name) else {
-            continue;
-        };
+        // Env var is set: missing listed samples are hard failures.
+        let data = load_required_sample(&dir, name);
 
         let raw = zenraw::xmp::extract_xmp(&data);
         let meta = zenraw::xmp::read_xmp_metadata(&data);
@@ -317,9 +357,9 @@ fn xmp_cross_format_consistency() {
         tested += 1;
     }
 
-    if tested == 0 {
-        eprintln!("Skipping: no sample files available");
-    } else {
-        eprintln!("XMP consistency verified for {tested} formats");
-    }
+    assert!(
+        tested > 0,
+        "{SAMPLES_DIR_ENV}={dir} is set but no sample files were exercised"
+    );
+    eprintln!("XMP consistency verified for {tested} formats");
 }

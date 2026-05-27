@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `tests/probe_parity.rs` RAW-corpus tests are now gated on the
+  `ZENRAW_RAW_SAMPLES_DIR` env var instead of a hard-coded local-only
+  `/mnt/v/input/raw-samples` path with a buried file-missing skip. CI
+  leaves the var unset, so the corpus-dependent tests skip cleanly with a
+  visible message rather than reaching `assert!(tested > 0)` with zero
+  samples (which panicked in CI). When the var IS set, missing listed
+  samples are hard failures. Added a `test-raw-parity` justfile target
+  that sets the var to the canonical local corpus path, documenting the
+  CI -> justfile -> test skip chain.
+
 ### Changed
 
 - `tests/fuzz_regression.rs` now uses the shared `zen-fuzz-regress`
