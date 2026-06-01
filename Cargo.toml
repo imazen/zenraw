@@ -11,8 +11,6 @@ repository = "https://github.com/imazen/zenraw"
 readme = "README.md"
 include = [
     "/src/**",
-    "/tests/**",
-    "/benches/**",
     "/examples/**",
     "/README.md",
     "/CHANGELOG.md",

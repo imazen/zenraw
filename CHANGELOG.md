@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removed `tests/` and `benches/` from the published package `include` list; downstream consumers no longer receive test code they cannot use.
+
 ### Fixed
 
 - `tests/probe_parity.rs` RAW-corpus tests are now gated on the
