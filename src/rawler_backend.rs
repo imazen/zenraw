@@ -77,6 +77,23 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         (raw.width as u32, raw.height as u32)
     };
 
+    // Bound probe outputs against the default pixel cap; even probe-only
+    // callers shouldn't see arbitrarily large dimensions reported back.
+    let limit = crate::decode::RawDecodeConfig::default().max_pixels;
+    match (width as u64).checked_mul(height as u64) {
+        Some(p) if p > limit => {
+            return Err(at!(RawError::LimitExceeded(format!(
+                "image {width}x{height} = {p} pixels exceeds probe limit of {limit}"
+            ))));
+        }
+        None => {
+            return Err(at!(RawError::LimitExceeded(format!(
+                "image {width}x{height} dimensions overflow"
+            ))));
+        }
+        _ => {}
+    }
+
     let xyz_to_cam = extract_xyz_to_cam(&raw);
     let black = raw.blacklevel.as_bayer_array();
     let white = raw.whitelevel.as_bayer_array();
@@ -150,14 +167,8 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     let width = raw.width;
     let height = raw.height;
 
-    // Check limits
-    let pixels = width as u64 * height as u64;
-    if pixels > config.max_pixels {
-        return Err(at!(RawError::LimitExceeded(format!(
-            "image {width}x{height} = {pixels} pixels exceeds limit of {}",
-            config.max_pixels
-        ))));
-    }
+    // Check limits (pixels + RGB f32 working-set).
+    crate::decode::enforce_decode_limits(width as u64, height as u64, config)?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 

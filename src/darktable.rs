@@ -65,6 +65,14 @@ pub struct DtConfig {
     pub max_pixels: u64,
     /// Subprocess timeout in seconds. Default: 120.
     pub timeout_secs: u64,
+    /// Maximum bytes to read from the PFM file darktable-cli writes.
+    ///
+    /// Default: 4 GiB. The PFM is RGB f32 — at the 200 MP `max_pixels`
+    /// default the legitimate ceiling is 200_000_000 × 3 × 4 ≈ 2.4 GiB plus
+    /// header — so 4 GiB has headroom without unbounded disk-fill DoS where a
+    /// hostile input causes darktable to write a giant file we then load
+    /// whole-cloth into RAM.
+    pub max_pfm_bytes: u64,
 }
 
 impl Default for DtConfig {
@@ -75,6 +83,7 @@ impl Default for DtConfig {
             xmp: None,
             max_pixels: 200_000_000,
             timeout_secs: 120,
+            max_pfm_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
         }
     }
 }
@@ -110,6 +119,13 @@ impl DtConfig {
     #[must_use]
     pub fn with_max_pixels(mut self, max: u64) -> Self {
         self.max_pixels = max;
+        self
+    }
+
+    /// Set the maximum PFM byte size to read from darktable-cli output (default: 4 GiB).
+    #[must_use]
+    pub fn with_max_pfm_bytes(mut self, max: u64) -> Self {
+        self.max_pfm_bytes = max;
         self
     }
 
@@ -245,10 +261,8 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             ))));
         }
 
-        // Parse PFM output
-        let pfm_data = std::fs::read(&out_path)
-            .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
-
+        // Parse PFM output, bounded by max_pfm_bytes.
+        let pfm_data = read_pfm_bounded(&out_path, config.max_pfm_bytes)?;
         parse_pfm(&pfm_data)
     })();
 
@@ -350,6 +364,40 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
 ///
 /// Format: "PF\n<width> <height>\n<scale>\n<binary f32 RGB data>"
 /// Scale > 0 = big-endian, scale < 0 = little-endian.
+/// Read the PFM darktable-cli produced, bounded by `max_bytes`.
+///
+/// A hostile input could coax darktable-cli into writing a large PFM (oversized
+/// canvas, plugin misconfiguration, etc). `std::fs::read` would (a) fill disk
+/// transparently and (b) then load the entire file into RAM in one shot. Cap
+/// up front via metadata + a belt-and-suspenders `Read::take` so a TOCTOU
+/// between metadata and open still can't drag in more than the cap.
+fn read_pfm_bounded(out_path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    let metadata = std::fs::metadata(out_path)
+        .map_err(|e| at!(RawError::Decode(format!("failed to stat PFM output: {e}"))))?;
+    if metadata.len() > max_bytes {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM output {} bytes exceeds budget of {max_bytes}",
+            metadata.len(),
+        ))));
+    }
+    let file = std::fs::File::open(out_path)
+        .map_err(|e| at!(RawError::Decode(format!("failed to open PFM output: {e}"))))?;
+    // +1 byte trip-wire: if Read::take reads exactly max+1 we know the file
+    // grew between stat and open or metadata lied.
+    let cap = max_bytes.saturating_add(1);
+    let mut limited = file.take(cap);
+    let mut pfm_data = Vec::with_capacity(metadata.len().min(max_bytes) as usize);
+    limited
+        .read_to_end(&mut pfm_data)
+        .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
+    if pfm_data.len() as u64 > max_bytes {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM output exceeded {max_bytes} bytes mid-read"
+        ))));
+    }
+    Ok(pfm_data)
+}
+
 fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     let mut cursor = std::io::Cursor::new(data);
     let mut header = String::new();
@@ -379,6 +427,20 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
         .parse()
         .map_err(|_| at!(RawError::InvalidInput("invalid PFM height".into())))?;
 
+    // Reject zero-dim and dimensions individually past 200M to defend the
+    // arithmetic below independently of the multiplied total. A pathological
+    // 1×u32::MAX would multiply within u64 but blow row_bytes / row_start.
+    if width == 0 || height == 0 {
+        return Err(at!(RawError::InvalidInput(format!(
+            "PFM dimensions {width}x{height} not positive"
+        ))));
+    }
+    if width > 200_000 || height > 200_000 {
+        return Err(at!(RawError::LimitExceeded(format!(
+            "PFM dimension out of range: {width}x{height}"
+        ))));
+    }
+
     // Read scale
     header.clear();
     read_line(&mut cursor, &mut header)?;
@@ -393,31 +455,43 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     let pos = cursor.position() as usize;
     let pixel_data = &data[pos..];
 
-    // Validate dimensions with checked arithmetic BEFORE allocating
-    let total = (width as u64)
-        .checked_mul(height as u64)
-        .and_then(|n| n.checked_mul(3))
-        .ok_or_else(|| {
-            at!(RawError::LimitExceeded(format!(
-                "PFM dimensions overflow: {width}x{height}"
-            )))
-        })?;
+    // Validate dimensions with checked arithmetic BEFORE allocating.
+    // Build up via checked_mul step by step so overflow at any tier is caught
+    // (and on 32-bit usize targets we still catch it via the as_usize tail).
+    let total_pixels = (width as u64).checked_mul(height as u64).ok_or_else(|| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM dimensions overflow: {width}x{height}"
+        )))
+    })?;
+    let total = total_pixels.checked_mul(3).ok_or_else(|| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM channel count overflow: {width}x{height}x3"
+        )))
+    })?;
     let expected = total.checked_mul(4).ok_or_else(|| {
         at!(RawError::LimitExceeded(format!(
             "PFM byte count overflow: {width}x{height}x3x4"
         )))
     })?;
 
-    // Reject unreasonably large images before allocation (200M pixels max)
-    if total / 3 > 200_000_000 {
+    // Reject unreasonably large images before allocation (200M pixels max).
+    if total_pixels > 200_000_000 {
         return Err(at!(RawError::LimitExceeded(format!(
-            "PFM dimensions {width}x{height} = {} pixels exceeds 200M limit",
-            total / 3
+            "PFM dimensions {width}x{height} = {total_pixels} pixels exceeds 200M limit"
         ))));
     }
 
-    let total = total as usize;
-    let expected = expected as usize;
+    // Convert to usize via try_into to catch u64→usize narrowing on 32-bit.
+    let total: usize = usize::try_from(total).map_err(|_| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM total {total} doesn't fit in usize"
+        )))
+    })?;
+    let expected: usize = usize::try_from(expected).map_err(|_| {
+        at!(RawError::LimitExceeded(format!(
+            "PFM expected size {expected} doesn't fit in usize"
+        )))
+    })?;
 
     if pixel_data.len() < expected {
         return Err(at!(RawError::InvalidInput(format!(
@@ -426,12 +500,20 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
         ))));
     }
 
-    // Parse f32 values — PFM stores rows bottom-to-top
+    // Parse f32 values — PFM stores rows bottom-to-top.
     let mut pixels = Vec::with_capacity(total);
 
-    let row_bytes = width as usize * 3 * 4;
+    // row_bytes and row_start are bounded by `expected` (already checked
+    // above) — pre-computing once keeps the inner loop branch-free.
+    let row_bytes = (width as usize)
+        .checked_mul(3 * 4)
+        .ok_or_else(|| at!(RawError::LimitExceeded("PFM row bytes overflow".into())))?;
     for row in (0..height as usize).rev() {
-        let row_start = row * row_bytes;
+        let row_start = row.checked_mul(row_bytes).ok_or_else(|| {
+            at!(RawError::LimitExceeded(format!(
+                "PFM row offset overflow at row {row}"
+            )))
+        })?;
         for i in 0..width as usize * 3 {
             let offset = row_start + i * 4;
             let bytes = [
@@ -539,6 +621,84 @@ fn detect_extension(data: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_pfm_bounded_rejects_oversized_metadata() {
+        // Write a 4 KiB scratch file and require a 1 KiB cap — must reject
+        // before any allocation.
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let id = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "zenraw_read_pfm_oversize_{}_{id}",
+            std::process::id()
+        ));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(&vec![0u8; 4096]).unwrap();
+        }
+
+        let err = read_pfm_bounded(&path, 1024).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        match err.decompose().0 {
+            RawError::LimitExceeded(msg) => assert!(msg.contains("exceeds budget")),
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_pfm_bounded_accepts_within_budget() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let id = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("zenraw_read_pfm_ok_{}_{id}", std::process::id()));
+        let payload = b"PF\n1 1\n-1.0\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(payload).unwrap();
+        }
+
+        let bytes = read_pfm_bounded(&path, 4096).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(bytes.len(), payload.len());
+    }
+
+    #[test]
+    fn pfm_rejects_zero_dimension() {
+        let pfm = b"PF\n0 1\n-1.0\n";
+        let err = parse_pfm(pfm).unwrap_err();
+        match err.decompose().0 {
+            RawError::InvalidInput(msg) => assert!(msg.contains("not positive")),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pfm_rejects_huge_dimension() {
+        // A 1 × 4_294_967_295 PFM passes the older "total / 3" gate (since
+        // 1 × 4_294_967_295 × 3 / 3 = ~4.3 G, > 200M, so rejected) but the
+        // pre-fix multiplications `width * 3 * 4` and `row * row_bytes`
+        // could overflow on small targets. With explicit per-dim bounds we
+        // bail at the dim-range check.
+        let pfm = b"PF\n1 4294967295\n-1.0\n";
+        let err = parse_pfm(pfm).unwrap_err();
+        match err.decompose().0 {
+            RawError::LimitExceeded(msg) => assert!(msg.contains("dimension")),
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pfm_rejects_oversized_total() {
+        // 1000 × 1000 = 1M pixels — but bumping to 100k × 100k = 10G pixels
+        // hits the "exceeds 200M limit" guard.
+        let pfm = b"PF\n100000 100000\n-1.0\n";
+        let err = parse_pfm(pfm).unwrap_err();
+        assert!(matches!(err.decompose().0, RawError::LimitExceeded(_)));
+    }
 
     #[test]
     fn pfm_round_trip() {
