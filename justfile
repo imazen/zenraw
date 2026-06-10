@@ -38,9 +38,18 @@ check:
 lint:
     cargo clippy --features rawler,darktable,exif,xmp,apple
 
-# Format
+# Format (also regenerates the public-API surface snapshot)
 fmt:
     cargo fmt
+    cargo test --test public_api_doc
+
+# Regenerate the public-API surface snapshot (docs/public-api/zenraw.txt) only
+api-doc:
+    cargo test --test public_api_doc
+
+# Verify the committed public-API snapshot is current (what CI runs)
+api-doc-check:
+    ZEN_API_DOC=check cargo test --test public_api_doc
 
 # Run benchmarks (requires raw samples in /mnt/v/input/raw-samples/)
 bench:
