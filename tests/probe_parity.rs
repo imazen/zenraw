@@ -92,30 +92,39 @@ fn dng_classify_agrees_with_probe_and_decode() {
     let output = zenraw::decode(&data, &config, &Unstoppable)
         .unwrap_or_else(|e| panic!("{name}: decode() failed: {e}"));
 
-    // probe and decode dimensions: decode with crop+orientation disabled
-    // should match probe (which returns raw sensor active area dimensions)
-    let config_raw = RawDecodeConfig::new()
+    // Probe / decode dimension parity.
+    //
+    // `probe` reports the camera's recommended crop area (the same crop the
+    // default decode applies) but does NOT apply EXIF orientation — it reports
+    // the stored sensor-orientation dims. So the decode that matches probe's
+    // geometry is `crop = true` (apply the same crop) + `orientation = false`
+    // (leave the stored dims, like probe). With orientation enabled the default
+    // decode can swap width/height for rotated images, so we disable it here to
+    // compare apples-to-apples against probe's stored-orientation dims.
+    let config_match = RawDecodeConfig::new()
         .with_output(OutputMode::Linear)
-        .with_crop(false)
+        .with_crop(true)
         .with_orientation(false);
-    let output_raw = zenraw::decode(&data, &config_raw, &Unstoppable)
-        .unwrap_or_else(|e| panic!("{name}: decode(no_crop,no_orient) failed: {e}"));
+    let output_match = zenraw::decode(&data, &config_match, &Unstoppable)
+        .unwrap_or_else(|e| panic!("{name}: decode(crop,no_orient) failed: {e}"));
     assert_eq!(
-        info.width, output_raw.info.width,
-        "{name}: probe vs decode(no_crop,no_orient) width mismatch"
+        info.width, output_match.info.width,
+        "{name}: probe vs decode(crop,no_orient) width mismatch"
     );
     assert_eq!(
-        info.height, output_raw.info.height,
-        "{name}: probe vs decode(no_crop,no_orient) height mismatch"
+        info.height, output_match.info.height,
+        "{name}: probe vs decode(crop,no_orient) height mismatch"
     );
 
-    // With default settings (crop+orient), pixel count should be
-    // less than or equal to uncropped
+    // The default decode applies the same crop probe reports, so its pixel
+    // count must match probe's (orientation only permutes pixels, never adds
+    // them). Assert `<=` to stay robust to any future crop tightening on the
+    // decode side.
     let raw_pixels = info.width as u64 * info.height as u64;
     let out_pixels = output.info.width as u64 * output.info.height as u64;
     assert!(
         out_pixels <= raw_pixels,
-        "{name}: cropped output has more pixels than probe"
+        "{name}: default decode has more pixels than probe reports"
     );
 
     eprintln!(
@@ -191,35 +200,36 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
             }
         };
 
-        // probe and decode dimensions: decode with crop+orientation disabled
-        // should match probe (which returns raw sensor active area dimensions)
-        let config_raw = RawDecodeConfig::new()
+        // Probe / decode dimension parity (see the DNG test above for the full
+        // rationale): probe applies the crop but not EXIF orientation, so the
+        // matching decode is `crop = true` + `orientation = false`.
+        let config_match = RawDecodeConfig::new()
             .with_output(OutputMode::Linear)
-            .with_crop(false)
+            .with_crop(true)
             .with_orientation(false);
-        let output_raw = match zenraw::decode(&data, &config_raw, &Unstoppable) {
+        let output_match = match zenraw::decode(&data, &config_match, &Unstoppable) {
             Ok(out) => out,
             Err(e) => {
-                eprintln!("{name}: decode(no_crop,no_orient) failed: {e}");
+                eprintln!("{name}: decode(crop,no_orient) failed: {e}");
                 continue;
             }
         };
         assert_eq!(
-            info.width, output_raw.info.width,
-            "{name}: probe vs decode(no_crop,no_orient) width mismatch"
+            info.width, output_match.info.width,
+            "{name}: probe vs decode(crop,no_orient) width mismatch"
         );
         assert_eq!(
-            info.height, output_raw.info.height,
-            "{name}: probe vs decode(no_crop,no_orient) height mismatch"
+            info.height, output_match.info.height,
+            "{name}: probe vs decode(crop,no_orient) height mismatch"
         );
 
-        // With default settings (crop+orient), pixel count should be
-        // less than or equal to uncropped
+        // The default decode applies the same crop probe reports, so its pixel
+        // count must match probe's (orientation only permutes pixels).
         let raw_pixels = info.width as u64 * info.height as u64;
         let out_pixels = output.info.width as u64 * output.info.height as u64;
         assert!(
             out_pixels <= raw_pixels,
-            "{name}: cropped output has more pixels than probe"
+            "{name}: default decode has more pixels than probe reports"
         );
 
         eprintln!(

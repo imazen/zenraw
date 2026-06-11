@@ -15,6 +15,21 @@
 
 ### Fixed
 
+- `probe` now reports the same dimensions `decode` produces under default
+  settings (crop applied). The rawloader backend's `probe` previously reported
+  the full uncropped sensor size while `decode` applied the camera's crop, so
+  `probe` and a default `decode` disagreed on the output width/height (e.g. a
+  Nikon NEF probed as 3040×2014 but decoded to 3038×2014). `probe` and
+  `apply_crop` now share a single `cropped_dims` helper so they can never
+  diverge on the post-crop geometry; `sensor_width`/`sensor_height` still report
+  the full uncropped sensor. The rawler backend already reported crop-applied
+  dims and is unchanged. (`src/decode.rs`)
+- `tests/probe_parity.rs` now compares `probe` against `decode(crop = true,
+  orientation = false)` — the config whose geometry `probe` actually represents
+  (crop-applied, stored sensor orientation) — instead of the uncropped
+  `decode(crop = false, …)`, which encoded the wrong contract and asserted
+  `probe == uncropped decode`. The two parity tests now pass on both the rawler
+  and rawloader backends. (`tests/probe_parity.rs`)
 - `tests/probe_parity.rs` RAW-corpus tests are now gated on the
   `ZENRAW_RAW_SAMPLES_DIR` env var instead of a hard-coded local-only
   `/mnt/v/input/raw-samples` path with a buried file-missing skip. CI

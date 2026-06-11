@@ -378,9 +378,16 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         None
     };
 
+    // Report the dimensions the *default* decode produces (crop applied), using
+    // the exact same crop math `decode` uses. `probe` does not apply EXIF
+    // orientation, so these are the cropped, stored-orientation dims — which is
+    // what `decode(crop = true, orientation = false)` yields. `sensor_width/height`
+    // keep the full uncropped sensor size (documented "before crop").
+    let (out_w, out_h) = cropped_dims(raw.width, raw.height, &raw.crops);
+
     Ok(RawInfo {
-        width: raw.width as u32,
-        height: raw.height as u32,
+        width: out_w as u32,
+        height: out_h as u32,
         make: raw.clean_make.clone(),
         model: raw.clean_model.clone(),
         sensor_width: raw.width as u32,
@@ -839,6 +846,30 @@ fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32
     }
 }
 
+/// Compute the output dimensions after applying the rawloader crop metadata.
+///
+/// `crops` is `[top, right, bottom, left]` in rawloader convention. Returns the
+/// `(width, height)` the default decode produces: the cropped size when the crop
+/// is valid, or the uncropped sensor size when it is absent or malformed. This
+/// is the single source of truth shared by [`probe`] (so the reported dims match
+/// the decoded buffer) and [`apply_crop`] (which actually slices the pixels), so
+/// probe and decode can never disagree on the post-crop geometry.
+#[cfg(feature = "rawloader")]
+pub(crate) fn cropped_dims(width: usize, height: usize, crops: &[usize; 4]) -> (usize, usize) {
+    let top = crops[0];
+    let right = crops[1];
+    let bottom = crops[2];
+    let left = crops[3];
+
+    // Reject malformed crops (would underflow or empty the image) — the default
+    // decode falls back to the full sensor in that case, so probe must too.
+    if top + bottom >= height || left + right >= width {
+        return (width, height);
+    }
+
+    (width - left - right, height - top - bottom)
+}
+
 /// Apply crop from RAW metadata.
 ///
 /// crops is [top, right, bottom, left] in rawloader convention.
@@ -849,19 +880,17 @@ fn apply_crop(
     height: usize,
     crops: &[usize; 4],
 ) -> (Vec<f32>, usize, usize) {
-    let top = crops[0];
-    let right = crops[1];
-    let bottom = crops[2];
-    let left = crops[3];
+    let (new_w, new_h) = cropped_dims(width, height, crops);
 
-    // Validate crop dimensions
-    if top + bottom >= height || left + right >= width {
-        // Invalid crop — return uncropped
+    // Crop was rejected (invalid / absent) — return the buffer unchanged so the
+    // dims still match what `cropped_dims` reported (the full sensor).
+    if (new_w, new_h) == (width, height) {
         return (rgb.to_vec(), width, height);
     }
 
-    let new_w = width - left - right;
-    let new_h = height - top - bottom;
+    let top = crops[0];
+    let bottom = crops[2];
+    let left = crops[3];
 
     let mut cropped = Vec::with_capacity(new_w * new_h * 3);
     for row in top..height - bottom {
