@@ -10,6 +10,11 @@
 
 ### Changed
 
+- Public-API snapshots migrated to the `zenutils-apidoc` 0.1.0 runner package
+  at `apidoc/` (self-contained, CI-free): three snapshot files under
+  `docs/public-api/`, regenerated via `just api-doc`. Replaces the in-crate
+  `tests/public_api_doc.rs` copy, its `serde_json` dev-dep, and every
+  `ZEN_API_DOC` / cargo-public-api trace in CI (ci.yml + fuzz.yml).
 - Bumped `zencodec` 0.1.13 → 0.1.21 (required for `OrientationHint` + the `DecodeJob::with_orientation` trait method; the adapter compiled against the new version with no other API changes needed). (`Cargo.toml`)
 - Removed `tests/` and `benches/` from the published package `include` list; downstream consumers no longer receive test code they cannot use.
 

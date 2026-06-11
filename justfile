@@ -38,18 +38,20 @@ check:
 lint:
     cargo clippy --features rawler,darktable,exif,xmp,apple
 
-# Format (also regenerates the public-API surface snapshot)
+# Format (also regenerates the public-API surface snapshots).
+# The snapshot runner lives in the self-contained apidoc/ package, so it is
+# never built or run by plain `cargo test` or any CI job.
 fmt:
     cargo fmt
-    cargo test --test public_api_doc
+    cargo test --manifest-path apidoc/Cargo.toml
 
-# Regenerate the public-API surface snapshot (docs/public-api/zenraw.txt) only
+# Regenerate the public-API surface snapshots (docs/public-api/) only
 api-doc:
-    cargo test --test public_api_doc
+    cargo test --manifest-path apidoc/Cargo.toml
 
-# Verify the committed public-API snapshot is current (what CI runs)
+# Verify the committed snapshots are current
 api-doc-check:
-    ZEN_API_DOC=check cargo test --test public_api_doc
+    ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml
 
 # Run benchmarks (requires raw samples in /mnt/v/input/raw-samples/)
 bench:

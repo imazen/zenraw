@@ -51,6 +51,8 @@ Thumbs.db
 .vscode/
 *.iml
 !fuzz/Cargo.lock
+# apidoc/ snapshot-runner lockfile is committed (Cargo.lock is ignored above)
+!apidoc/Cargo.lock
 
 # Tooling noise
 .superwork/

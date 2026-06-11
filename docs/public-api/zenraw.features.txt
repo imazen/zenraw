@@ -1,0 +1,200 @@
+# zenraw public API — additions from non-default features
+# features: apple,darktable,exif,rawler,rawloader,std,ultrahdr,xmp,zencodec
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   pub modules                                 5
+#   pub types (struct/enum/trait/alias)         8
+#   pub consts/statics                         22
+#   free functions                             12
+#   inherent methods                           14
+#   struct fields                              90
+#   enum variants                               3
+#   trait roster entries (type × trait)        23
+#   auto-trait-complete types                   8
+#
+# per-module pub lines:
+#   (root)                            9
+#   apple                            59
+#   darktable                        22
+#   dng_render                        4
+#   exif                             32
+#   xmp                              28
+
+## items (154 lines)
+
+pub mod apple
+pub mod apple::makernote_tags
+pub const apple::makernote_tags::ACCELERATION_VECTOR: u16
+pub const apple::makernote_tags::AE_AVERAGE: u16
+pub const apple::makernote_tags::AE_STABLE: u16
+pub const apple::makernote_tags::AE_TARGET: u16
+pub const apple::makernote_tags::AF_CONFIDENCE: u16
+pub const apple::makernote_tags::AF_MEASURED_DEPTH: u16
+pub const apple::makernote_tags::AF_PERFORMANCE: u16
+pub const apple::makernote_tags::AF_STABLE: u16
+pub const apple::makernote_tags::BURST_UUID: u16
+pub const apple::makernote_tags::HDR_IMAGE_TYPE: u16
+pub const apple::makernote_tags::IMAGE_CAPTURE_TYPE: u16
+pub const apple::makernote_tags::IMAGE_UNIQUE_ID: u16
+pub const apple::makernote_tags::LENS_ID: u16
+pub const apple::makernote_tags::LIVE_PHOTO_ID: u16
+pub const apple::makernote_tags::MAKERNOTE_VERSION: u16
+pub const apple::makernote_tags::MEDIA_GROUP_UUID: u16
+pub const apple::makernote_tags::OIS_MODE: u16
+pub const apple::makernote_tags::PHOTO_TRANSCODING_GAIN: u16
+pub const apple::makernote_tags::SEMANTIC_COMPONENTS: u16
+pub const apple::makernote_tags::SIGNAL_TO_NOISE_RATIO: u16
+#[non_exhaustive] pub struct apple::DngProfile
+pub apple::DngProfile::baseline_noise: core::option::Option<f64>
+pub apple::DngProfile::baseline_sharpness: core::option::Option<f64>
+pub apple::DngProfile::default_user_crop: core::option::Option<[f64; 4]>
+pub apple::DngProfile::hue_sat_map_encoding: core::option::Option<f64>
+pub apple::DngProfile::linear_response_limit: core::option::Option<f64>
+pub apple::DngProfile::name: core::option::Option<alloc::string::String>
+pub apple::DngProfile::noise_profile: core::option::Option<alloc::vec::Vec<f64>>
+pub apple::DngProfile::tone_curve: core::option::Option<alloc::vec::Vec<f32>>
+#[non_exhaustive] pub struct apple::GainMapInfo
+pub apple::GainMapInfo::alternate_headroom: core::option::Option<f64>
+pub apple::GainMapInfo::base_headroom: core::option::Option<f64>
+pub apple::GainMapInfo::base_rendition_is_hdr: core::option::Option<bool>
+pub apple::GainMapInfo::gain_map_max: core::option::Option<f64>
+pub apple::GainMapInfo::gain_map_min: core::option::Option<f64>
+pub apple::GainMapInfo::gamma: core::option::Option<f64>
+pub apple::GainMapInfo::headroom: core::option::Option<f64>
+pub apple::GainMapInfo::height: u32
+pub apple::GainMapInfo::jpeg_data: alloc::vec::Vec<u8>
+pub apple::GainMapInfo::offset_hdr: core::option::Option<f64>
+pub apple::GainMapInfo::offset_sdr: core::option::Option<f64>
+pub apple::GainMapInfo::version: core::option::Option<u32>
+pub apple::GainMapInfo::width: u32
+#[non_exhaustive] pub struct apple::ProfileGainTableMap
+pub apple::ProfileGainTableMap::grid_cols: u32
+pub apple::ProfileGainTableMap::grid_rows: u32
+pub apple::ProfileGainTableMap::input_weights: [f32; 5]
+pub apple::ProfileGainTableMap::origin_h: f64
+pub apple::ProfileGainTableMap::origin_v: f64
+pub apple::ProfileGainTableMap::spacing_h: f64
+pub apple::ProfileGainTableMap::spacing_v: f64
+pub apple::ProfileGainTableMap::table: alloc::vec::Vec<f32>
+pub apple::ProfileGainTableMap::tonal_points: u32
+pub fn apple::ProfileGainTableMap::apply(&self, &mut [f32], u32, u32, f64)
+pub fn apple::ProfileGainTableMap::stats(&self) -> (f32, f32, f32)
+pub fn apple::extract_dng_profile(&[u8]) -> core::option::Option<apple::DngProfile>
+pub fn apple::extract_gain_map(&[u8]) -> core::option::Option<apple::GainMapInfo>
+pub fn apple::extract_profile_gain_table_map(&[u8]) -> core::option::Option<apple::ProfileGainTableMap>
+pub mod darktable
+#[non_exhaustive] pub enum darktable::DtColorProfile
+pub darktable::DtColorProfile::LinearRec2020
+pub darktable::DtColorProfile::LinearRec709
+pub darktable::DtColorProfile::Srgb
+#[non_exhaustive] pub struct darktable::DtConfig
+pub darktable::DtConfig::cli_path: core::option::Option<alloc::string::String>
+pub darktable::DtConfig::color_profile: darktable::DtColorProfile
+pub darktable::DtConfig::max_pfm_bytes: u64
+pub darktable::DtConfig::max_pixels: u64
+pub darktable::DtConfig::timeout_secs: u64
+pub darktable::DtConfig::xmp: core::option::Option<alloc::string::String>
+pub fn darktable::DtConfig::new() -> Self
+pub fn darktable::DtConfig::with_cli_path(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn darktable::DtConfig::with_color_profile(self, darktable::DtColorProfile) -> Self
+pub fn darktable::DtConfig::with_max_pfm_bytes(self, u64) -> Self
+pub fn darktable::DtConfig::with_max_pixels(self, u64) -> Self
+pub fn darktable::DtConfig::with_timeout_secs(self, u64) -> Self
+pub fn darktable::DtConfig::with_xmp(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn darktable::decode_bytes(&[u8], &darktable::DtConfig) -> core::result::Result<decode::RawDecodeOutput, whereat::at::At<RawError>>
+pub fn darktable::decode_file(&std::path::Path, &darktable::DtConfig) -> core::result::Result<decode::RawDecodeOutput, whereat::at::At<RawError>>
+pub fn darktable::is_available() -> bool
+pub fn darktable::version() -> core::option::Option<alloc::string::String>
+pub dng_render::DngPipeline::gain_table_map: core::option::Option<apple::ProfileGainTableMap>
+pub fn dng_render::DngPipeline::from_metadata(&exif::ExifMetadata, u32, u32) -> core::option::Option<Self>
+pub fn dng_render::DngPipeline::from_metadata_with_primaries(&exif::ExifMetadata, u32, u32, dng_render::OutputPrimaries) -> core::option::Option<Self>
+pub fn dng_render::DngPipeline::with_gain_table_map(self, apple::ProfileGainTableMap) -> Self
+pub mod exif
+#[non_exhaustive] pub struct exif::ExifMetadata
+pub exif::ExifMetadata::analog_balance: core::option::Option<alloc::vec::Vec<f64>>
+pub exif::ExifMetadata::as_shot_neutral: core::option::Option<alloc::vec::Vec<f64>>
+pub exif::ExifMetadata::as_shot_white_xy: core::option::Option<(f64, f64)>
+pub exif::ExifMetadata::baseline_exposure: core::option::Option<f64>
+pub exif::ExifMetadata::bits_per_sample: core::option::Option<u16>
+pub exif::ExifMetadata::calibration_illuminant_1: core::option::Option<u16>
+pub exif::ExifMetadata::calibration_illuminant_2: core::option::Option<u16>
+pub exif::ExifMetadata::color_matrix_1: core::option::Option<alloc::vec::Vec<f64>>
+pub exif::ExifMetadata::color_matrix_2: core::option::Option<alloc::vec::Vec<f64>>
+pub exif::ExifMetadata::date_time: core::option::Option<alloc::string::String>
+pub exif::ExifMetadata::dng_version: core::option::Option<[u8; 4]>
+pub exif::ExifMetadata::exposure_time: core::option::Option<(u32, u32)>
+pub exif::ExifMetadata::f_number: core::option::Option<(u32, u32)>
+pub exif::ExifMetadata::focal_length: core::option::Option<(u32, u32)>
+pub exif::ExifMetadata::forward_matrix_1: core::option::Option<alloc::vec::Vec<f64>>
+pub exif::ExifMetadata::forward_matrix_2: core::option::Option<alloc::vec::Vec<f64>>
+pub exif::ExifMetadata::gps_altitude: core::option::Option<f64>
+pub exif::ExifMetadata::gps_latitude: core::option::Option<f64>
+pub exif::ExifMetadata::gps_longitude: core::option::Option<f64>
+pub exif::ExifMetadata::height: core::option::Option<u32>
+pub exif::ExifMetadata::iso: core::option::Option<u32>
+pub exif::ExifMetadata::lens_model: core::option::Option<alloc::string::String>
+pub exif::ExifMetadata::make: core::option::Option<alloc::string::String>
+pub exif::ExifMetadata::model: core::option::Option<alloc::string::String>
+pub exif::ExifMetadata::orientation: core::option::Option<u16>
+pub exif::ExifMetadata::software: core::option::Option<alloc::string::String>
+pub exif::ExifMetadata::unique_camera_model: core::option::Option<alloc::string::String>
+pub exif::ExifMetadata::width: core::option::Option<u32>
+pub fn exif::extract_dng_preview(&[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn exif::is_ampf(&[u8]) -> bool
+pub fn exif::read_metadata(&[u8]) -> core::option::Option<exif::ExifMetadata>
+pub mod xmp
+#[non_exhaustive] pub struct xmp::XmpMetadata
+pub xmp::XmpMetadata::color_mode: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::contrast: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::create_date: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::creator: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::creator_tool: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::description: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::exif_image_height: core::option::Option<u32>
+pub xmp::XmpMetadata::exif_image_width: core::option::Option<u32>
+pub xmp::XmpMetadata::exposure: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::highlights: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::label: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::modify_date: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::rating: core::option::Option<i32>
+pub xmp::XmpMetadata::raw_xml: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::rights: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::saturation: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::shadows: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::sharpness: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::temperature: core::option::Option<i32>
+pub xmp::XmpMetadata::tiff_make: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::tiff_model: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::tiff_orientation: core::option::Option<u16>
+pub xmp::XmpMetadata::tint: core::option::Option<i32>
+pub xmp::XmpMetadata::title: core::option::Option<alloc::string::String>
+pub xmp::XmpMetadata::white_balance: core::option::Option<alloc::string::String>
+pub fn xmp::extract_xmp(&[u8]) -> core::option::Option<alloc::string::String>
+pub fn xmp::read_xmp_metadata(&[u8]) -> core::option::Option<xmp::XmpMetadata>
+pub struct RawDecoderConfig
+pub fn RawDecoderConfig::from_config(decode::RawDecodeConfig) -> Self
+pub fn RawDecoderConfig::new() -> Self
+pub static DNG_FORMAT: zencodec::format::ImageFormatDefinition
+pub static RAW_FORMAT: zencodec::format::ImageFormatDefinition
+
+## trait impls (8 types)
+
+RawDecoderConfig: Clone, Debug, Default, zencodec::traits::decoding::DecoderConfig
+apple::DngProfile: Clone, Debug, Default
+apple::GainMapInfo: Clone, Debug
+apple::ProfileGainTableMap: Clone, Debug
+darktable::DtColorProfile: Clone, Debug, Default
+darktable::DtConfig: Clone, Debug, Default
+exif::ExifMetadata: Clone, Debug, Default
+xmp::XmpMetadata: Clone, Debug, Default
+
+## auto traits
+
+8 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
