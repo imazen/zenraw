@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Untrusted-input hardening (no API change):**
+  - `dng_render::eval_lut` no longer panics on an empty `ProfileToneCurve` LUT —
+    `lut.len() - 1` underflowed/indexed out of bounds; now an empty curve is
+    treated as identity and a single point as constant.
+  - The default **rawler** backend (`rawler_backend::{decode,probe}`) now wraps
+    `rawler::decode` in `catch_unwind`, matching the rawloader path, so an
+    upstream panic on a malformed file is a typed `RawError`, not a process abort.
+  - 32-bit (i686/wasm32): the attacker-controlled IFD/value offsets in
+    `tiff_ifd::{read_entry_bytes,parse_ifd}` and `classify` now use `checked_add`
+    so `offset + len` cannot overflow `usize` and wrap past the bounds check.
+
 ### Added
 
 - The `zencodec` decode adapter now honors `OrientationHint` (default `Preserve`): `with_orientation()` is overridden on `RawDecodeJob`, and `probe` / `output_info` / `decode` report dimensions and the EXIF Orientation tag consistently for the resolved hint. `Preserve` returns stored-orientation pixels + stored dims + the intrinsic tag; `Correct` / `CorrectAndTransform` / `ExactTransform` physically bake the resolved orientation into the decoded buffer and report display dims + `Orientation::Identity`. Adapter-only — the native `RawDecodeConfig` API and its `apply_orientation` default are unchanged. (`src/zencodec_impl.rs`)

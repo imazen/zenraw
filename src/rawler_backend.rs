@@ -62,8 +62,16 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
 
     let source = RawSource::new_from_slice(data);
     let params = RawDecodeParams::default();
-    let raw =
-        rawler::decode(&source, &params).map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
+    // The upstream rawler decoder can panic on some malformed inputs; contain it
+    // so a bad file is a typed error, not a process abort (mirrors the rawloader
+    // backend's catch_unwind on the decode path).
+    let raw = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawler::decode(&source, &params)
+    })) {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(e)) => return Err(at!(RawError::Decode(format!("{e}")))),
+        Err(_) => return Err(at!(RawError::Decode("rawler panicked while probing".into()))),
+    };
 
     let cfa_pattern = extract_cfa_pattern(&raw);
     let is_dng = crate::decode::is_dng_data(data);
@@ -160,8 +168,15 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     // Step 1: Parse
     let source = RawSource::new_from_slice(data);
     let params = RawDecodeParams::default();
-    let raw =
-        rawler::decode(&source, &params).map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
+    // Contain upstream rawler panics on malformed input so a bad file is a typed
+    // error, not a process abort (mirrors the rawloader backend in decode.rs).
+    let raw = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawler::decode(&source, &params)
+    })) {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(e)) => return Err(at!(RawError::Decode(format!("{e}")))),
+        Err(_) => return Err(at!(RawError::Decode("rawler panicked on malformed input".into()))),
+    };
 
     let xyz_to_cam = extract_xyz_to_cam(&raw);
     let width = raw.width;

@@ -876,6 +876,15 @@ impl DngPipeline {
 
 /// Evaluate a LUT with linear interpolation.
 fn eval_lut(lut: &[f32], x: f32) -> f32 {
+    // Guard degenerate LUTs from malformed input: an empty tone curve has no
+    // mapping (treat as identity), a single point is constant. Without this,
+    // `lut.len() - 1` underflows on an empty LUT and panics / indexes OOB.
+    if lut.is_empty() {
+        return x;
+    }
+    if lut.len() == 1 {
+        return lut[0];
+    }
     let x = x.clamp(0.0, 1.0);
     let max_idx = (lut.len() - 1) as f32;
     let idx_f = x * max_idx;
