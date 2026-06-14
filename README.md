@@ -1,7 +1,9 @@
 # zenraw [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zenraw/ci.yml?style=flat-square)](https://github.com/imazen/zenraw/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/zenraw.svg?style=flat-square)](https://crates.io/crates/zenraw) [![docs.rs](https://img.shields.io/docsrs/zenraw?style=flat-square)](https://docs.rs/zenraw) [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](https://github.com/imazen/zenraw#license) [![MSRV: 1.93](https://img.shields.io/badge/MSRV-1.93-blue.svg?style=flat-square)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field)
 
-Camera RAW and DNG decoder in safe Rust. Scene-referred linear f32 output by default,
-sRGB u8 opt-in. Three swappable backends for different camera coverage vs. dependency tradeoffs.
+Camera RAW and DNG decoder in safe Rust. Display-ready sRGB output by default
+(`OutputMode::Develop`, u16); scene-referred linear f32 is opt-in
+(`OutputMode::Linear`). Three swappable backends for different camera coverage
+vs. dependency tradeoffs.
 
 ## Quick start
 
