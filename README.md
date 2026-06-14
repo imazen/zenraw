@@ -13,15 +13,22 @@ let data: &[u8] = &[/* RAW file bytes */];
 let output = decode(data, &RawDecodeConfig::default(), &Unstoppable)?;
 println!("{}x{} {} {}", output.info.width, output.info.height,
     output.info.make, output.info.model);
-// output.pixels is a PixelBuffer<RGBF32_LINEAR>
+// output.pixels is a `zenpixels::PixelBuffer`. The default OutputMode::Develop
+// produces display-ready u16 sRGB (3×u16 per pixel) — NOT 8-bit and NOT linear.
 ```
 
-For display-referred sRGB u8 output:
+Pick the output representation with `with_output` (`RawDecodeConfig` is
+`#[non_exhaustive]`, so configure it with the `with_*` builders, not a struct
+literal):
 
 ```rust
-let config = RawDecodeConfig::default().with_gamma(true);
+use zenraw::OutputMode;
+
+// Scene-referred linear f32 (white-balanced, color-matrixed):
+let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
 let output = decode(data, &config, &Unstoppable)?;
-// output.pixels is a PixelBuffer<RGB8_SRGB>
+// output.pixels is now f32 linear RGB. (OutputMode::Develop = u16 sRGB [default],
+//  OutputMode::CameraRaw = raw camera values as f32, no color processing.)
 ```
 
 Cancellation and deadlines use [`enough::Stop`](https://docs.rs/enough) — pass
@@ -85,17 +92,18 @@ Plus many more via rawler. Detection works on file content, not extension.
 
 ## Configuration
 
-```rust
-use zenraw::{RawDecodeConfig, DemosaicMethod};
+`RawDecodeConfig` is `#[non_exhaustive]`; build it with the `with_*` builders:
 
-let config = RawDecodeConfig {
-    demosaic: DemosaicMethod::MalvarHeCutler, // or Bilinear
-    apply_gamma: false,       // true → sRGB u8, false → linear f32
-    apply_crop: true,         // use camera's crop/active area
-    apply_orientation: true,  // apply EXIF rotation/flip
-    max_pixels: 300_000_000,  // reject images above this
-    ..Default::default()
-};
+```rust
+use zenraw::{RawDecodeConfig, DemosaicMethod, OutputMode};
+
+let config = RawDecodeConfig::default()
+    .with_demosaic(DemosaicMethod::MalvarHeCutler) // or Bilinear
+    .with_output(OutputMode::Linear)               // Develop (u16 sRGB, default) | Linear (f32) | CameraRaw (f32)
+    .with_crop(true)                               // use the camera's crop / active area
+    .with_orientation(true)                        // apply the EXIF rotation/flip
+    .with_max_pixels(120_000_000)                  // reject images above this (width × height)
+    .with_max_decode_bytes(1024 * 1024 * 1024);    // cap the intermediate RGB-f32 working set (server DoS guard)
 ```
 
 ## zencodec integration
