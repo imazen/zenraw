@@ -34,7 +34,47 @@ let output = decode(data, &config, &Unstoppable)?;
 ```
 
 Cancellation and deadlines use [`enough::Stop`](https://docs.rs/enough) — pass
-`&Unstoppable` when you don't need either.
+`&Unstoppable` when you don't need either. For real cancellation (a request
+deadline or shutdown), the simplest constructible token is
+`almost_enough::Stopper` (`cargo add almost-enough`) — it's `Clone` and all
+clones share one flag:
+
+```rust
+use zenraw::{decode, RawDecodeConfig};
+
+let stopper = almost_enough::Stopper::new();
+let watch = stopper.clone();          // hand a clone to a watchdog/deadline thread
+// std::thread::spawn(move || { /* on deadline/disconnect */ watch.cancel(); });
+let output = decode(data, &RawDecodeConfig::default(), &stopper)?;
+// once cancelled, decode returns Err(RawError::Stopped(..)) wrapped in whereat::At.
+```
+
+## Errors
+
+`decode` returns `whereat::At<RawError>` — the `RawError` plus the source
+location it was raised at, which is exactly what a server wants in structured
+logs. Pull both with the `whereat::At` accessors (`RawError` is
+`#[non_exhaustive]`, so keep a wildcard arm):
+
+```rust
+use zenraw::{decode, RawDecodeConfig, RawError};
+use enough::Unstoppable;
+
+match decode(data, &RawDecodeConfig::default(), &Unstoppable) {
+    Ok(output) => { /* … */ }
+    Err(e) => {
+        let loc = e.location();   // Option<&core::panic::Location> — file:line
+        match e.error() {         // &RawError
+            RawError::LimitExceeded(_) => { /* 413 — too large for the configured cap */ }
+            RawError::Unsupported(_)   => { /* 415 — unsupported camera/format */ }
+            RawError::InvalidInput(_) | RawError::Decode(_) => { /* 400 — malformed */ }
+            RawError::Stopped(_)       => { /* cancelled / deadline */ }
+            _                          => { /* 500 */ }
+        }
+        eprintln!("raw decode failed at {loc:?}: {e}");
+    }
+}
+```
 
 ## Decode pipeline
 
