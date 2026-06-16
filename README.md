@@ -33,8 +33,131 @@ let output = decode(data, &config, &Unstoppable)?;
 //  OutputMode::CameraRaw = raw camera values as f32, no color processing.)
 ```
 
-Cancellation and deadlines use [`enough::Stop`](https://docs.rs/enough) — pass
-`&Unstoppable` when you don't need either.
+## Reading the pixels out
+
+`output.pixels` is a
+[`zenpixels::PixelBuffer`](https://docs.rs/zenpixels/latest/zenpixels/struct.PixelBuffer.html).
+To get at the samples, ask it for the contiguous backing bytes and reinterpret
+them for the channel type the `OutputMode` produced. For `OutputMode::Linear`
+(and `CameraRaw`) that's interleaved **f32 RGB**; for the default `Develop` it's
+interleaved **u16 sRGB**.
+
+```rust
+use zenraw::{decode, OutputMode, RawDecodeConfig};
+use enough::Unstoppable;
+
+let data: &[u8] = &[/* RAW file bytes */];
+let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
+let output = decode(data, &config, &Unstoppable)?;
+
+let w = output.pixels.width() as usize;
+let h = output.pixels.height() as usize;
+
+// The RGB-f32 buffer is tightly packed (stride == width * 12 bytes), so the
+// zero-copy `as_contiguous_bytes()` always returns `Some` for this format.
+let bytes: &[u8] = output.pixels.as_contiguous_bytes().unwrap();
+let rgb: &[f32] = bytemuck::cast_slice(bytes); // 3 floats per pixel, R,G,B
+
+assert_eq!(rgb.len(), w * h * 3);
+
+// Pixel (x, y), channel order R, G, B:
+let pixel = |x: usize, y: usize| {
+    let i = (y * w + x) * 3;
+    (rgb[i], rgb[i + 1], rgb[i + 2])
+};
+let (r, g, b) = pixel(0, 0);
+```
+
+Key facts about the layout and value range (verified against the decode path):
+
+- **Channel order is interleaved `R, G, B`** — three samples per pixel, no
+  alpha, in `width * height * 3` order (row-major, top-to-bottom). The pixel
+  format is `PixelDescriptor::RGBF32_LINEAR` (`ChannelType::F32`,
+  `ChannelLayout::Rgb`, `TransferFunction::Linear`).
+- **`OutputMode::Linear` is scene-referred** — white-balanced and
+  colour-matrixed, but **not** clamped to `[0, 1]`. Highlights routinely exceed
+  `1.0`; expect to tone-map or clip yourself before display. `CameraRaw` is also
+  f32 but carries raw camera values with no colour processing.
+- **`OutputMode::Develop` (the default)** is display-ready **u16 sRGB**: read it
+  the same way but `bytemuck::cast_slice::<u8, u16>(bytes)` for 3×`u16` per pixel
+  in `[0, 65535]`.
+
+If you'd rather own the bytes (e.g. to hand off to a thread or FFI), use
+`output.pixels.copy_to_contiguous_bytes()` for a fresh `Vec<u8>` with stride
+padding stripped, or `output.pixels.into_vec()` to consume the buffer. To walk
+row by row, `output.pixels.as_slice().row(y)` returns one row's
+`width * bytes_per_pixel` bytes. (`width()` / `height()` / `stride()` /
+`descriptor()` / `as_contiguous_bytes()` / `copy_to_contiguous_bytes()` /
+`as_slice()` are all on `PixelBuffer`.)
+
+## Cancellation (`Stop`)
+
+`decode`'s third argument is a
+[`&dyn enough::Stop`](https://docs.rs/enough/latest/enough/trait.Stop.html) — the
+cooperative-cancellation / deadline hook. Pass the no-op when you don't need it:
+
+```rust
+use enough::Unstoppable;
+let output = decode(data, &RawDecodeConfig::default(), &Unstoppable)?;
+```
+
+For a token you can cancel from another thread (timeout, request abort, etc.),
+use [`almost_enough::Stopper`](https://docs.rs/almost-enough). `Stopper` itself
+implements `Stop` (so you pass `&stopper` straight to `decode`) and is a cheap
+`Arc`-backed handle — clone it to share the cancellation state across threads,
+then `cancel()` from any clone:
+
+```rust
+use almost_enough::Stopper;
+
+let stopper = Stopper::new();
+let watcher = stopper.clone();      // hand the clone to a timeout/abort task
+
+// e.g. on another thread / after a deadline: `watcher.cancel();`
+
+match decode(data, &RawDecodeConfig::default(), &stopper) {
+    Ok(output) => { /* … */ }
+    Err(e) => match e.error() {
+        // cancellation surfaces as `RawError::Stopped(enough::StopReason)`
+        zenraw::RawError::Stopped(_) => { /* cancelled / deadline hit */ }
+        _ => return Err(e),
+    },
+}
+```
+
+`decode` checks the token between pipeline stages, so cancellation is bounded by
+how long a single stage runs. Errors are `whereat::At<RawError>`; reach the
+underlying `RawError` with `.error()`. Add `almost-enough = "0.4.4"` for the
+cancellable `Stopper`; `enough` (the `Unstoppable` no-op and the `Stop` trait)
+comes in via zenraw, which depends on `enough` 0.4.
+
+## Decoding untrusted input (panic safety)
+
+`decode` returns `Result`, and the **default `rawloader` backend** wraps the
+underlying parser in `std::panic::catch_unwind` and converts a backend panic
+into `RawError::Decode(...)` (it also rejects inputs shorter than 64 bytes up
+front). So with the default features a malformed file is *expected* to come back
+as `Err`, not a panic.
+
+That guard is not total, and you should not rely on it alone for hostile uploads:
+
+- The **`rawler` backend does not** wrap its decode in `catch_unwind` — a panic
+  inside rawler propagates to your caller.
+- `catch_unwind` cannot stop an *abort* (a `panic = "abort"` profile, a
+  double-panic, or an allocation failure under that profile), and the broader
+  decode path has not been exhaustively proven panic-free on adversarial input.
+
+For a server decoding untrusted RAW, wrap the call so a panic can't take down the
+worker — run it on an isolated thread (a panicking thread unwinds without killing
+the process) or in your own `std::panic::catch_unwind`, and keep the resource
+caps (`with_max_pixels` / `with_max_decode_bytes`) tight:
+
+```rust
+let result = std::thread::spawn(move || {
+    decode(&data, &config, &Unstoppable)
+})
+.join(); // `Err(_)` here means the decode thread panicked
+```
 
 ## Decode pipeline
 
