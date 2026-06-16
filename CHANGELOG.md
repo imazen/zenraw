@@ -20,6 +20,13 @@
 
 ### Fixed
 
+- docs(readme): show how to read f32 pixels from the `PixelBuffer` (+ channel
+  layout / value range), document `Stop` construction (`Unstoppable` no-op and a
+  cancellable `almost_enough::Stopper`), and add an honest untrusted-input
+  panic-safety note (rawloader catches backend panics via `catch_unwind`; rawler
+  does not — isolate hostile decodes on a thread). The README previously named
+  `output.pixels` as a `zenpixels::PixelBuffer` but documented no accessor to get
+  the linear-f32 RGB slice out — found by an insulated external-developer test.
 - `probe` now reports the same dimensions `decode` produces under default
   settings (crop applied). The rawloader backend's `probe` previously reported
   the full uncropped sensor size while `decode` applied the camera's crop, so
