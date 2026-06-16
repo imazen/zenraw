@@ -53,9 +53,15 @@ fn rawler_truncated_garbage_returns_err_not_panic() {
         // Little-endian TIFF/DNG magic followed by zeroed-out IFD bytes —
         // looks enough like a RAW container to get past format sniffing but
         // has no valid IFD structure.
-        ("tiff-le-zeroed", padded(&[b'I', b'I', 42, 0, 8, 0, 0, 0], 512)),
+        (
+            "tiff-le-zeroed",
+            padded(&[b'I', b'I', 42, 0, 8, 0, 0, 0], 512),
+        ),
         // Big-endian TIFF magic, likewise truncated/garbage afterwards.
-        ("tiff-be-zeroed", padded(&[b'M', b'M', 0, 42, 0, 0, 0, 8], 512)),
+        (
+            "tiff-be-zeroed",
+            padded(&[b'M', b'M', 0, 42, 0, 0, 0, 8], 512),
+        ),
         // Fujifilm RAF signature with garbage body.
         ("raf-garbage", padded(b"FUJIFILMCCD-RAW ", 512)),
         // All-0xFF block (no recognizable structure).
@@ -63,7 +69,9 @@ fn rawler_truncated_garbage_returns_err_not_panic() {
         // Pseudo-random-ish noise.
         (
             "noise",
-            (0..512u32).map(|i| (i.wrapping_mul(2654435761) >> 16) as u8).collect(),
+            (0..512u32)
+                .map(|i| (i.wrapping_mul(2654435761) >> 16) as u8)
+                .collect(),
         ),
     ];
 
@@ -85,7 +93,8 @@ fn rawler_truncated_garbage_returns_err_not_panic() {
 /// never a process abort. Reaching the assertion proves the panic was contained.
 #[test]
 fn rawler_x3f_oob_panic_seed_returns_err_not_panic() {
-    const X3F_OOB: &[u8] = include_bytes!("../fuzz/regression/fuzz_decode/x3f-oob-panic-issue12.bin");
+    const X3F_OOB: &[u8] =
+        include_bytes!("../fuzz/regression/fuzz_decode/x3f-oob-panic-issue12.bin");
     let config = RawDecodeConfig::default();
     let result = zenraw::decode(X3F_OOB, &config, &Unstoppable);
     assert!(

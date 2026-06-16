@@ -166,7 +166,11 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rawler::decode(&source, &params)
     }))
-    .map_err(|_| at!(RawError::Decode("rawler panicked on malformed input".into())))?
+    .map_err(|_| {
+        at!(RawError::Decode(
+            "rawler panicked on malformed input".into()
+        ))
+    })?
     .map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
 
     let xyz_to_cam = extract_xyz_to_cam(&raw);
