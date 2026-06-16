@@ -133,16 +133,14 @@ comes in via zenraw, which depends on `enough` 0.4.
 
 ## Decoding untrusted input (panic safety)
 
-`decode` returns `Result`, and the **default `rawloader` backend** wraps the
-underlying parser in `std::panic::catch_unwind` and converts a backend panic
-into `RawError::Decode(...)` (it also rejects inputs shorter than 64 bytes up
-front). So with the default features a malformed file is *expected* to come back
-as `Err`, not a panic.
+`decode` returns `Result`, and **both backends are panic-isolated**: each wraps
+its underlying parser in `std::panic::catch_unwind` and converts a backend panic
+into `RawError::Decode(...)` (and the decode path also rejects inputs shorter
+than 64 bytes up front). So with either backend a malformed file is *expected* to
+come back as `Err`, not a host crash.
 
 That guard is not total, and you should not rely on it alone for hostile uploads:
 
-- The **`rawler` backend does not** wrap its decode in `catch_unwind` — a panic
-  inside rawler propagates to your caller.
 - `catch_unwind` cannot stop an *abort* (a `panic = "abort"` profile, a
   double-panic, or an allocation failure under that profile), and the broader
   decode path has not been exhaustively proven panic-free on adversarial input.
