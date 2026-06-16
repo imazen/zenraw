@@ -43,26 +43,6 @@ impl From<zenpixels::BufferError> for RawError {
     }
 }
 
-/// Helper trait to extract `BufferError` from either `BufferError` or `At<BufferError>`.
-///
-/// zenpixels 0.1.0 (crates.io) returns bare `BufferError`, while local versions
-/// return `At<BufferError>`. This trait lets the same code work with both.
-pub(crate) trait IntoBufferError {
-    fn into_buffer_error(self) -> zenpixels::BufferError;
-}
-
-impl IntoBufferError for zenpixels::BufferError {
-    fn into_buffer_error(self) -> zenpixels::BufferError {
-        self
-    }
-}
-
-impl IntoBufferError for whereat::At<zenpixels::BufferError> {
-    fn into_buffer_error(self) -> zenpixels::BufferError {
-        self.decompose().0
-    }
-}
-
 #[cfg(feature = "rawloader")]
 impl From<rawloader::RawLoaderError> for RawError {
     fn from(e: rawloader::RawLoaderError) -> Self {
@@ -107,19 +87,5 @@ mod tests {
         let be = zenpixels::BufferError::InvalidDimensions;
         let e: RawError = be.into();
         assert!(matches!(e, RawError::Buffer(_)));
-    }
-
-    #[test]
-    fn into_buffer_error_bare() {
-        let be = zenpixels::BufferError::InvalidDimensions;
-        let result = be.into_buffer_error();
-        assert!(matches!(result, zenpixels::BufferError::InvalidDimensions));
-    }
-
-    #[test]
-    fn into_buffer_error_at() {
-        let at_be = whereat::at!(zenpixels::BufferError::InvalidDimensions);
-        let result = at_be.into_buffer_error();
-        assert!(matches!(result, zenpixels::BufferError::InvalidDimensions));
     }
 }
