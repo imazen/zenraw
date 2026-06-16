@@ -20,6 +20,15 @@
 
 ### Fixed
 
+- The rawler decode backend is now panic-isolated: `rawler_backend::decode`
+  wraps the `rawler::decode` call in `std::panic::catch_unwind`, mirroring the
+  rawloader backend, so a malformed/crafted RAW routed to rawler returns
+  `RawError::Decode` instead of unwinding through and crashing the host process.
+  Also hardened `dng_render::bradford_adapt`'s Bradford-matrix inversion
+  `.unwrap()` into `.expect(...)`. Regression coverage in
+  `tests/rawler_panic.rs` (rawler-feature-gated; defensive malformed-input cases
+  always run, the good-decode path is corpus-gated on `ZENRAW_RAW_CORPUS`).
+  Closes #12. (`src/rawler_backend.rs`, `src/dng_render.rs`)
 - docs(readme): show how to read f32 pixels from the `PixelBuffer` (+ channel
   layout / value range), document `Stop` construction (`Unstoppable` no-op and a
   cancellable `almost_enough::Stopper`), and add an honest untrusted-input
