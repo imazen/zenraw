@@ -160,8 +160,14 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     // Step 1: Parse
     let source = RawSource::new_from_slice(data);
     let params = RawDecodeParams::default();
-    let raw =
-        rawler::decode(&source, &params).map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
+    // rawler can panic on malformed inputs, so catch those and convert to
+    // errors — mirrors the rawloader backend in decode.rs so neither path can
+    // crash the host on crafted input.
+    let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawler::decode(&source, &params)
+    }))
+    .map_err(|_| at!(RawError::Decode("rawler panicked on malformed input".into())))?
+    .map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
 
     let xyz_to_cam = extract_xyz_to_cam(&raw);
     let width = raw.width;

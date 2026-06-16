@@ -207,7 +207,7 @@ pub(crate) fn bradford_adapt(white1_xy: (f64, f64), white2_xy: (f64, f64)) -> Ma
     ];
 
     let scale_mat = mat3_diagonal(&scale);
-    let brad_inv = mat3_invert(&BRADFORD).unwrap();
+    let brad_inv = mat3_invert(&BRADFORD).expect("Bradford matrix is non-singular");
     mat3_mul(&brad_inv, &mat3_mul(&scale_mat, &BRADFORD))
 }
 
