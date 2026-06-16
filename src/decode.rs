@@ -222,7 +222,10 @@ impl RawDecodeConfig {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RawDecodeOutput {
-    /// Decoded pixel buffer (RGB8 sRGB or RGBF32 linear, depending on config).
+    /// Decoded pixel buffer. The format follows [`RawDecodeConfig::output`]:
+    /// [`Develop`](OutputMode::Develop) produces `RGB16_SRGB` (u16 sRGB), while
+    /// [`Linear`](OutputMode::Linear) and [`CameraRaw`](OutputMode::CameraRaw)
+    /// produce `RGBF32_LINEAR` (f32 linear).
     pub pixels: PixelBuffer,
     /// Decoded image metadata.
     pub info: RawInfo,
