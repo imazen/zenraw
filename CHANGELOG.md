@@ -32,8 +32,30 @@
 - Bumped `zencodec` 0.1.13 → 0.1.21 (required for `OrientationHint` + the `DecodeJob::with_orientation` trait method; the adapter compiled against the new version with no other API changes needed). (`Cargo.toml`)
 - Removed `tests/` and `benches/` from the published package `include` list; downstream consumers no longer receive test code they cannot use.
 
+### Removed
+
+- The internal `pub(crate)` `IntoBufferError` trait (`src/error.rs`) and its two
+  impls. Its rationale ("zenpixels 0.1.0 returns bare `BufferError`, local
+  versions return `At<BufferError>`") was obsolete — `Cargo.toml` pins
+  `zenpixels` 0.2.10, which always returns `At<BufferError>` — and the
+  `At<BufferError>` impl flattened the trace via `.decompose().0`. Not a
+  public-API change (the trait was crate-private). The two trait-only unit tests
+  (`into_buffer_error_bare`, `into_buffer_error_at`) were removed with it (they
+  tested the deleted trait); `from_buffer_error` (covering the retained bare
+  `From<BufferError>`) stays.
+
 ### Fixed
 
+- **Preserve the `BufferError` trace across the `PixelBuffer` boundary.** The 11
+  decode sites that build a `PixelBuffer` (6 in `decode.rs`, 3 in
+  `rawler_backend.rs`, 2 in `darktable.rs`) used
+  `.map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))`, where
+  `e: At<BufferError>` was flattened by `into_buffer_error()` (`.decompose().0`
+  dropped the frames) and then re-wrapped in a fresh single-frame `at!`. They now
+  use `.map_err_at(RawError::Buffer)`, which applies the `RawError::Buffer` tuple
+  constructor to the inner bare `BufferError` while keeping the original `At`
+  trace frames (`RawError::Buffer` holds a bare `BufferError`). The callee's
+  location frames now survive into `At<RawError>`.
 - The rawler decode backend is now panic-isolated: `rawler_backend::decode`
   wraps the `rawler::decode` call in `std::panic::catch_unwind`, mirroring the
   rawloader backend, so a malformed/crafted RAW routed to rawler returns

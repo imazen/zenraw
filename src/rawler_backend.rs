@@ -13,7 +13,7 @@ use enough::Stop;
 use rawler::decoders::RawDecodeParams;
 use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
-use whereat::at;
+use whereat::{ResultAtExt, at};
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
 use rawler::imgop::xyz::Illuminant;
@@ -21,7 +21,7 @@ use rawler::imgop::xyz::Illuminant;
 use crate::color;
 use crate::decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
-use crate::error::{IntoBufferError, RawError, Result};
+use crate::error::{RawError, Result};
 
 /// Extract xyz_to_cam matrix from rawler's color_matrix HashMap.
 ///
@@ -432,7 +432,7 @@ fn auto_develop_output(
         height as u32,
         PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
     )
-    .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+    .map_err_at(RawError::Buffer)?;
 
     Ok(RawDecodeOutput { pixels: buf, info })
 }
@@ -748,7 +748,7 @@ fn build_linear_output(
         height as u32,
         PixelDescriptor::RGBF32_LINEAR.with_primaries(primaries),
     )
-    .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+    .map_err_at(RawError::Buffer)?;
 
     Ok(RawDecodeOutput { pixels: buf, info })
 }
@@ -776,7 +776,7 @@ fn build_develop_output(
         height as u32,
         PixelDescriptor::RGB16_SRGB.with_primaries(primaries),
     )
-    .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+    .map_err_at(RawError::Buffer)?;
 
     Ok(RawDecodeOutput { pixels: buf, info })
 }
