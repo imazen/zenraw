@@ -4,6 +4,20 @@
 
 ### Added
 
+- `examples/heaptrack_decode.rs`: a reusable heaptrack/valgrind harness that
+  decodes a camera RAW / DNG file from bytes via `zenraw::decode(.., Develop)` in a
+  loop, for profiling heap-allocation behaviour. There is no committed RAW fixture
+  (RAW files are large + licensing-encumbered), so it defaults to the block-storage
+  `/mnt/v/input/raw-samples/nikon_d40.nef` (fetch via `just fetch-samples`) decoded
+  8×; a path + iteration count can be passed. Driven by `just heaptrack-decode`.
+  Profiled result is **healthy**: the develop pipeline is allocation-efficient —
+  only ~65 allocations per *additional* decode (raw/RGB-f32/output buffers are
+  reused; the decode loop barely allocates). The ~67k total allocations and ~6,751
+  "leaked" / 19.7 MiB are a **one-time** cost: the `rawloader` backend deserializes
+  its bundled `cameras.toml` camera-metadata database on first decode and retains it
+  as a process-global cache (iteration-constant at 2/8/16 iterations — not a
+  per-decode leak). Peak heap is 245.9 MiB for the 6.12 MP NEF (~3.3× the 73 MiB
+  RGB-f32 intermediate; O(image) develop working set, no per-pixel/per-block churn).
 - The `zencodec` decode adapter now honors `OrientationHint` (default `Preserve`): `with_orientation()` is overridden on `RawDecodeJob`, and `probe` / `output_info` / `decode` report dimensions and the EXIF Orientation tag consistently for the resolved hint. `Preserve` returns stored-orientation pixels + stored dims + the intrinsic tag; `Correct` / `CorrectAndTransform` / `ExactTransform` physically bake the resolved orientation into the decoded buffer and report display dims + `Orientation::Identity`. Adapter-only — the native `RawDecodeConfig` API and its `apply_orientation` default are unchanged. (`src/zencodec_impl.rs`)
 - `orient::apply_orientation_bytes` (`pub(crate)`): a format-agnostic, whole-pixel byte-level orientation baker used by the adapter to bake arbitrary resolved orientations onto the decoded `RGB16`/`RGBF32` buffer. Verified bit-for-bit against the existing f32 baker for all 8 EXIF orientations. (`src/orient.rs`)
 - `tests/orientation.rs`: end-to-end orientation tests over real RAW files (corpus-gated on `ZENRAW_RAW_SAMPLES_DIR` / FiveK DNG dir, caller-controlled skip), plus deterministic in-crate pixel-oracle and adapter-contract tests in `src/orient.rs` and `src/zencodec_impl.rs`.

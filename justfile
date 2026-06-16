@@ -57,6 +57,14 @@ api-doc-check:
 bench:
     cargo bench --features rawler
 
+# Profile decode-from-bytes heap allocations with heaptrack (needs heaptrack installed).
+# Defaults to /mnt/v/input/raw-samples/nikon_d40.nef (fetch via `just fetch-samples`)
+# decoded 8x; pass a RAW path + iters to override. Inspect: heaptrack_print /tmp/zenraw-ht.zst
+heaptrack-decode *ARGS:
+    cargo build -p zenraw --release --example heaptrack_decode
+    rm -f /tmp/zenraw-ht.zst
+    heaptrack --output /tmp/zenraw-ht ./target/release/examples/heaptrack_decode {{ARGS}}
+
 # Local CI sanity check
 ci: fmt lint test
 
