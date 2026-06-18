@@ -45,6 +45,11 @@ zenbench = { version = "0.1.2", features = ["criterion-compat"] }
 name = "decode_bench"
 harness = false
 
+# Heaptrack allocation-profiling harness for the decode-from-bytes path.
+# Decode works with default features (rawloader backend); no extra features.
+[[example]]
+name = "heaptrack_decode"
+
 [features]
 default = ["std", "rawloader", "ultrahdr"]
 std = ["enough/std", "whereat/std"]

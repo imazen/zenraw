@@ -17,6 +17,20 @@
 
 ### Added
 
+- `examples/heaptrack_decode.rs`: a reusable heaptrack/valgrind harness that
+  decodes a camera RAW / DNG file from bytes via `zenraw::decode(.., Develop)` in a
+  loop, for profiling heap-allocation behaviour. There is no committed RAW fixture
+  (RAW files are large + licensing-encumbered), so it defaults to the block-storage
+  `/mnt/v/input/raw-samples/nikon_d40.nef` (fetch via `just fetch-samples`) decoded
+  8×; a path + iteration count can be passed. Driven by `just heaptrack-decode`.
+  Profiled result is **healthy**: the develop pipeline is allocation-efficient —
+  only ~65 allocations per *additional* decode (raw/RGB-f32/output buffers are
+  reused; the decode loop barely allocates). The ~67k total allocations and ~6,751
+  "leaked" / 19.7 MiB are a **one-time** cost: the `rawloader` backend deserializes
+  its bundled `cameras.toml` camera-metadata database on first decode and retains it
+  as a process-global cache (iteration-constant at 2/8/16 iterations — not a
+  per-decode leak). Peak heap is 245.9 MiB for the 6.12 MP NEF (~3.3× the 73 MiB
+  RGB-f32 intermediate; O(image) develop working set, no per-pixel/per-block churn).
 - The `zencodec` decode adapter now honors `OrientationHint` (default `Preserve`): `with_orientation()` is overridden on `RawDecodeJob`, and `probe` / `output_info` / `decode` report dimensions and the EXIF Orientation tag consistently for the resolved hint. `Preserve` returns stored-orientation pixels + stored dims + the intrinsic tag; `Correct` / `CorrectAndTransform` / `ExactTransform` physically bake the resolved orientation into the decoded buffer and report display dims + `Orientation::Identity`. Adapter-only — the native `RawDecodeConfig` API and its `apply_orientation` default are unchanged. (`src/zencodec_impl.rs`)
 - `orient::apply_orientation_bytes` (`pub(crate)`): a format-agnostic, whole-pixel byte-level orientation baker used by the adapter to bake arbitrary resolved orientations onto the decoded `RGB16`/`RGBF32` buffer. Verified bit-for-bit against the existing f32 baker for all 8 EXIF orientations. (`src/orient.rs`)
 - `tests/orientation.rs`: end-to-end orientation tests over real RAW files (corpus-gated on `ZENRAW_RAW_SAMPLES_DIR` / FiveK DNG dir, caller-controlled skip), plus deterministic in-crate pixel-oracle and adapter-contract tests in `src/orient.rs` and `src/zencodec_impl.rs`.
@@ -31,8 +45,46 @@
 - Bumped `zencodec` 0.1.13 → 0.1.21 (required for `OrientationHint` + the `DecodeJob::with_orientation` trait method; the adapter compiled against the new version with no other API changes needed). (`Cargo.toml`)
 - Removed `tests/` and `benches/` from the published package `include` list; downstream consumers no longer receive test code they cannot use.
 
+### Removed
+
+- The internal `pub(crate)` `IntoBufferError` trait (`src/error.rs`) and its two
+  impls. Its rationale ("zenpixels 0.1.0 returns bare `BufferError`, local
+  versions return `At<BufferError>`") was obsolete — `Cargo.toml` pins
+  `zenpixels` 0.2.10, which always returns `At<BufferError>` — and the
+  `At<BufferError>` impl flattened the trace via `.decompose().0`. Not a
+  public-API change (the trait was crate-private). The two trait-only unit tests
+  (`into_buffer_error_bare`, `into_buffer_error_at`) were removed with it (they
+  tested the deleted trait); `from_buffer_error` (covering the retained bare
+  `From<BufferError>`) stays.
+
 ### Fixed
 
+- **Preserve the `BufferError` trace across the `PixelBuffer` boundary.** The 11
+  decode sites that build a `PixelBuffer` (6 in `decode.rs`, 3 in
+  `rawler_backend.rs`, 2 in `darktable.rs`) used
+  `.map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))`, where
+  `e: At<BufferError>` was flattened by `into_buffer_error()` (`.decompose().0`
+  dropped the frames) and then re-wrapped in a fresh single-frame `at!`. They now
+  use `.map_err_at(RawError::Buffer)`, which applies the `RawError::Buffer` tuple
+  constructor to the inner bare `BufferError` while keeping the original `At`
+  trace frames (`RawError::Buffer` holds a bare `BufferError`). The callee's
+  location frames now survive into `At<RawError>`.
+- The rawler decode backend is now panic-isolated: `rawler_backend::decode`
+  wraps the `rawler::decode` call in `std::panic::catch_unwind`, mirroring the
+  rawloader backend, so a malformed/crafted RAW routed to rawler returns
+  `RawError::Decode` instead of unwinding through and crashing the host process.
+  Also hardened `dng_render::bradford_adapt`'s Bradford-matrix inversion
+  `.unwrap()` into `.expect(...)`. Regression coverage in
+  `tests/rawler_panic.rs` (rawler-feature-gated; defensive malformed-input cases
+  always run, the good-decode path is corpus-gated on `ZENRAW_RAW_CORPUS`).
+  Closes #12. (`src/rawler_backend.rs`, `src/dng_render.rs`)
+- docs(readme): show how to read f32 pixels from the `PixelBuffer` (+ channel
+  layout / value range), document `Stop` construction (`Unstoppable` no-op and a
+  cancellable `almost_enough::Stopper`), and add an honest untrusted-input
+  panic-safety note (rawloader catches backend panics via `catch_unwind`; rawler
+  does not — isolate hostile decodes on a thread). The README previously named
+  `output.pixels` as a `zenpixels::PixelBuffer` but documented no accessor to get
+  the linear-f32 RGB slice out — found by an insulated external-developer test.
 - `probe` now reports the same dimensions `decode` produces under default
   settings (crop applied). The rawloader backend's `probe` previously reported
   the full uncropped sensor size while `decode` applied the camera's crop, so

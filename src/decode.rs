@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use enough::Stop;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
-use whereat::at;
+use whereat::{ResultAtExt, at};
 use zenpixels::PixelBuffer;
 #[cfg(feature = "rawloader")]
 use zenpixels::PixelDescriptor;
@@ -29,8 +29,6 @@ use crate::color;
 use crate::demosaic::DemosaicMethod;
 #[cfg(feature = "rawloader")]
 use crate::demosaic::demosaic_to_rgb_f32;
-#[cfg(feature = "rawloader")]
-use crate::error::IntoBufferError;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use crate::error::{RawError, Result};
 
@@ -222,7 +220,10 @@ impl RawDecodeConfig {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RawDecodeOutput {
-    /// Decoded pixel buffer (RGB8 sRGB or RGBF32 linear, depending on config).
+    /// Decoded pixel buffer. The format follows [`RawDecodeConfig::output`]:
+    /// [`Develop`](OutputMode::Develop) produces `RGB16_SRGB` (u16 sRGB), while
+    /// [`Linear`](OutputMode::Linear) and [`CameraRaw`](OutputMode::CameraRaw)
+    /// produce `RGBF32_LINEAR` (f32 linear).
     pub pixels: PixelBuffer,
     /// Decoded image metadata.
     pub info: RawInfo,
@@ -585,7 +586,7 @@ pub(crate) fn decode(
                 final_h as u32,
                 PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
             )
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+            .map_err_at(RawError::Buffer)?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
@@ -598,7 +599,7 @@ pub(crate) fn decode(
                 final_h as u32,
                 PixelDescriptor::RGBF32_LINEAR.with_primaries(config.target.to_color_primaries()),
             )
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+            .map_err_at(RawError::Buffer)?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
@@ -611,7 +612,7 @@ pub(crate) fn decode(
                 final_h as u32,
                 PixelDescriptor::RGBF32_LINEAR.with_primaries(zenpixels::ColorPrimaries::Unknown),
             )
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+            .map_err_at(RawError::Buffer)?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
@@ -750,7 +751,7 @@ fn decode_non_bayer(
                 final_h as u32,
                 PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
             )
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+            .map_err_at(RawError::Buffer)?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
@@ -763,7 +764,7 @@ fn decode_non_bayer(
                 final_h as u32,
                 PixelDescriptor::RGBF32_LINEAR.with_primaries(config.target.to_color_primaries()),
             )
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+            .map_err_at(RawError::Buffer)?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }
@@ -776,7 +777,7 @@ fn decode_non_bayer(
                 final_h as u32,
                 PixelDescriptor::RGBF32_LINEAR.with_primaries(zenpixels::ColorPrimaries::Unknown),
             )
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?;
+            .map_err_at(RawError::Buffer)?;
 
             Ok(RawDecodeOutput { pixels: buf, info })
         }

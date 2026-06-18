@@ -21,11 +21,11 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
-use whereat::at;
+use whereat::{ResultAtExt, at};
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
 use crate::decode::{RawDecodeOutput, RawInfo};
-use crate::error::{IntoBufferError, RawError, Result};
+use crate::error::{RawError, Result};
 
 /// darktable output ICC profile type.
 #[derive(Clone, Debug, Default)]
@@ -292,12 +292,10 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             .iter()
             .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
             .collect();
-        PixelBuffer::from_vec(u8_data, width, height, descriptor)
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?
+        PixelBuffer::from_vec(u8_data, width, height, descriptor).map_err_at(RawError::Buffer)?
     } else {
         let byte_data: Vec<u8> = pixels_f32.iter().flat_map(|&v| v.to_ne_bytes()).collect();
-        PixelBuffer::from_vec(byte_data, width, height, descriptor)
-            .map_err(|e| at!(RawError::Buffer(e.into_buffer_error())))?
+        PixelBuffer::from_vec(byte_data, width, height, descriptor).map_err_at(RawError::Buffer)?
     };
 
     // Extract camera info from filename (darktable doesn't emit it in PFM)
