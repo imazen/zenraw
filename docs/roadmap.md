@@ -23,13 +23,13 @@ Most DNG profiles have two illuminant calibrations. Interpolate in mired space b
 
 ## Phase 2: Smartphone DNGs (High Impact)
 
-### DNG OpcodeList2: GainMap
-Smartphones embed spatially-varying gain maps for lens shading correction. Without GainMap processing, smartphone DNG renders have dark corners and uneven color.
+### DNG OpcodeList2: lens shading tables (`GainMap`, opcode 9)
+Smartphones embed spatially-varying lens shading tables (the DNG `GainMap` opcode) for lens shading correction. Without this processing, smartphone DNG renders have dark corners and uneven color. (This is the DNG opcode, unrelated to the ISO 21496-1 / Apple HDR gain map.)
 
 This is the single most impactful missing feature for real-world DNG processing.
 
 ### DNG OpcodeList2: WarpRectilinear
-Lens distortion correction. Less critical than GainMap but needed for wide-angle smartphone lenses.
+Lens distortion correction. Less critical than the lens shading tables but needed for wide-angle smartphone lenses.
 
 ## Phase 3: Performance (SIMD)
 

@@ -101,14 +101,14 @@ Opcode IDs:
  6 = TrimBounds
  7 = MapTable              (16-bit LUT)
  8 = MapPolynomial
- 9 = GainMap               (spatially-varying gain — heavy smartphone use)
+ 9 = GainMap               (lens shading table — spatially-varying gain for vignette correction; heavy smartphone use)
 10 = DeltaPerRow
 11 = DeltaPerColumn
 12 = ScalePerRow
 13 = ScalePerColumn
 ```
 
-**GainMap** (opcode 9) is critical for smartphone DNGs — it corrects lens shading/vignetting with a spatially-varying gain grid. Without it, smartphone DNG renders will have dark corners and uneven color.
+**GainMap** (opcode 9) is the DNG *lens shading table* — critical for smartphone DNGs, it corrects lens shading/vignetting with a spatially-varying gain grid. Without it, smartphone DNG renders will have dark corners and uneven color. This is unrelated to the ISO 21496-1 / Apple HDR gain map (see `apple::GainMapInfo`), which is an SDR→HDR reconstruction image.
 
 ## NoiseProfile
 
@@ -157,7 +157,7 @@ To decode a DNG and produce a viewable image:
 - DNG 1.6 semantic masks
 
 ### Should Implement Soon
-- OpcodeList2 GainMap (smartphone DNGs need this)
+- OpcodeList2 GainMap / lens shading table (smartphone DNGs need this)
 - Dual-illuminant interpolation (most profiles have two matrices)
 - ForwardMatrix path (more accurate than inverted ColorMatrix)
 

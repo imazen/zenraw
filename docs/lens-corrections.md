@@ -6,8 +6,8 @@ Three types of optical corrections, in priority order.
 
 Light falloff from center to edges. Per-pixel multiply — no resampling needed.
 
-### DNG GainMap (opcode 9)
-Smartphones embed spatially-varying gain maps in OpcodeList2. These are camera-manufacturer calibrated and should be preferred when present.
+### DNG lens shading tables (opcode 9 `GainMap`)
+Smartphones embed spatially-varying lens shading tables (the DNG `GainMap` opcode) in OpcodeList2. These are camera-manufacturer calibrated and should be preferred when present. (Not to be confused with the ISO 21496-1 / Apple HDR gain map — see `apple::GainMapInfo`.)
 
 Parameters: bounds, grid dimensions, gain values per channel. Bilinear interpolation between grid points.
 
@@ -79,7 +79,7 @@ DNG opcodes are embedded per-image. Lensfun requires EXIF matching (make, model,
 
 ## Implementation Priority
 
-1. **DNG GainMap** — biggest impact, smartphone DNGs look wrong without it
+1. **DNG lens shading tables** (`GainMap`, opcode 9) — biggest impact, smartphone DNGs look wrong without it
 2. **Vignetting** (lensfun fallback) — simple multiply, high visual impact
 3. **Distortion** — needs resampling infrastructure, important for architecture/landscapes
 4. **TCA** — subtle, low priority

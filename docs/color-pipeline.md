@@ -19,7 +19,7 @@ This works but misses several DNG features that improve color accuracy.
 ```
 [1] Black level subtraction (per-CFA-position, with row/column deltas)
 [2] Linearization (LinearizationTable LUT, rare)
-[3] OpcodeList2 (GainMap for lens shading, pre-demosaic corrections)
+[3] OpcodeList2 (GainMap lens shading table, pre-demosaic corrections)
 [4] White balance (diagonal scale on Bayer data)
 [5] Demosaic (Bayer → 3-channel RGB)
 [6] OpcodeList3 (post-demosaic corrections, rare)

@@ -24,6 +24,7 @@
 
 ### Changed
 
+- Docs: clarified that DNG OpcodeList2 opcode-9 `GainMap` is a *lens shading table* (per-channel spatially-varying gain for vignette correction), distinct from the ISO 21496-1 / Apple HDR gain map (`apple::GainMapInfo`); disambiguating phrasing added across `docs/dng-format.md`, `docs/lens-corrections.md`, `docs/roadmap.md`, `docs/color-pipeline.md`, and `docs/reference-research.md` while retaining the spec name `GainMap`. (closes #2)
 - Public-API snapshots migrated to the `zenutils-apidoc` 0.1.0 runner package
   at `apidoc/` (self-contained, CI-free): three snapshot files under
   `docs/public-api/`, regenerated via `just api-doc`. Replaces the in-crate
