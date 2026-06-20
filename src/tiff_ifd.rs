@@ -272,7 +272,9 @@ pub fn read_entry_bytes<'a>(
         } else {
             offset
         };
-        if offset + size > data.len() {
+        // `offset` is an attacker-controlled u32; `offset + size` can overflow
+        // usize on 32-bit targets and wrap past the bounds check. checked_add.
+        if offset.checked_add(size).is_none_or(|end| end > data.len()) {
             return None;
         }
         Some(&data[offset..offset + size])
@@ -424,7 +426,9 @@ pub fn read_double_values(data: &[u8], entry: &IfdEntry, byte_order: ByteOrder) 
 // ── Low-level readers ────────────────────────────────────────────────
 
 fn parse_ifd(data: &[u8], offset: usize, byte_order: ByteOrder) -> Option<Ifd> {
-    if offset + 2 > data.len() || offset == 0 {
+    // `offset` is an attacker-controlled u32 (IFD pointer); checked_add so it
+    // cannot overflow usize on 32-bit targets and wrap past this bound.
+    if offset == 0 || offset.checked_add(2).is_none_or(|end| end > data.len()) {
         return None;
     }
 

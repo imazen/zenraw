@@ -171,7 +171,9 @@ fn has_dng_version_tag(data: &[u8], big_endian: bool) -> bool {
 
     // Get IFD0 offset
     let ifd_offset = read_u32(data, 4) as usize;
-    if ifd_offset + 2 > data.len() {
+    // Attacker-controlled u32 offset; checked_add so it cannot overflow usize
+    // on 32-bit targets and wrap past this bound into an OOB read below.
+    if ifd_offset.checked_add(2).is_none_or(|end| end > data.len()) {
         return false;
     }
 

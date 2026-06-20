@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Untrusted-input hardening (no API change):**
+  - `dng_render::eval_lut` no longer panics on an empty `ProfileToneCurve` LUT —
+    `lut.len() - 1` underflowed/indexed out of bounds; now an empty curve is
+    treated as identity and a single point as constant.
+  - The default **rawler** backend (`rawler_backend::{decode,probe}`) now wraps
+    `rawler::decode` in `catch_unwind`, matching the rawloader path, so an
+    upstream panic on a malformed file is a typed `RawError`, not a process abort.
+  - 32-bit (i686/wasm32): the attacker-controlled IFD/value offsets in
+    `tiff_ifd::{read_entry_bytes,parse_ifd}` and `classify` now use `checked_add`
+    so `offset + len` cannot overflow `usize` and wrap past the bounds check.
+
 ### Added
 
 - `examples/heaptrack_decode.rs`: a reusable heaptrack/valgrind harness that
