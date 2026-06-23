@@ -28,7 +28,7 @@ pub use crate::dng_render::OutputPrimaries;
 use crate::color;
 use crate::demosaic::DemosaicMethod;
 #[cfg(feature = "rawloader")]
-use crate::demosaic::demosaic_to_rgb_f32;
+use crate::demosaic::demosaic_to_rgb_f32_fallible;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use crate::error::{RawError, Result};
 
@@ -109,6 +109,17 @@ pub struct RawDecodeConfig {
     /// Values are relative multipliers (e.g., `[1.0, 1.0, 1.0]` = no WB,
     /// `[2.0, 1.0, 1.5]` = boost red, slight blue).
     pub wb_override: Option<[f32; 3]>,
+
+    /// Caller preference for allocation fallibility, applied per call site.
+    ///
+    /// Internal carrier (`pub(crate)`): the zencodec decode path sets it from
+    /// `ResourceLimits::prefer_fallible_allocations`; the direct
+    /// [`decode`](crate::decode) API leaves it
+    /// [`CodecDefault`](crate::alloc_util::AllocPref::CodecDefault), so each
+    /// allocation site keeps its own default (big untrusted sensor / RGB-f32
+    /// buffers fallible, small bounded scratch infallible). See
+    /// [`crate::alloc_util`].
+    pub(crate) alloc_pref: crate::alloc_util::AllocPref,
 }
 
 impl Default for RawDecodeConfig {
@@ -123,6 +134,7 @@ impl Default for RawDecodeConfig {
             apply_crop: true,
             apply_orientation: true,
             wb_override: None,
+            alloc_pref: crate::alloc_util::AllocPref::CodecDefault,
         }
     }
 }
@@ -469,7 +481,7 @@ pub(crate) fn decode(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 2: Extract and normalize sensor data to f32 [0, 1]
-    let normalized = normalize_raw_data(&raw).map_err(|e| at!(e))?;
+    let normalized = normalize_raw_data(&raw, config.alloc_pref).map_err(|e| at!(e))?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -478,8 +490,15 @@ pub(crate) fn decode(
         return decode_non_bayer(raw, normalized, config, stop);
     }
 
-    // Step 3: Demosaic
-    let mut rgb = demosaic_to_rgb_f32(&normalized, width, height, &raw.cfa, config.demosaic);
+    // Step 3: Demosaic (honors AllocPreference for the large RGB-f32 buffer).
+    let mut rgb = demosaic_to_rgb_f32_fallible(
+        &normalized,
+        width,
+        height,
+        &raw.cfa,
+        config.demosaic,
+        config.alloc_pref,
+    )?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -510,7 +529,7 @@ pub(crate) fn decode(
 
     // Step 5: Crop
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_crop(&rgb, width, height, &raw.crops)
+        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref)?
     } else {
         (rgb, width, height)
     };
@@ -631,8 +650,17 @@ fn decode_non_bayer(
     let height = raw.height;
     let cpp = raw.cpp;
 
-    // Convert to 3-channel RGB, dropping extra channels
-    let mut rgb = Vec::with_capacity(width * height * 3);
+    // Convert to 3-channel RGB, dropping extra channels. Full-image buffer
+    // sized from the (untrusted) sensor dims → default fallible.
+    let rgb_len = width
+        .checked_mul(height)
+        .and_then(|p| p.checked_mul(3))
+        .ok_or_else(|| {
+            at!(RawError::LimitExceeded(
+                "RGB buffer size overflows usize".into()
+            ))
+        })?;
+    let mut rgb = crate::alloc_util::vec_with_capacity(config.alloc_pref, true, rgb_len)?;
     for i in 0..width * height {
         let base = i * cpp;
         rgb.push(if base < normalized.len() {
@@ -680,7 +708,7 @@ fn decode_non_bayer(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_crop(&rgb, width, height, &raw.crops)
+        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref)?
     } else {
         (rgb, width, height)
     };
@@ -786,7 +814,10 @@ fn decode_non_bayer(
 
 /// Normalize raw sensor data to f32 \[0, 1\] using black/white levels.
 #[cfg(feature = "rawloader")]
-fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32>, RawError> {
+fn normalize_raw_data(
+    raw: &rawloader::RawImage,
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;
     let cpp = raw.cpp;
@@ -794,6 +825,13 @@ fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32
 
     let black = raw.blacklevels;
     let white = raw.whitelevels;
+
+    // Full normalized sensor buffer sized from the (untrusted) sensor dims →
+    // default fallible. `decompose().0` strips the `whereat` location, keeping
+    // this function's bare-`RawError` return type.
+    let new_buf = |cap: usize| -> core::result::Result<Vec<f32>, RawError> {
+        crate::alloc_util::vec_with_capacity(alloc_pref, true, cap).map_err(|e| e.decompose().0)
+    };
 
     match &raw.data {
         rawloader::RawImageData::Integer(data) => {
@@ -805,7 +843,7 @@ fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32
                 )));
             }
 
-            let mut out = Vec::with_capacity(total);
+            let mut out = new_buf(total)?;
             for (i, &sample) in data.iter().enumerate().take(total) {
                 let ch = if cpp == 1 {
                     raw.cfa.color_at(i / width, i % width)
@@ -829,7 +867,7 @@ fn normalize_raw_data(raw: &rawloader::RawImage) -> core::result::Result<Vec<f32
                 )));
             }
 
-            let mut out = Vec::with_capacity(total);
+            let mut out = new_buf(total)?;
             for (i, &sample) in data.iter().enumerate().take(total) {
                 let ch = if cpp == 1 {
                     raw.cfa.color_at(i / width, i % width)
@@ -880,27 +918,30 @@ fn apply_crop(
     width: usize,
     height: usize,
     crops: &[usize; 4],
-) -> (Vec<f32>, usize, usize) {
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> Result<(Vec<f32>, usize, usize)> {
     let (new_w, new_h) = cropped_dims(width, height, crops);
 
     // Crop was rejected (invalid / absent) — return the buffer unchanged so the
     // dims still match what `cropped_dims` reported (the full sensor).
     if (new_w, new_h) == (width, height) {
-        return (rgb.to_vec(), width, height);
+        return Ok((rgb.to_vec(), width, height));
     }
 
     let top = crops[0];
     let bottom = crops[2];
     let left = crops[3];
 
-    let mut cropped = Vec::with_capacity(new_w * new_h * 3);
+    // Cropped output is sized from the (untrusted) header dims → default
+    // fallible (bounded by `rgb`, but still full-image-scale).
+    let mut cropped = crate::alloc_util::vec_with_capacity(alloc_pref, true, new_w * new_h * 3)?;
     for row in top..height - bottom {
         let src_start = (row * width + left) * 3;
         let src_end = src_start + new_w * 3;
         cropped.extend_from_slice(&rgb[src_start..src_end]);
     }
 
-    (cropped, new_w, new_h)
+    Ok((cropped, new_w, new_h))
 }
 
 /// Check if data appears to be a DNG file (TIFF with DNG version tag).

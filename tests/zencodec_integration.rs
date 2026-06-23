@@ -309,3 +309,96 @@ fn decode_display_p3_develop() {
         zenpixels::ColorPrimaries::DisplayP3
     );
 }
+
+// ── estimate_decode_resources (deterministic, no corpus) ─────────────────
+
+#[test]
+fn estimate_decode_resources_scales_and_is_serial() {
+    use zencodec::estimate::{ComputeEnvironment, ImageCharacteristics, ThreadingInformation};
+    use zenpixels::PixelDescriptor;
+
+    let config = zenraw::RawDecoderConfig::new();
+    let compute = ComputeEnvironment::new().with_cores(8);
+
+    // A 6 MP image: the modelled peak is dominated by the RGB-f32 working set
+    // (≈ 3 × W·H·12 B) plus fixed overhead — in the right ballpark of the
+    // measured 245.9 MiB / 6.12 MP develop anchor (see the impl + CHANGELOG).
+    let img6 = ImageCharacteristics::new(3000, 2000, PixelDescriptor::RGB16_SRGB);
+    let est6 = config.estimate_decode_resources(&img6, &compute);
+
+    let peak6 = est6.peak_memory_bytes_est().expect("peak modelled");
+    let pixels6 = 3000u64 * 2000;
+    // ≥ 3 RGB-f32 frames (the concurrent working set); well under 10× (sanity).
+    assert!(
+        peak6 >= pixels6 * 12 * 3,
+        "peak below the RGB-f32 working set"
+    );
+    assert!(peak6 < pixels6 * 12 * 10, "peak implausibly large");
+    // Matches the measured 6.12 MP / 245.9 MiB anchor within a small factor.
+    assert!(
+        (200 << 20..=320 << 20).contains(&peak6),
+        "6 MP peak {peak6} outside the measured-anchor band"
+    );
+
+    // Larger image → strictly larger peak (monotonic in pixels).
+    let img24 = ImageCharacteristics::new(6000, 4000, PixelDescriptor::RGB16_SRGB);
+    let est24 = config.estimate_decode_resources(&img24, &compute);
+    assert!(
+        est24.peak_memory_bytes_est().unwrap() > peak6,
+        "peak must grow with pixel count"
+    );
+
+    // RAW decode is single-threaded per image: wall time does not scale with
+    // cores, so 1-core and 8-core estimates must agree.
+    assert_eq!(est6.threading(), Some(ThreadingInformation::SERIAL));
+    let est6_1core = config.estimate_decode_resources(&img6, &ComputeEnvironment::new());
+    assert_eq!(
+        est6.wall_ms(),
+        est6_1core.wall_ms(),
+        "serial decode wall time must not scale with cores"
+    );
+}
+
+// ── AllocPreference (corpus-gated, follows this file's convention) ────────
+
+/// Decoding under `AllocPreference::Fallible` (the `try_reserve` path) and
+/// `Infallible` (the `vec!` path) must produce byte-identical pixels to the
+/// default (`CodecDefault`) decode — the allocation strategy never changes the
+/// output. Corpus-gated like every other decode test here (the
+/// `find_raw_file()` directories are the caller-visible gate).
+#[test]
+fn fallible_alloc_decode_matches_default() {
+    use zencodec::AllocPreference;
+
+    let Some(data) = find_raw_file() else {
+        eprintln!("Skipping: no RAW files found");
+        return;
+    };
+
+    let decode_bytes = |pref: Option<AllocPreference>| -> Vec<u8> {
+        let job = zenraw::RawDecoderConfig::new().job();
+        let job = match pref {
+            Some(p) => job.with_limits(ResourceLimits::none().with_prefer_fallible_allocations(p)),
+            None => job,
+        };
+        let out = job
+            .decoder(Cow::Borrowed(&data), &[])
+            .expect("decoder creation failed")
+            .decode()
+            .expect("decode failed");
+        out.into_buffer().copy_to_contiguous_bytes()
+    };
+
+    let default = decode_bytes(None); // CodecDefault
+    let fallible = decode_bytes(Some(AllocPreference::Fallible));
+    let infallible = decode_bytes(Some(AllocPreference::Infallible));
+
+    assert_eq!(
+        default, fallible,
+        "Fallible decode must be byte-identical to the default decode"
+    );
+    assert_eq!(
+        default, infallible,
+        "Infallible decode must be byte-identical to the default decode"
+    );
+}

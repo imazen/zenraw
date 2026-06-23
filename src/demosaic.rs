@@ -32,6 +32,11 @@ pub enum DemosaicMethod {
 /// width, height, and CFA pattern from rawloader.
 ///
 /// Output: interleaved RGB f32 data with 3 components per pixel.
+///
+/// Allocates the output buffer infallibly (`vec![]`). The
+/// [`decode`](crate::decode) pipeline uses
+/// [`demosaic_to_rgb_f32_fallible`] instead, which honours the caller's
+/// [`AllocPref`](crate::alloc_util::AllocPref).
 #[cfg(feature = "rawloader")]
 pub fn demosaic_to_rgb_f32(
     data: &[f32],
@@ -40,16 +45,60 @@ pub fn demosaic_to_rgb_f32(
     cfa: &rawloader::CFA,
     method: DemosaicMethod,
 ) -> Vec<f32> {
+    let rgb = vec![0.0f32; width * height * 3];
     match method {
-        DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa),
-        DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa),
+        DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
+        DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb),
     }
 }
 
-/// Bilinear interpolation demosaicing.
+/// Demosaic Bayer CFA data to RGB f32 pixels, honoring the per-site
+/// [`AllocPref`](crate::alloc_util::AllocPref) for the (untrusted-sized) output
+/// buffer.
+///
+/// This is the entry the [`decode`](crate::decode) pipeline uses: the output
+/// `RGB f32` buffer is the largest intermediate and is sized from the sensor
+/// dimensions the file claims, so it defaults to the fallible (`try_reserve`)
+/// path. Behaviour and output bytes are identical to [`demosaic_to_rgb_f32`];
+/// only the allocation strategy differs.
 #[cfg(feature = "rawloader")]
-fn demosaic_bilinear(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
-    let mut rgb = vec![0.0f32; width * height * 3];
+pub(crate) fn demosaic_to_rgb_f32_fallible(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &rawloader::CFA,
+    method: DemosaicMethod,
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
+    use whereat::at;
+    let n = width
+        .checked_mul(height)
+        .and_then(|p| p.checked_mul(3))
+        .ok_or_else(|| {
+            at!(crate::error::RawError::LimitExceeded(
+                "RGB f32 buffer size overflows usize".into()
+            ))
+        })?;
+    // Full-image demosaic output sized from the (untrusted) sensor dims →
+    // default fallible.
+    let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
+    Ok(match method {
+        DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
+        DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb),
+    })
+}
+
+/// Bilinear interpolation demosaicing into a pre-allocated `rgb` buffer
+/// (length `width * height * 3`).
+#[cfg(feature = "rawloader")]
+fn demosaic_bilinear(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &rawloader::CFA,
+    mut rgb: Vec<f32>,
+) -> Vec<f32> {
+    debug_assert_eq!(rgb.len(), width * height * 3);
 
     for row in 0..height {
         for col in 0..width {
@@ -230,8 +279,14 @@ fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usiz
 /// Reference: Malvar, He, Cutler. "High-Quality Linear Interpolation for
 /// Demosaicing of Bayer-Patterned Color Images" (2004).
 #[cfg(feature = "rawloader")]
-fn demosaic_malvar(data: &[f32], width: usize, height: usize, cfa: &rawloader::CFA) -> Vec<f32> {
-    let mut rgb = vec![0.0f32; width * height * 3];
+fn demosaic_malvar(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &rawloader::CFA,
+    mut rgb: Vec<f32>,
+) -> Vec<f32> {
+    debug_assert_eq!(rgb.len(), width * height * 3);
 
     // The 5×5 Malvar kernels need a 2-pixel border with clamped access.
     // For images too small to have an interior region, use the safe path.
@@ -579,14 +634,55 @@ impl CfaPattern {
 /// are interpolated by averaging same-color neighbors in a 5×5 window.
 /// This is a baseline quality algorithm — sufficient for previews and
 /// testing but not as sharp as frequency-domain X-Trans algorithms.
-#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
+#[allow(dead_code)] // test-only since the rawler path uses the _fallible variant
 pub(crate) fn demosaic_xtrans_bilinear(
     data: &[f32],
     width: usize,
     height: usize,
     cfa: &CfaPattern,
 ) -> Vec<f32> {
-    let mut rgb = vec![0.0f32; width * height * 3];
+    let rgb = vec![0.0f32; width * height * 3];
+    demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb)
+}
+
+/// X-Trans bilinear demosaic honoring the per-site
+/// [`AllocPref`](crate::alloc_util::AllocPref) for the (untrusted-sized) output
+/// buffer. Used by the rawler backend's decode pipeline; output bytes are
+/// identical to [`demosaic_xtrans_bilinear`].
+#[cfg(feature = "rawler")]
+pub(crate) fn demosaic_xtrans_bilinear_fallible(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &CfaPattern,
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
+    use whereat::at;
+    let n = width
+        .checked_mul(height)
+        .and_then(|p| p.checked_mul(3))
+        .ok_or_else(|| {
+            at!(crate::error::RawError::LimitExceeded(
+                "RGB f32 buffer size overflows usize".into()
+            ))
+        })?;
+    // Full-image demosaic output sized from the (untrusted) sensor dims →
+    // default fallible.
+    let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
+    Ok(demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb))
+}
+
+/// X-Trans bilinear demosaic into a pre-allocated `rgb` buffer (length
+/// `width * height * 3`).
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
+fn demosaic_xtrans_bilinear_into(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &CfaPattern,
+    mut rgb: Vec<f32>,
+) -> Vec<f32> {
+    debug_assert_eq!(rgb.len(), width * height * 3);
 
     for row in 0..height {
         for col in 0..width {
@@ -680,21 +776,21 @@ mod tests {
     #[test]
     fn bilinear_produces_correct_dimensions() {
         let (data, width, height, cfa) = make_test_bayer();
-        let rgb = demosaic_bilinear(&data, width, height, &cfa);
+        let rgb = demosaic_bilinear(&data, width, height, &cfa, vec![0.0; width * height * 3]);
         assert_eq!(rgb.len(), width * height * 3);
     }
 
     #[test]
     fn malvar_produces_correct_dimensions() {
         let (data, width, height, cfa) = make_test_bayer();
-        let rgb = demosaic_malvar(&data, width, height, &cfa);
+        let rgb = demosaic_malvar(&data, width, height, &cfa, vec![0.0; width * height * 3]);
         assert_eq!(rgb.len(), width * height * 3);
     }
 
     #[test]
     fn bilinear_known_channel_preserved() {
         let (data, width, height, cfa) = make_test_bayer();
-        let rgb = demosaic_bilinear(&data, width, height, &cfa);
+        let rgb = demosaic_bilinear(&data, width, height, &cfa, vec![0.0; width * height * 3]);
 
         // At R sites, the red channel should be the original value
         for row in 0..height {
@@ -714,7 +810,7 @@ mod tests {
     #[test]
     fn malvar_known_channel_preserved() {
         let (data, width, height, cfa) = make_test_bayer();
-        let rgb = demosaic_malvar(&data, width, height, &cfa);
+        let rgb = demosaic_malvar(&data, width, height, &cfa, vec![0.0; width * height * 3]);
 
         for row in 0..height {
             for col in 0..width {
@@ -733,7 +829,7 @@ mod tests {
     #[test]
     fn bilinear_output_non_negative() {
         let (data, width, height, cfa) = make_test_bayer();
-        let rgb = demosaic_bilinear(&data, width, height, &cfa);
+        let rgb = demosaic_bilinear(&data, width, height, &cfa, vec![0.0; width * height * 3]);
         for val in &rgb {
             assert!(*val >= 0.0, "Bilinear produced negative value: {val}");
         }
@@ -742,7 +838,7 @@ mod tests {
     #[test]
     fn malvar_output_non_negative() {
         let (data, width, height, cfa) = make_test_bayer();
-        let rgb = demosaic_malvar(&data, width, height, &cfa);
+        let rgb = demosaic_malvar(&data, width, height, &cfa, vec![0.0; width * height * 3]);
         for val in &rgb {
             assert!(*val >= 0.0, "Malvar produced negative value: {val}");
         }
@@ -756,8 +852,9 @@ mod tests {
         let height = 8;
         let data = vec![0.5f32; width * height];
 
-        let rgb_bilinear = demosaic_bilinear(&data, width, height, &cfa);
-        let rgb_malvar = demosaic_malvar(&data, width, height, &cfa);
+        let rgb_bilinear =
+            demosaic_bilinear(&data, width, height, &cfa, vec![0.0; width * height * 3]);
+        let rgb_malvar = demosaic_malvar(&data, width, height, &cfa, vec![0.0; width * height * 3]);
 
         // Interior pixels should be very close to 0.5 for all channels
         for row in 2..height - 2 {

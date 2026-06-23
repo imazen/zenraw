@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`AllocPreference` honoured at untrusted decode allocations.** The decode
+  pipeline's large, sensor-dimension-sized buffers (the normalized sensor
+  buffer, the demosaic / non-Bayer `RGB f32` output, and the crop copy) now
+  route through a per-call-site fallibility policy (`src/alloc_util.rs`): big
+  untrusted buffers default to the fallible `try_reserve` path (graceful
+  `RawError::LimitExceeded` instead of an abort), small bounded scratch stays
+  infallible (`vec!`). The zencodec decode boundary sets it from
+  `ResourceLimits::prefer_fallible_allocations`; the direct `decode()` API
+  leaves it `CodecDefault` (each site keeps its default → behaviour unchanged).
+  Explicit `Fallible` / `Infallible` override every site. No public API change.
+- **`RawDecoderConfig::estimate_decode_resources`** (the `zencodec::decode::
+  DecoderConfig` trait method): predicts peak memory (≈ 3× the `RGB f32`
+  working set + fixed overhead, matching the measured 245.9 MiB / 6.12 MP
+  develop anchor), serial threading, and wall-time, scaled to the
+  `ComputeEnvironment` core count.
+- Bumped the optional `zencodec` dependency to `0.1.24` (adds `AllocPreference`,
+  `ResourceLimits::prefer_fallible_allocations`, and the
+  `estimate_decode_resources` trait method).
+
 ### Fixed
 
 - **Untrusted-input hardening (no API change):**

@@ -135,11 +135,10 @@ fn build_image_info(data: &[u8], raw_info: &decode::RawInfo) -> ImageInfo {
 /// the preserve path (leave them stored-orientation).
 ///
 /// This is the local equivalent of
-/// [`OrientationHint::bakes()`](zencodec::OrientationHint::bakes) — inlined so
-/// the adapter does not require an unreleased `zencodec` (the published 0.1.21
-/// predates `bakes()`). [`Preserve`](OrientationHint::Preserve) is the only hint
-/// that leaves pixels untouched; every other hint bakes. Once `zencodec` ships
-/// `bakes()`, these call sites can switch to `hint.bakes()` directly.
+/// [`OrientationHint::bakes()`](zencodec::OrientationHint::bakes), kept inlined
+/// so the orientation-adapter tests can exercise it directly without
+/// constructing a full decode. [`Preserve`](OrientationHint::Preserve) is the
+/// only hint that leaves pixels untouched; every other hint bakes.
 fn hint_bakes(hint: OrientationHint) -> bool {
     !matches!(hint, OrientationHint::Preserve)
 }
@@ -304,6 +303,46 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         &RAW_DECODE_CAPABILITIES
     }
 
+    fn estimate_decode_resources(
+        &self,
+        image: &zencodec::estimate::ImageCharacteristics,
+        compute: &zencodec::estimate::ComputeEnvironment,
+    ) -> zencodec::estimate::ResourceEstimate {
+        use zencodec::estimate::{ResourceEstimate, ThreadingInformation};
+
+        let pixels = image.pixels();
+
+        // The RAW develop pipeline's working set is dominated by `RGB f32`
+        // buffers (12 B/px): the normalized sensor buffer, the demosaic output,
+        // and a transient crop/orientation copy. The output buffer
+        // (`image.descriptor()`, RGB16 6 B/px or RGBF32 12 B/px) is smaller than
+        // or equal to those.
+        //
+        // Anchor (heaptrack, `examples/heaptrack_decode.rs`, see CHANGELOG):
+        // a 6.12 MP NEF develops at **245.9 MiB** peak — ≈ 3.3× the 73 MiB
+        // RGB-f32 intermediate. The model below — fixed overhead + 3× the
+        // RGB-f32 frame — reproduces that point (24 MiB + 6.12 MP × 36 B ≈
+        // 245 MiB). The fixed term also covers the ~20 MiB one-time `rawloader`
+        // camera-metadata DB the first decode deserializes and caches.
+        const FIXED_OVERHEAD: u64 = 24 << 20; // 24 MiB
+        const RGB_F32_BYTES_PER_PX: u64 = 12;
+        // Three RGB-f32-equivalent buffers live concurrently at the peak
+        // (normalized + demosaic output + crop/orient transient).
+        let working_set = pixels.saturating_mul(RGB_F32_BYTES_PER_PX * 3);
+        let peak = FIXED_OVERHEAD.saturating_add(working_set);
+
+        // Single-threaded per image (rawloader / rawler decode serially).
+        // Throughput is a conservative ~50 Mpix/s placeholder — the heaptrack
+        // harness measures memory, not wall time, so this is not yet
+        // benchmark-calibrated.
+        const THROUGHPUT_MPIX_PER_S: u64 = 50;
+        let wall_ms = pixels / (THROUGHPUT_MPIX_PER_S * 1000).max(1);
+
+        ResourceEstimate::new(peak, wall_ms)
+            .with_threading(ThreadingInformation::SERIAL)
+            .at_cores(compute.cores())
+    }
+
     fn job<'a>(self) -> Self::Job<'a> {
         RawDecodeJob {
             config: self.inner,
@@ -418,6 +457,13 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
                 break;
             }
         }
+
+        // Honor the caller's allocation-fallibility preference at the zencodec
+        // boundary. The big untrusted-sized RGB-f32 / sensor buffers default to
+        // the fallible (`try_reserve`) path; explicit `Fallible` / `Infallible`
+        // override every site. The direct `decode()` API leaves this
+        // `CodecDefault` → behaviour unchanged. See [`crate::alloc_util`].
+        config.alloc_pref = self.limits.prefer_fallible_allocations.into();
 
         // The adapter owns orientation: always decode in stored sensor
         // orientation (intrinsic tag reported), then bake the resolved hint on

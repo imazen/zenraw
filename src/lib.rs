@@ -56,6 +56,8 @@ extern crate alloc;
 // Crate info for whereat error tracing
 whereat::define_at_crate_info!();
 
+#[allow(dead_code)]
+pub(crate) mod alloc_util;
 pub mod classify;
 #[allow(dead_code)]
 pub mod color;

@@ -15,27 +15,54 @@ use magetypes::simd::generic::f32x8 as GenericF32x8;
 ///
 /// All pixels share the same black/inv_range. This is the fast path for
 /// non-CFA data (cpp > 1) or when all CFA channels have identical levels.
+///
+/// Allocates the output buffer infallibly (`vec![]`). The decode pipeline uses
+/// [`normalize_uniform_fallible`], which honours the caller's
+/// [`AllocPref`](crate::alloc_util::AllocPref).
 #[allow(dead_code)]
 pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; data.len()];
     incant!(
-        normalize_uniform_inner(data, black, inv_range),
+        normalize_uniform_into(data, black, inv_range, &mut out),
         [v3, neon, wasm128, scalar]
-    )
+    );
+    out
 }
 
+/// Like [`normalize_uniform`], but allocates the (untrusted-sized) output buffer
+/// honoring the per-site [`AllocPref`](crate::alloc_util::AllocPref) — default
+/// fallible. Output bytes are identical.
+#[cfg(feature = "rawler")]
+pub fn normalize_uniform_fallible(
+    data: &[f32],
+    black: f32,
+    inv_range: f32,
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
+    // Full normalized sensor buffer sized from the (untrusted) sensor dims →
+    // default fallible.
+    let mut out = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, data.len())?;
+    incant!(
+        normalize_uniform_into(data, black, inv_range, &mut out),
+        [v3, neon, wasm128, scalar]
+    );
+    Ok(out)
+}
+
+/// Normalize `data` into the pre-allocated `out` (same length as `data`).
 #[magetypes(v3, neon, wasm128, scalar)]
-fn normalize_uniform_inner(token: Token, data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
+fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32, out: &mut [f32]) {
     #[allow(non_camel_case_types)]
     type f32x8 = GenericF32x8<Token>;
 
-    let mut out = vec![0.0f32; data.len()];
+    debug_assert_eq!(out.len(), data.len());
     let black_v = f32x8::splat(token, black);
     let inv_range_v = f32x8::splat(token, inv_range);
     let zero = f32x8::zero(token);
     let one = f32x8::splat(token, 1.0);
 
     let (src_chunks, src_tail) = f32x8::partition_slice(token, data);
-    let (dst_chunks, dst_tail) = f32x8::partition_slice_mut(token, &mut out);
+    let (dst_chunks, dst_tail) = f32x8::partition_slice_mut(token, out);
 
     for (src, dst) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
         let v = f32x8::load(token, src);
@@ -47,8 +74,6 @@ fn normalize_uniform_inner(token: Token, data: &[f32], black: f32, inv_range: f3
     for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
         *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
     }
-
-    out
 }
 
 // ── Non-Bayer channel extraction ─────────────────────────────────────────
@@ -81,6 +106,46 @@ pub fn extract_rgb_from_cpp(data: &[f32], pixel_count: usize, cpp: usize) -> Vec
         });
     }
     rgb
+}
+
+/// Like [`extract_rgb_from_cpp`], but allocates the (untrusted-sized) output
+/// `RGB f32` buffer honoring the per-site
+/// [`AllocPref`](crate::alloc_util::AllocPref) — default fallible. Output bytes
+/// are identical.
+#[cfg(feature = "rawler")]
+pub fn extract_rgb_from_cpp_fallible(
+    data: &[f32],
+    pixel_count: usize,
+    cpp: usize,
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
+    // Full-image RGB output sized from the (untrusted) sensor dims → default
+    // fallible.
+    let len = pixel_count.checked_mul(3).ok_or_else(|| {
+        whereat::at!(crate::error::RawError::LimitExceeded(
+            "RGB buffer size overflows usize".into()
+        ))
+    })?;
+    let mut rgb = crate::alloc_util::vec_with_capacity(alloc_pref, true, len)?;
+    if cpp == 3 && data.len() >= len {
+        rgb.extend_from_slice(&data[..len]);
+        return Ok(rgb);
+    }
+    for i in 0..pixel_count {
+        let base = i * cpp;
+        rgb.push(if base < data.len() { data[base] } else { 0.0 });
+        rgb.push(if base + 1 < data.len() {
+            data[base + 1]
+        } else {
+            0.0
+        });
+        rgb.push(if base + 2 < data.len() {
+            data[base + 2]
+        } else {
+            0.0
+        });
+    }
+    Ok(rgb)
 }
 
 // ── sRGB gamma ───────────────────────────────────────────────────────────

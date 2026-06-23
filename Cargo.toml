@@ -24,7 +24,7 @@ thiserror = { version = "2.0.18", default-features = false }
 whereat = { version = "0.1.5", default-features = false }
 enough = { version = "0.4.3", default-features = false }
 zenpixels = { version = "0.2.10", default-features = false }
-zencodec = { version = "0.1.21", optional = true }
+zencodec = { version = "0.1.24", optional = true }
 archmage = { version = "0.9.15", default-features = false }
 magetypes = { version = "0.9.15", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }

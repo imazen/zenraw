@@ -20,7 +20,9 @@ use rawler::imgop::xyz::Illuminant;
 
 use crate::color;
 use crate::decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
-use crate::demosaic::{CfaPattern, demosaic_to_rgb_f32, demosaic_xtrans_bilinear};
+use crate::demosaic::{
+    CfaPattern, demosaic_to_rgb_f32_fallible, demosaic_xtrans_bilinear_fallible,
+};
 use crate::error::{RawError, Result};
 
 /// Extract xyz_to_cam matrix from rawler's color_matrix HashMap.
@@ -70,7 +72,11 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     })) {
         Ok(Ok(raw)) => raw,
         Ok(Err(e)) => return Err(at!(RawError::Decode(format!("{e}")))),
-        Err(_) => return Err(at!(RawError::Decode("rawler panicked while probing".into()))),
+        Err(_) => {
+            return Err(at!(RawError::Decode(
+                "rawler panicked while probing".into()
+            )));
+        }
     };
 
     let cfa_pattern = extract_cfa_pattern(&raw);
@@ -191,7 +197,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 2: Extract and normalize sensor data to f32 [0, 1]
-    let normalized = normalize_raw_data(&raw).map_err(|e| at!(e))?;
+    let normalized = normalize_raw_data(&raw, config.alloc_pref).map_err(|e| at!(e))?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -229,18 +235,31 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             }
         }
         let cfa_pattern = CfaPattern::new(colors, pattern_size, pattern_size);
-        demosaic_xtrans_bilinear(&normalized, width, height, &cfa_pattern)
+        demosaic_xtrans_bilinear_fallible(
+            &normalized,
+            width,
+            height,
+            &cfa_pattern,
+            config.alloc_pref,
+        )?
     } else {
         // Standard 2x2 Bayer
         let rl_cfa = rawloader::CFA::new(&cfa_str);
-        demosaic_to_rgb_f32(&normalized, width, height, &rl_cfa, config.demosaic)
+        demosaic_to_rgb_f32_fallible(
+            &normalized,
+            width,
+            height,
+            &rl_cfa,
+            config.demosaic,
+            config.alloc_pref,
+        )?
     };
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 4: Crop before color (Develop mode needs dimensions for DngPipeline)
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_rawler_crop(&rgb, width, height, &raw)
+        apply_rawler_crop(&rgb, width, height, &raw, config.alloc_pref)?
     } else {
         (rgb, width, height)
     };
@@ -457,7 +476,10 @@ fn extract_cfa_pattern(raw: &rawler::RawImage) -> String {
 }
 
 /// Normalize rawler sensor data to f32 \[0, 1\].
-fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, RawError> {
+fn normalize_raw_data(
+    raw: &rawler::RawImage,
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;
     let cpp = raw.cpp;
@@ -471,6 +493,13 @@ fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, 
         _ => None,
     };
 
+    // Full normalized sensor buffer sized from the (untrusted) sensor dims →
+    // default fallible. `decompose().0` strips the `whereat` location, keeping
+    // this function's bare-`RawError` return type.
+    let new_buf = |cap: usize| -> core::result::Result<Vec<f32>, RawError> {
+        crate::alloc_util::vec_with_capacity(alloc_pref, true, cap).map_err(|e| e.decompose().0)
+    };
+
     match &raw.data {
         rawler::RawImageData::Integer(data) => {
             if data.len() < total {
@@ -481,7 +510,7 @@ fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, 
                 )));
             }
 
-            let mut out = Vec::with_capacity(total);
+            let mut out = new_buf(total)?;
             for (i, &sample) in data.iter().enumerate().take(total) {
                 let ch = if cpp == 1 {
                     if let Some(cfa) = cfa_opt {
@@ -521,13 +550,10 @@ fn normalize_raw_data(raw: &rawler::RawImage) -> core::result::Result<Vec<f32>, 
                 let wl = white[0];
                 let range = (wl - bl).max(1.0);
                 let inv_range = 1.0 / range;
-                Ok(crate::simd::normalize_uniform(
-                    &data[..total],
-                    bl,
-                    inv_range,
-                ))
+                crate::simd::normalize_uniform_fallible(&data[..total], bl, inv_range, alloc_pref)
+                    .map_err(|e| e.decompose().0)
             } else {
-                let mut out = Vec::with_capacity(total);
+                let mut out = new_buf(total)?;
                 for (i, &sample) in data.iter().enumerate().take(total) {
                     let ch = if cpp == 1 {
                         if let Some(cfa) = cfa_opt {
@@ -556,11 +582,12 @@ fn apply_rawler_crop(
     width: usize,
     height: usize,
     raw: &rawler::RawImage,
-) -> (Vec<f32>, usize, usize) {
+    alloc_pref: crate::alloc_util::AllocPref,
+) -> Result<(Vec<f32>, usize, usize)> {
     let rect = raw.crop_area.as_ref().or(raw.active_area.as_ref());
 
     let Some(rect) = rect else {
-        return (rgb.to_vec(), width, height);
+        return Ok((rgb.to_vec(), width, height));
     };
 
     let left = rect.p.x;
@@ -570,10 +597,12 @@ fn apply_rawler_crop(
 
     // Validate
     if left + new_w > width || top + new_h > height {
-        return (rgb.to_vec(), width, height);
+        return Ok((rgb.to_vec(), width, height));
     }
 
-    let mut cropped = Vec::with_capacity(new_w * new_h * 3);
+    // Cropped output is sized from the (untrusted) header dims → default
+    // fallible (bounded by `rgb`, but still full-image-scale).
+    let mut cropped = crate::alloc_util::vec_with_capacity(alloc_pref, true, new_w * new_h * 3)?;
     for row in top..top + new_h {
         let src_start = (row * width + left) * 3;
         let src_end = src_start + new_w * 3;
@@ -582,7 +611,7 @@ fn apply_rawler_crop(
         }
     }
 
-    (cropped, new_w, new_h)
+    Ok((cropped, new_w, new_h))
 }
 
 /// Handle non-Bayer data (cpp > 1).
@@ -598,7 +627,12 @@ fn decode_non_bayer(
     let height = raw.height;
     let cpp = raw.cpp;
 
-    let mut rgb = crate::simd::extract_rgb_from_cpp(&normalized, width * height, cpp);
+    let mut rgb = crate::simd::extract_rgb_from_cpp_fallible(
+        &normalized,
+        width * height,
+        cpp,
+        config.alloc_pref,
+    )?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -627,7 +661,7 @@ fn decode_non_bayer(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_rawler_crop(&rgb, width, height, &raw)
+        apply_rawler_crop(&rgb, width, height, &raw, config.alloc_pref)?
     } else {
         (rgb, width, height)
     };
