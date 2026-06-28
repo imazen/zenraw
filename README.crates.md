@@ -1,4 +1,6 @@
-# zenraw [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zenraw/ci.yml?style=flat-square&label=CI)](https://github.com/imazen/zenraw/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/zenraw?style=flat-square)](https://crates.io/crates/zenraw) [![lib.rs](https://img.shields.io/crates/v/zenraw?style=flat-square&label=lib.rs&color=blue)](https://lib.rs/crates/zenraw) [![docs.rs](https://img.shields.io/docsrs/zenraw?style=flat-square)](https://docs.rs/zenraw) [![MSRV](https://img.shields.io/badge/MSRV-1.93-blue?style=flat-square)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field) [![license](https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Commercial-blue?style=flat-square)](#license)
+<!-- GENERATED FROM README.md by zenutils gen-readme-crates.sh — DO NOT EDIT. -->
+
+# zenraw [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zenraw/ci.yml?style=flat-square&label=CI)](https://github.com/imazen/zenraw/actions/workflows/ci.yml)
 
 Camera RAW and DNG decoder in pure Rust (`#![forbid(unsafe_code)]`).
 Display-ready sRGB output by default (`OutputMode::Develop`, u16); scene-referred
@@ -269,21 +271,6 @@ XMP metadata (when the `xmp` feature is enabled), honors `OrientationHint`
 set plus fixed overhead), serial threading, and wall-time for resource-aware
 schedulers.
 
-<!-- crates.io:skip-start -->
-## Benchmarks
-
-zenraw ships two profiling harnesses rather than a cross-codec comparison:
-`benches/decode_bench.rs` (decode + probe throughput, via [zenbench]) and
-`examples/heaptrack_decode.rs` (heap-allocation profile). Both run against a
-local RAW corpus that isn't committed — RAW files are large and licensing-
-encumbered — so fetch one public sample per format with `just fetch-samples`
-(pulls from [raw.pixls.us](https://raw.pixls.us)), then `just bench` or
-`just heaptrack-decode`. Methodology and exact repro live in
-[benchmarks/README.md](https://github.com/imazen/zenraw/blob/main/benchmarks/README.md).
-
-No throughput numbers are committed here — they are hardware-dependent; reproduce
-them locally with the commands above.
-<!-- crates.io:skip-end -->
 
 ## AI-Generated Code Notice
 

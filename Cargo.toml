@@ -8,11 +8,11 @@ description = "Camera RAW and DNG decoder with zenpixels integration"
 categories = ["multimedia::images"]
 keywords = ["raw", "dng", "image", "decoder", "camera"]
 repository = "https://github.com/imazen/zenraw"
-readme = "README.md"
+readme = "README.crates.md"
 include = [
     "/src/**",
     "/examples/**",
-    "/README.md",
+    "/README.crates.md",
     "/CHANGELOG.md",
     "/LICENSE*",
 ]

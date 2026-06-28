@@ -23,6 +23,16 @@
   `ResourceLimits::prefer_fallible_allocations`, and the
   `estimate_decode_resources` trait method).
 
+### Changed
+
+- **README overhaul + split crates.io README.** Full shields.io badge row
+  (CI/crates.io/lib.rs/docs.rs/MSRV/license, `flat-square`), a `## Quick start`
+  dependency block, a fallible-allocation note in the untrusted-input section,
+  `with_target`/`with_exposure_ev`/`with_wb` and `estimate_decode_resources`
+  documented, absolute license links, and the rendered crosslink footer. Added a
+  generated `README.crates.md` (`readme = "README.crates.md"` in `Cargo.toml`)
+  and `benchmarks/README.md` documenting the decode/heaptrack harness repro.
+
 ### Fixed
 
 - **Untrusted-input hardening (no API change):**
