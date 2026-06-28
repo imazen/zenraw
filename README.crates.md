@@ -1,6 +1,6 @@
 <!-- GENERATED FROM README.md by zenutils gen-readme-crates.sh — DO NOT EDIT. -->
 
-# zenraw [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zenraw/ci.yml?style=flat-square&label=CI)](https://github.com/imazen/zenraw/actions/workflows/ci.yml)
+# zenraw
 
 Camera RAW and DNG decoder in pure Rust (`#![forbid(unsafe_code)]`).
 Display-ready sRGB output by default (`OutputMode::Develop`, u16); scene-referred
