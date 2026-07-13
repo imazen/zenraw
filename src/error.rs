@@ -2,7 +2,7 @@
 //!
 //! Each variant maps to exactly one coarse category in zencodec's
 //! `ErrorCategory` taxonomy (`Image` / `Request` / `Resource` / `Io` /
-//! `Internal` / `Lifecycle`) via the `CategorizedError` impl below — gated on
+//! `Internal` / `Stopped`) via the `CategorizedError` impl below — gated on
 //! the optional `zencodec` feature, since that taxonomy's types only exist
 //! when the dependency is compiled in. The variant names mirror the category
 //! they land in, so the mapping in `category()` reads as confirmation rather
@@ -306,7 +306,7 @@ impl zencodec::CategorizedError for RawError {
             // Unclassified external-dependency fault.
             RawError::Dependency(_) => InternalKind::Dependency.into(),
 
-            // Lifecycle — delegate to the wrapped StopReason's own category.
+            // Stopped — delegate to the wrapped StopReason's own category.
             RawError::Stopped(reason) => reason.category(),
 
             // Buffer construction: every call site computes both the byte
@@ -482,11 +482,11 @@ mod tests {
         fn stopped_delegates_to_stop_reason() {
             assert_eq!(
                 RawError::Stopped(enough::StopReason::Cancelled).category(),
-                C::Lifecycle(enough::StopReason::Cancelled)
+                C::Stopped(enough::StopReason::Cancelled)
             );
             assert_eq!(
                 RawError::Stopped(enough::StopReason::TimedOut).category(),
-                C::Lifecycle(enough::StopReason::TimedOut)
+                C::Stopped(enough::StopReason::TimedOut)
             );
         }
 

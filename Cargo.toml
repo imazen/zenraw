@@ -52,7 +52,7 @@ zenbench = { version = "0.1.2", features = ["criterion-compat"] }
 # unchanged by this migration since switching it is itself a public API
 # signature change). Kept as a placeholder for if/when that switch happens.
 # Drop for a crates.io version dep once zencodec 0.1.26 + testkit publish.
-zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "2427387f86c77fdf773ae2fa219926a49cd32d99" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "44ca79279b265ba7dfe01a2b31ef74788429509a" }
 
 [[bench]]
 name = "decode_bench"
@@ -87,5 +87,5 @@ opt-level = 2
 # branch tip) for reproducible builds, and to the SAME rev as the
 # `zencodec-testkit` dev-dep so both resolve to one unified zencodec; bump the
 # rev deliberately.
-zencodec = { git = "https://github.com/imazen/zencodec", rev = "2427387f86c77fdf773ae2fa219926a49cd32d99" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "44ca79279b265ba7dfe01a2b31ef74788429509a" }
 
