@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+### QUEUED BREAKING CHANGES
+<!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
+     Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
+- `RawError`'s variant set was reshaped for the zencodec `ErrorCategory` taxonomy (see the
+  `### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
+  single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
+  new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
+
+### Changed
+
+- **`RawError` reshaped onto zencodec's two-level origin-first `ErrorCategory` taxonomy**
+  (`Image`/`Request`/`Resource`/`Io`/`Internal`/`Lifecycle`, zencodec PR #116). Every variant
+  now maps to exactly one category via a new `#[cfg(feature = "zencodec")] impl
+  CategorizedError for RawError` (8c069b6f):
+  - `Decode(String)` split into `Malformed` (corrupt/invalid bitstream), `UnexpectedEof`
+    (truncated input, including the pre-existing `data.len() < 64` guard), and `Io` (temp-file
+    I/O, darktable-cli subprocess spawn/wait/timeout).
+  - `InvalidInput(String)` split into `InvalidParameters` (caller-supplied path/config),
+    `InvalidBuffer` (a caller pixel buffer with the wrong size — `dng_render::render*`), and
+    `Malformed`/`UnexpectedEof` for PFM-content parse failures.
+  - `Unsupported(String)` split three ways by origin: `UnsupportedFeature` (an image-bytes
+    fault — an unrecognized CFA/sensor layout `rawler_backend.rs` can't demosaic), the new
+    `#[cfg(feature = "zencodec")] UnsupportedOperation(zencodec::UnsupportedOperation)` (a
+    caller-request fault — `streaming_decoder`/`animation_frame_decoder` in
+    `zencodec_impl.rs`), and `Dependency` (an unclassified environment/external-tool fault —
+    `darktable-cli` missing from `PATH`, or no decode backend feature compiled in).
+  - `LimitExceeded(String)` split into `LimitExceeded(RawLimitKind, String)` (a configured or
+    built-in ceiling — pixel count, decode working-set bytes, input size, PFM dimension/byte
+    budgets) and a new `OutOfMemory(String)` (genuine `try_reserve` failure or an arithmetic
+    size-computation overflow that could never be allocated). New crate-local
+    `RawLimitKind` enum (`Width`/`Height`/`Pixels`/`Memory`/`InputSize`) carries which ceiling,
+    without requiring the optional `zencodec` feature to be enabled.
+  - `rawler::RawlerError` now routes through a new `From` impl distinguishing
+    `Unsupported{..}` (→ `UnsupportedType`, a new image-bytes-unsupported-dialect variant) from
+    `DecoderFailed` (→ `Malformed`), instead of collapsing both into one `Decode` string.
+  - `Buffer(zenpixels::BufferError)` categorizes `AllocationFailed` as `Resource::OutOfMemory`
+    and every other shape (`InvalidDimensions`, `StrideTooSmall`, ...) as `Internal::Bug`, since
+    every call site computes both the byte buffer and its dimensions itself.
+  - New `From<RawError> for At<zencodec::CodecError>` convenience bridge for a consumer that
+    wants the shared envelope. zenraw's own zencodec trait impls (`RawDecoderConfig` /
+    `RawDecodeJob` / `RawDecoder`) deliberately keep `type Error = At<RawError>` — not changed
+    to `At<CodecError>` — so `RawError`'s category is recoverable by downcasting `At<RawError>`
+    directly (or via the `From` bridge above), but does **not** survive erasure through a
+    type-erased `Box<dyn Error>` boundary (e.g. `zencodec-testkit`'s
+    `check_decode_error_envelope` / `check_decode_truncation_series`, both of which are
+    designed to fail for exactly this "Pattern A" `type Error` shape — not wired up here for
+    that reason, and because zenraw has no `EncoderConfig` for the testkit's other checks,
+    which all require an encode/decode pair).
+  - Bumped the optional `zencodec` dependency to `0.1.25` (pending release; `[patch.crates-io]`
+    pins the unpublished two-level `ErrorCategory` reshape at a commit rev), and added the
+    `zencodec-testkit` dev-dependency at the same rev (currently unused — see above).
+
 ### Added
 
 - **`AllocPreference` honoured at untrusted decode allocations.** The decode
