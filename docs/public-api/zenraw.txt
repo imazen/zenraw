@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenraw.txt 192 lines (supported surface) | zenraw.features.txt 163 added (features: apple,darktable,exif,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (10 hidden + 0 excluded-feature)
+# files: zenraw.txt 205 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 12 lines (12 hidden + 0 excluded-feature)
 
 ## summary
 #
 #   pub modules                                 6
-#   pub types (struct/enum/trait/alias)        20
+#   pub types (struct/enum/trait/alias)        21
 #   free functions                              9
 #   inherent methods                           37
 #   struct fields                              66
-#   enum variants                              53
-#   trait roster entries (type × trait)        46
-#   auto-trait-complete types                  10
+#   enum variants                              64
+#   trait roster entries (type × trait)        53
+#   auto-trait-complete types                  11
 #
 # per-module pub lines:
-#   (root)                           77
+#   (root)                           89
 #   classify                         18
 #   color                             3
 #   decode                           65
 #   demosaic                          4
 #   dng_render                       24
 
-## items (181 lines)
+## items (193 lines)
 
 pub mod zenraw
 pub mod classify
@@ -153,11 +153,23 @@ pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descr
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 #[non_exhaustive] pub enum RawError
 pub RawError::Buffer(zenpixels::buffer::BufferError)
-pub RawError::Decode(alloc::string::String)
-pub RawError::InvalidInput(alloc::string::String)
-pub RawError::LimitExceeded(alloc::string::String)
+pub RawError::Dependency(alloc::string::String)
+pub RawError::InvalidBuffer(alloc::string::String)
+pub RawError::InvalidParameters(alloc::string::String)
+pub RawError::Io(alloc::string::String)
+pub RawError::LimitExceeded(RawLimitKind, alloc::string::String)
+pub RawError::Malformed(alloc::string::String)
+pub RawError::OutOfMemory(alloc::string::String)
 pub RawError::Stopped(enough::reason::StopReason)
-pub RawError::Unsupported(alloc::string::String)
+pub RawError::UnexpectedEof(alloc::string::String)
+pub RawError::UnsupportedFeature(alloc::string::String)
+pub RawError::UnsupportedType(alloc::string::String)
+#[non_exhaustive] pub enum RawLimitKind
+pub RawLimitKind::Height
+pub RawLimitKind::InputSize
+pub RawLimitKind::Memory
+pub RawLimitKind::Pixels
+pub RawLimitKind::Width
 #[non_exhaustive] pub enum SensorLayout [also: decode]
 pub SensorLayout::Bayer
 pub SensorLayout::LinearRaw
@@ -211,9 +223,10 @@ pub fn is_raw_file(&[u8]) -> bool
 pub fn probe(&[u8], &dyn enough::Stop) -> core::result::Result<decode::RawInfo, whereat::at::At<RawError>>
 pub type Result<T> = core::result::Result<T, whereat::at::At<RawError>>
 
-## trait impls (10 types)
+## trait impls (11 types)
 
 RawError: Debug, Display, Error, From<enough::reason::StopReason>, From<rawloader::RawLoaderError>, From<zenpixels::buffer::BufferError>
+RawLimitKind: Clone, Copy, Debug, Display, Eq, Hash, PartialEq
 classify::FileFormat: Clone, Copy, Debug, Default, Display, Eq, Hash, PartialEq
 decode::OutputMode: Clone, Copy, Debug, Default, Eq, PartialEq
 decode::RawDecodeConfig: Clone, Debug, Default
@@ -226,4 +239,4 @@ dng_render::OutputPrimaries: Clone, Copy, Debug, Default, Eq, PartialEq
 
 ## auto traits
 
-10 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+11 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

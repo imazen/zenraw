@@ -15,19 +15,19 @@
 #   free functions                             12
 #   inherent methods                           14
 #   struct fields                              90
-#   enum variants                               3
-#   trait roster entries (type × trait)        23
+#   enum variants                               4
+#   trait roster entries (type × trait)        27
 #   auto-trait-complete types                   8
 #
 # per-module pub lines:
-#   (root)                            9
+#   (root)                           10
 #   apple                            59
 #   darktable                        22
 #   dng_render                        4
 #   exif                             32
 #   xmp                              28
 
-## items (154 lines)
+## items (155 lines)
 
 pub mod apple
 pub mod apple::makernote_tags
@@ -178,21 +178,24 @@ pub xmp::XmpMetadata::title: core::option::Option<alloc::string::String>
 pub xmp::XmpMetadata::white_balance: core::option::Option<alloc::string::String>
 pub fn xmp::extract_xmp(&[u8]) -> core::option::Option<alloc::string::String>
 pub fn xmp::read_xmp_metadata(&[u8]) -> core::option::Option<xmp::XmpMetadata>
+pub RawError::UnsupportedOperation(zencodec::capabilities::UnsupportedOperation)
 pub struct RawDecoderConfig
 pub fn RawDecoderConfig::from_config(decode::RawDecodeConfig) -> Self
 pub fn RawDecoderConfig::new() -> Self
 pub static DNG_FORMAT: zencodec::format::ImageFormatDefinition
 pub static RAW_FORMAT: zencodec::format::ImageFormatDefinition
 
-## trait impls (8 types)
+## trait impls (10 types)
 
 RawDecoderConfig: Clone, Debug, Default, zencodec::traits::decoding::DecoderConfig
+RawError: From<rawler::RawlerError>, From<zencodec::capabilities::UnsupportedOperation>, zencodec::error::CategorizedError
 apple::DngProfile: Clone, Debug, Default
 apple::GainMapInfo: Clone, Debug
 apple::ProfileGainTableMap: Clone, Debug
 darktable::DtColorProfile: Clone, Debug, Default
 darktable::DtConfig: Clone, Debug, Default
 exif::ExifMetadata: Clone, Debug, Default
+whereat::at::At<zencodec::error::CodecError>: From<RawError>
 xmp::XmpMetadata: Clone, Debug, Default
 
 ## auto traits
