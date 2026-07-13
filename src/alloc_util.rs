@@ -6,7 +6,7 @@
 //! * **Big, untrusted-sized buffers** — the demosaic / color-pipeline output
 //!   `RGB f32` buffer and the normalized sensor buffer, all sized from the
 //!   sensor dimensions the file claims. A malicious header can demand gigabytes,
-//!   so we want a graceful [`RawError::LimitExceeded`] rather than an abort.
+//!   so we want a graceful [`RawError::OutOfMemory`] rather than an abort.
 //!   (The dimensions are *also* bounds-checked up front by
 //!   [`enforce_decode_limits`](crate::decode::enforce_decode_limits), but the
 //!   fallible path keeps the actual allocation graceful regardless.)
@@ -93,7 +93,7 @@ pub(crate) fn resolve_fallible(pref: AllocPref, site_default_fallible: bool) -> 
 /// default when `pref` is [`CodecDefault`](AllocPref::CodecDefault).
 ///
 /// * fallible → `try_reserve_exact` then `resize`, returning
-///   [`RawError::LimitExceeded`] on allocation failure.
+///   [`RawError::OutOfMemory`] on allocation failure.
 /// * infallible → `vec![fill; n]` (single `calloc` when `fill` is the zero
 ///   bit-pattern; aborts on OOM).
 pub(crate) fn alloc_filled<T: Clone>(
@@ -105,7 +105,7 @@ pub(crate) fn alloc_filled<T: Clone>(
     if resolve_fallible(pref, site_default_fallible) {
         let mut v = Vec::new();
         v.try_reserve_exact(n).map_err(|_| {
-            at!(RawError::LimitExceeded(alloc::format!(
+            at!(RawError::OutOfMemory(alloc::format!(
                 "out of memory allocating {n} elements"
             )))
         })?;
@@ -123,7 +123,7 @@ pub(crate) fn alloc_filled<T: Clone>(
 /// `pref` is the caller's [`AllocPref`]; `site_default_fallible` is this site's
 /// default when `pref` is [`CodecDefault`](AllocPref::CodecDefault).
 ///
-/// * fallible → `try_reserve_exact`, returning [`RawError::LimitExceeded`] on
+/// * fallible → `try_reserve_exact`, returning [`RawError::OutOfMemory`] on
 ///   allocation failure.
 /// * infallible → `Vec::with_capacity(cap)` (aborts on OOM).
 ///
@@ -136,7 +136,7 @@ pub(crate) fn vec_with_capacity<T>(
     if resolve_fallible(pref, site_default_fallible) {
         let mut v = Vec::new();
         v.try_reserve_exact(cap).map_err(|_| {
-            at!(RawError::LimitExceeded(alloc::format!(
+            at!(RawError::OutOfMemory(alloc::format!(
                 "out of memory allocating {cap} elements"
             )))
         })?;
@@ -207,12 +207,12 @@ mod tests {
     #[test]
     fn alloc_filled_fallible_oom_returns_err() {
         // Request an impossibly large allocation; the fallible path must
-        // return Err (mapped to LimitExceeded) rather than abort.
+        // return Err (mapped to OutOfMemory) rather than abort.
         let r = alloc_filled(AllocPref::Fallible, true, 0.0f32, usize::MAX / 8);
         assert!(r.is_err());
         assert!(matches!(
             r.unwrap_err().decompose().0,
-            RawError::LimitExceeded(_)
+            RawError::OutOfMemory(_)
         ));
     }
 
@@ -222,7 +222,7 @@ mod tests {
         assert!(r.is_err());
         assert!(matches!(
             r.unwrap_err().decompose().0,
-            RawError::LimitExceeded(_)
+            RawError::OutOfMemory(_)
         ));
     }
 

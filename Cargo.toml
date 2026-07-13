@@ -24,7 +24,7 @@ thiserror = { version = "2.0.18", default-features = false }
 whereat = { version = "0.1.5", default-features = false }
 enough = { version = "0.4.3", default-features = false }
 zenpixels = { version = "0.2.10", default-features = false }
-zencodec = { version = "0.1.24", optional = true }
+zencodec = { version = "0.1.25", optional = true }
 archmage = { version = "0.9.15", default-features = false }
 magetypes = { version = "0.9.15", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
@@ -40,6 +40,19 @@ zensim = { version = "0.2.4"}
 bytemuck = "1.25.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 zenbench = { version = "0.1.2", features = ["criterion-compat"] }
+# zencodec conformance harness (unpublished companion crate). Git-pinned to the
+# SAME zencodec rev as the [patch.crates-io] below so both resolve to one
+# unified zencodec. NOT currently wired into a test: every zencodec-testkit
+# check requires an `EncoderConfig` (zenraw is decode-only — there is no RAW
+# encoder), and the two decoder-only checks
+# (`check_decode_error_envelope` / `check_decode_truncation_series`) are
+# explicitly designed to fail unless the decoder's `type Error` is
+# `At<zencodec::CodecError>` (zenraw's zencodec trait impls keep
+# `type Error = At<RawError>` — a native-enum "Pattern A" binding, deliberately
+# unchanged by this migration since switching it is itself a public API
+# signature change). Kept as a placeholder for if/when that switch happens.
+# Drop for a crates.io version dep once zencodec 0.1.26 + testkit publish.
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "2427387f86c77fdf773ae2fa219926a49cd32d99" }
 
 [[bench]]
 name = "decode_bench"
@@ -64,4 +77,15 @@ apple = ["exif", "xmp"]
 
 [profile.test]
 opt-level = 2
+
+[patch.crates-io]
+# TEMP: until zencodec 0.1.26 ships (PR #116, the two-level origin-first
+# ErrorCategory reshape) — provides `ErrorCategory::{Image,Request,Resource,
+# Policy,Lifecycle,Io,Internal}` + `CategorizedError` + `LimitKind` used by
+# `RawError`'s `category()` impl. Remove this patch and bump the `zencodec`
+# version dependency once 0.1.26 is published. Pinned to a commit rev (not the
+# branch tip) for reproducible builds, and to the SAME rev as the
+# `zencodec-testkit` dev-dep so both resolve to one unified zencodec; bump the
+# rev deliberately.
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "2427387f86c77fdf773ae2fa219926a49cd32d99" }
 

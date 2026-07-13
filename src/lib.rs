@@ -101,7 +101,7 @@ pub use classify::{FileFormat, classify};
 pub use decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 pub use demosaic::DemosaicMethod;
 pub use dng_render::OutputPrimaries;
-pub use error::RawError;
+pub use error::{RawError, RawLimitKind};
 
 // ── Public decode/probe dispatch ──────────────────────────────────────
 
@@ -126,7 +126,7 @@ pub fn decode(
     #[cfg(not(any(feature = "rawloader", feature = "rawler")))]
     {
         let _ = (data, config, stop);
-        Err(whereat::at!(RawError::Unsupported(
+        Err(whereat::at!(RawError::Dependency(
             "no decode backend enabled — enable `rawloader` or `rawler` feature".into()
         )))
     }
@@ -146,7 +146,7 @@ pub fn probe(data: &[u8], stop: &dyn enough::Stop) -> crate::error::Result<decod
     #[cfg(not(any(feature = "rawloader", feature = "rawler")))]
     {
         let _ = (data, stop);
-        Err(whereat::at!(RawError::Unsupported(
+        Err(whereat::at!(RawError::Dependency(
             "no decode backend enabled — enable `rawloader` or `rawler` feature".into()
         )))
     }

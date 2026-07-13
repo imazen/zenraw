@@ -122,7 +122,7 @@ pub fn extract_rgb_from_cpp_fallible(
     // Full-image RGB output sized from the (untrusted) sensor dims → default
     // fallible.
     let len = pixel_count.checked_mul(3).ok_or_else(|| {
-        whereat::at!(crate::error::RawError::LimitExceeded(
+        whereat::at!(crate::error::RawError::OutOfMemory(
             "RGB buffer size overflows usize".into()
         ))
     })?;

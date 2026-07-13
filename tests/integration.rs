@@ -4,7 +4,9 @@
 //! when available, real DNG/RAW files.
 
 use enough::Unstoppable;
-use zenraw::{DemosaicMethod, OutputMode, OutputPrimaries, RawDecodeConfig, RawError};
+use zenraw::{
+    DemosaicMethod, OutputMode, OutputPrimaries, RawDecodeConfig, RawError, RawLimitKind,
+};
 
 // ── Format detection tests ─────────────────────────────────────────────
 
@@ -324,8 +326,11 @@ fn pixel_limit_with_real_file() {
 
     let err = result.unwrap_err();
     assert!(
-        matches!(err.as_ref(), RawError::LimitExceeded(_)),
-        "expected LimitExceeded, got: {err:?}"
+        matches!(
+            err.as_ref(),
+            RawError::LimitExceeded(RawLimitKind::Pixels, _)
+        ),
+        "expected LimitExceeded(Pixels, _), got: {err:?}"
     );
 }
 

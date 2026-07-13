@@ -19,7 +19,14 @@ use zencodec::{
 use zenpixels::PixelDescriptor;
 
 use crate::decode::{self, OutputMode, RawDecodeConfig};
-use crate::error::RawError;
+use crate::error::{RawError, RawLimitKind};
+
+/// Wrap a `zencodec::LimitExceeded` (from a `ResourceLimits::check_*` call)
+/// into a native `RawError::LimitExceeded`, preserving the checked
+/// [`RawLimitKind`] instead of collapsing it into an opaque string.
+fn wrap_limit(e: zencodec::LimitExceeded) -> RawError {
+    RawError::LimitExceeded(RawLimitKind::from_zencodec(e.kind()), e.to_string())
+}
 
 // ── Format definition ──────────────────────────────────────────────────
 
@@ -447,7 +454,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         // Check input size limits
         self.limits
             .check_input_size(data.len() as u64)
-            .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
+            .map_err(|e| at!(wrap_limit(e)))?;
 
         // Check if caller prefers linear f32
         let mut config = self.config.clone();
@@ -482,7 +489,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         // Check dimension limits (max_width, max_height, max_pixels)
         self.limits
             .check_dimensions(info.width, info.height)
-            .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
+            .map_err(|e| at!(wrap_limit(e)))?;
 
         // Check memory limits — estimate output buffer size
         let bytes_per_pixel: u64 = match config.output {
@@ -492,7 +499,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         let estimated_bytes = info.width as u64 * info.height as u64 * bytes_per_pixel;
         self.limits
             .check_memory(estimated_bytes)
-            .map_err(|e| at!(RawError::LimitExceeded(e.to_string())))?;
+            .map_err(|e| at!(wrap_limit(e)))?;
 
         // Apply resource limits
         if let Some(max_px) = self.limits.max_pixels {
@@ -513,7 +520,10 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         sink: &mut dyn DecodeRowSink,
         preferred: &[PixelDescriptor],
     ) -> Result<OutputInfo, Self::Error> {
-        let wrap = |e: SinkError| at!(RawError::Decode(e.to_string()));
+        // A `DecodeRowSink` failure is an output-boundary fault (the sink is
+        // caller-supplied — writing decoded rows into it failed), the same
+        // convention `Io` covers for an output sink elsewhere in this crate.
+        let wrap = |e: SinkError| at!(RawError::Io(e.to_string()));
         zencodec::helpers::copy_decode_to_sink(self, data, sink, preferred, wrap)
     }
 
@@ -522,8 +532,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         _data: Cow<'a, [u8]>,
         _preferred: &[PixelDescriptor],
     ) -> Result<Self::StreamDec, Self::Error> {
-        Err(at!(RawError::Unsupported(
-            "streaming decode not supported for RAW files".into()
+        Err(at!(RawError::UnsupportedOperation(
+            zencodec::UnsupportedOperation::RowLevelDecode
         )))
     }
 
@@ -532,8 +542,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         _data: Cow<'a, [u8]>,
         _preferred: &[PixelDescriptor],
     ) -> Result<Self::AnimationFrameDec, Self::Error> {
-        Err(at!(RawError::Unsupported(
-            "animation decode not supported for RAW files".into()
+        Err(at!(RawError::UnsupportedOperation(
+            zencodec::UnsupportedOperation::AnimationDecode
         )))
     }
 }

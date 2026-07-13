@@ -750,7 +750,7 @@ impl DngPipeline {
     pub fn render(&self, raw_linear: &[f32]) -> Result<Vec<u8>> {
         let npix = (self.width as usize) * (self.height as usize);
         if raw_linear.len() != npix * 3 {
-            return Err(at!(RawError::InvalidInput(format!(
+            return Err(at!(RawError::InvalidBuffer(format!(
                 "pixel count mismatch: expected {} ({}x{}x3), got {}",
                 npix * 3,
                 self.width,
@@ -808,7 +808,7 @@ impl DngPipeline {
     pub fn render_lum_preserving(&self, raw_linear: &[f32]) -> Result<Vec<u8>> {
         let npix = (self.width as usize) * (self.height as usize);
         if raw_linear.len() != npix * 3 {
-            return Err(at!(RawError::InvalidInput(format!(
+            return Err(at!(RawError::InvalidBuffer(format!(
                 "pixel count mismatch: expected {} ({}x{}x3), got {}",
                 npix * 3,
                 self.width,

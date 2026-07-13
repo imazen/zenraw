@@ -75,7 +75,7 @@ pub(crate) fn demosaic_to_rgb_f32_fallible(
         .checked_mul(height)
         .and_then(|p| p.checked_mul(3))
         .ok_or_else(|| {
-            at!(crate::error::RawError::LimitExceeded(
+            at!(crate::error::RawError::OutOfMemory(
                 "RGB f32 buffer size overflows usize".into()
             ))
         })?;
@@ -662,7 +662,7 @@ pub(crate) fn demosaic_xtrans_bilinear_fallible(
         .checked_mul(height)
         .and_then(|p| p.checked_mul(3))
         .ok_or_else(|| {
-            at!(crate::error::RawError::LimitExceeded(
+            at!(crate::error::RawError::OutOfMemory(
                 "RGB f32 buffer size overflows usize".into()
             ))
         })?;

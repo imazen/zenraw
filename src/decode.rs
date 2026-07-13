@@ -30,7 +30,7 @@ use crate::demosaic::DemosaicMethod;
 #[cfg(feature = "rawloader")]
 use crate::demosaic::demosaic_to_rgb_f32_fallible;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
-use crate::error::{RawError, Result};
+use crate::error::{RawError, RawLimitKind, Result};
 
 /// What rendering to apply during RAW development.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -254,29 +254,37 @@ pub(crate) fn enforce_decode_limits(
     height: u64,
     config: &RawDecodeConfig,
 ) -> Result<()> {
+    // Arithmetic-overflow guard (not a configured cap): a size that
+    // overflows u64 can never be allocated regardless of available RAM.
     let pixels = width.checked_mul(height).ok_or_else(|| {
-        at!(RawError::LimitExceeded(alloc::format!(
+        at!(RawError::OutOfMemory(alloc::format!(
             "image {width}x{height} dimensions overflow"
         )))
     })?;
     if pixels > config.max_pixels {
-        return Err(at!(RawError::LimitExceeded(alloc::format!(
-            "image {width}x{height} = {pixels} pixels exceeds limit of {}",
-            config.max_pixels
-        ))));
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Pixels,
+            alloc::format!(
+                "image {width}x{height} = {pixels} pixels exceeds limit of {}",
+                config.max_pixels
+            )
+        )));
     }
 
     // Working-set bound: the RGB f32 buffer is the largest intermediate.
     let rgb_bytes = pixels.checked_mul(3 * 4).ok_or_else(|| {
-        at!(RawError::LimitExceeded(alloc::format!(
+        at!(RawError::OutOfMemory(alloc::format!(
             "image {width}x{height} RGB f32 byte count overflows u64"
         )))
     })?;
     if rgb_bytes > config.max_decode_bytes {
-        return Err(at!(RawError::LimitExceeded(alloc::format!(
-            "image {width}x{height} requires {rgb_bytes} bytes RGB f32, exceeds budget of {}",
-            config.max_decode_bytes
-        ))));
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Memory,
+            alloc::format!(
+                "image {width}x{height} requires {rgb_bytes} bytes RGB f32, exceeds budget of {}",
+                config.max_decode_bytes
+            )
+        )));
     }
     Ok(())
 }
@@ -362,14 +370,17 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     let limit = RawDecodeConfig::default().max_pixels;
     match pixels {
         Some(p) if p > limit => {
-            return Err(at!(RawError::LimitExceeded(alloc::format!(
-                "image {}x{} = {p} pixels exceeds probe limit of {limit}",
-                raw.width,
-                raw.height
-            ))));
+            return Err(at!(RawError::LimitExceeded(
+                RawLimitKind::Pixels,
+                alloc::format!(
+                    "image {}x{} = {p} pixels exceeds probe limit of {limit}",
+                    raw.width,
+                    raw.height
+                )
+            )));
         }
         None => {
-            return Err(at!(RawError::LimitExceeded(alloc::format!(
+            return Err(at!(RawError::OutOfMemory(alloc::format!(
                 "image {}x{} dimensions overflow",
                 raw.width,
                 raw.height
@@ -455,7 +466,7 @@ pub(crate) fn decode(
     // RAW files have substantial headers; reject obviously-too-short inputs
     // before passing to rawloader, which can panic on very short data.
     if data.len() < 64 {
-        return Err(at!(RawError::Decode(
+        return Err(at!(RawError::UnexpectedEof(
             "input too short to be a valid RAW file".into()
         )));
     }
@@ -466,7 +477,7 @@ pub(crate) fn decode(
     let raw =
         std::panic::catch_unwind(move || rawloader::decode(&mut std::io::Cursor::new(&data_vec)))
             .map_err(|_| {
-                at!(RawError::Decode(
+                at!(RawError::Malformed(
                     "rawloader panicked on malformed input".into()
                 ))
             })?
@@ -656,7 +667,7 @@ fn decode_non_bayer(
         .checked_mul(height)
         .and_then(|p| p.checked_mul(3))
         .ok_or_else(|| {
-            at!(RawError::LimitExceeded(
+            at!(RawError::OutOfMemory(
                 "RGB buffer size overflows usize".into()
             ))
         })?;
@@ -836,7 +847,7 @@ fn normalize_raw_data(
     match &raw.data {
         rawloader::RawImageData::Integer(data) => {
             if data.len() < total {
-                return Err(RawError::InvalidInput(alloc::format!(
+                return Err(RawError::UnexpectedEof(alloc::format!(
                     "expected {} pixels, got {}",
                     total,
                     data.len()
@@ -860,7 +871,7 @@ fn normalize_raw_data(
         }
         rawloader::RawImageData::Float(data) => {
             if data.len() < total {
-                return Err(RawError::InvalidInput(alloc::format!(
+                return Err(RawError::UnexpectedEof(alloc::format!(
                     "expected {} pixels, got {}",
                     total,
                     data.len()
@@ -1049,7 +1060,10 @@ mod tests {
         };
         let err = enforce_decode_limits(2000, 2000, &cfg).unwrap_err();
         match err.decompose().0 {
-            RawError::LimitExceeded(msg) => assert!(msg.contains("pixels exceeds limit")),
+            RawError::LimitExceeded(kind, msg) => {
+                assert_eq!(kind, RawLimitKind::Pixels);
+                assert!(msg.contains("pixels exceeds limit"));
+            }
             other => panic!("expected LimitExceeded, got {other:?}"),
         }
     }
@@ -1065,7 +1079,8 @@ mod tests {
         // 10000 × 10000 × 12 bytes = 1.2 GB — exceeds 100 MiB
         let err = enforce_decode_limits(10_000, 10_000, &cfg).unwrap_err();
         match err.decompose().0 {
-            RawError::LimitExceeded(msg) => {
+            RawError::LimitExceeded(kind, msg) => {
+                assert_eq!(kind, RawLimitKind::Memory);
                 assert!(
                     msg.contains("RGB f32") || msg.contains("budget"),
                     "unexpected message: {msg}"
@@ -1078,9 +1093,10 @@ mod tests {
     #[test]
     fn enforce_decode_limits_rejects_overflow() {
         let cfg = RawDecodeConfig::default();
-        // u64::MAX × u64::MAX overflows
+        // u64::MAX × u64::MAX overflows — an arithmetic-overflow guard, not a
+        // configured cap, so this is OutOfMemory rather than LimitExceeded.
         let err = enforce_decode_limits(u64::MAX, 2, &cfg).unwrap_err();
-        assert!(matches!(err.decompose().0, RawError::LimitExceeded(_)));
+        assert!(matches!(err.decompose().0, RawError::OutOfMemory(_)));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, Senso
 use crate::demosaic::{
     CfaPattern, demosaic_to_rgb_f32_fallible, demosaic_xtrans_bilinear_fallible,
 };
-use crate::error::{RawError, Result};
+use crate::error::{RawError, RawLimitKind, Result};
 
 /// Extract xyz_to_cam matrix from rawler's color_matrix HashMap.
 ///
@@ -71,9 +71,11 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         rawler::decode(&source, &params)
     })) {
         Ok(Ok(raw)) => raw,
-        Ok(Err(e)) => return Err(at!(RawError::Decode(format!("{e}")))),
+        // `From<rawler::RawlerError>` routes Unsupported vs DecoderFailed to
+        // their precise categories instead of collapsing both into one.
+        Ok(Err(e)) => return Err(at!(RawError::from(e))),
         Err(_) => {
-            return Err(at!(RawError::Decode(
+            return Err(at!(RawError::Malformed(
                 "rawler panicked while probing".into()
             )));
         }
@@ -96,12 +98,13 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     let limit = crate::decode::RawDecodeConfig::default().max_pixels;
     match (width as u64).checked_mul(height as u64) {
         Some(p) if p > limit => {
-            return Err(at!(RawError::LimitExceeded(format!(
-                "image {width}x{height} = {p} pixels exceeds probe limit of {limit}"
-            ))));
+            return Err(at!(RawError::LimitExceeded(
+                RawLimitKind::Pixels,
+                format!("image {width}x{height} = {p} pixels exceeds probe limit of {limit}")
+            )));
         }
         None => {
-            return Err(at!(RawError::LimitExceeded(format!(
+            return Err(at!(RawError::OutOfMemory(format!(
                 "image {width}x{height} dimensions overflow"
             ))));
         }
@@ -166,7 +169,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     // RAW files have substantial headers; reject obviously-too-short inputs
     if data.len() < 64 {
-        return Err(at!(RawError::Decode(
+        return Err(at!(RawError::UnexpectedEof(
             "input too short to be a valid RAW file".into()
         )));
     }
@@ -181,11 +184,13 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
         rawler::decode(&source, &params)
     }))
     .map_err(|_| {
-        at!(RawError::Decode(
+        at!(RawError::Malformed(
             "rawler panicked on malformed input".into()
         ))
     })?
-    .map_err(|e| at!(RawError::Decode(format!("{e}"))))?;
+    // `From<rawler::RawlerError>` routes Unsupported vs DecoderFailed to
+    // their precise categories instead of collapsing both into one.
+    .map_err(|e| at!(RawError::from(e)))?;
 
     let xyz_to_cam = extract_xyz_to_cam(&raw);
     let width = raw.width;
@@ -210,7 +215,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     let cfa = match &raw.photometric {
         RawPhotometricInterpretation::Cfa(cfg) => &cfg.cfa,
         _ => {
-            return Err(at!(RawError::Unsupported(
+            return Err(at!(RawError::UnsupportedFeature(
                 "no CFA pattern for demosaicing".into()
             )));
         }
@@ -223,7 +228,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
         // X-Trans (6x6) or other non-Bayer CFA — use generic demosaic
         let pattern_size = (cfa_str.len() as f64).sqrt() as usize;
         if pattern_size * pattern_size != cfa_str.len() {
-            return Err(at!(RawError::Unsupported(format!(
+            return Err(at!(RawError::UnsupportedFeature(format!(
                 "non-square CFA pattern not supported: len={}",
                 cfa_str.len()
             ))));
@@ -503,7 +508,7 @@ fn normalize_raw_data(
     match &raw.data {
         rawler::RawImageData::Integer(data) => {
             if data.len() < total {
-                return Err(RawError::InvalidInput(format!(
+                return Err(RawError::UnexpectedEof(format!(
                     "expected {} pixels, got {}",
                     total,
                     data.len()
@@ -531,7 +536,7 @@ fn normalize_raw_data(
         }
         rawler::RawImageData::Float(data) => {
             if data.len() < total {
-                return Err(RawError::InvalidInput(format!(
+                return Err(RawError::UnexpectedEof(format!(
                     "expected {} pixels, got {}",
                     total,
                     data.len()

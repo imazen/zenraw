@@ -140,9 +140,9 @@ comes in via zenraw, which depends on `enough` 0.4.
 
 `decode` returns `Result`, and **both backends are panic-isolated**: each wraps
 its underlying parser in `std::panic::catch_unwind` and converts a backend panic
-into `RawError::Decode(...)` (and the decode path also rejects inputs shorter
-than 64 bytes up front). So with either backend a malformed file is *expected* to
-come back as `Err`, not a host crash.
+into `RawError::Malformed(...)` (and the decode path also rejects inputs shorter
+than 64 bytes up front, as `RawError::UnexpectedEof(...)`). So with either backend
+a malformed file is *expected* to come back as `Err`, not a host crash.
 
 That guard is not total, and you should not rely on it alone for hostile uploads:
 
@@ -152,11 +152,12 @@ That guard is not total, and you should not rely on it alone for hostile uploads
 
 The big sensor-sized allocations (the normalized sensor buffer, the demosaiced
 `RGB f32` buffer, and the crop copy) go through a **fallible** allocation path:
-an out-of-memory allocation returns `RawError::LimitExceeded` rather than
+an out-of-memory allocation returns `RawError::OutOfMemory` rather than
 aborting. Combined with the up-front `with_max_pixels` / `with_max_decode_bytes`
-caps, a crafted header that demands gigabytes is rejected before allocating, or
-fails gracefully if it slips past. (With the `zencodec` feature, the fallibility
-is driven by `ResourceLimits::prefer_fallible_allocations`.)
+caps (which reject with `RawError::LimitExceeded(RawLimitKind::Pixels | Memory, _)`),
+a crafted header that demands gigabytes is rejected before allocating, or fails
+gracefully if it slips past. (With the `zencodec` feature, the fallibility is
+driven by `ResourceLimits::prefer_fallible_allocations`.)
 
 For a server decoding untrusted RAW, wrap the call so a panic can't take down the
 worker — run it on an isolated thread (a panicking thread unwinds without killing

@@ -25,7 +25,7 @@ use whereat::{ResultAtExt, at};
 use zenpixels::{PixelBuffer, PixelDescriptor};
 
 use crate::decode::{RawDecodeOutput, RawInfo};
-use crate::error::{RawError, Result};
+use crate::error::{RawError, RawLimitKind, Result};
 
 /// darktable output ICC profile type.
 #[derive(Clone, Debug, Default)]
@@ -161,14 +161,14 @@ pub fn version() -> Option<String> {
 /// Produces scene-referred linear f32 output by default (PFM interchange).
 pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     let cli = find_cli(config.cli_path.as_deref()).ok_or_else(|| {
-        at!(RawError::Unsupported(
+        at!(RawError::Dependency(
             "darktable-cli not found in PATH".into()
         ))
     })?;
 
     // Validate input exists
     if !path.exists() {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(at!(RawError::InvalidParameters(format!(
             "file not found: {}",
             path.display()
         ))));
@@ -180,14 +180,14 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let tmp_dir = std::env::temp_dir().join(format!("zenraw_dt_{pid}_{id}"));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Io(e.to_string())))?;
 
     let out_path = tmp_dir.join("output.pfm");
 
     // Write XMP sidecar if provided
     let xmp_path = if let Some(ref xmp) = config.xmp {
         let p = tmp_dir.join("sidecar.xmp");
-        std::fs::write(&p, xmp).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+        std::fs::write(&p, xmp).map_err(|e| at!(RawError::Io(e.to_string())))?;
         Some(p)
     } else {
         None
@@ -205,7 +205,7 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
 
     // Use isolated config to avoid user presets interfering
     let dt_config = tmp_dir.join("dt_config");
-    std::fs::create_dir_all(&dt_config).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::create_dir_all(&dt_config).map_err(|e| at!(RawError::Io(e.to_string())))?;
 
     cmd.args([
         "--apply-custom-presets",
@@ -225,11 +225,9 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
 
     // Run darktable-cli with timeout to prevent indefinite blocking
     let result = (|| -> Result<(Vec<f32>, u32, u32)> {
-        let mut child = cmd.spawn().map_err(|e| {
-            at!(RawError::Decode(format!(
-                "failed to run darktable-cli: {e}"
-            )))
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| at!(RawError::Io(format!("failed to run darktable-cli: {e}"))))?;
 
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
         let start = std::time::Instant::now();
@@ -240,7 +238,7 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
                     if start.elapsed() >= timeout {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err(at!(RawError::Decode(format!(
+                        return Err(at!(RawError::Io(format!(
                             "darktable-cli timed out after {}s",
                             config.timeout_secs
                         ))));
@@ -248,7 +246,7 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => {
-                    return Err(at!(RawError::Decode(format!(
+                    return Err(at!(RawError::Io(format!(
                         "failed to wait on darktable-cli: {e}"
                     ))));
                 }
@@ -256,7 +254,13 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
         };
 
         if !status.success() {
-            return Err(at!(RawError::Decode(format!(
+            // Nonzero exit with no stderr capture: we can't tell "bad input
+            // image" from "darktable internal fault" from the exit code
+            // alone. In practice the overwhelming majority of real-world
+            // failures here are darktable rejecting a specific RAW file it
+            // can't process, so this is reported as an image-bytes fault
+            // rather than blamed on our own I/O plumbing.
+            return Err(at!(RawError::Malformed(format!(
                 "darktable-cli exited with {status}"
             ))));
         }
@@ -274,10 +278,13 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     // Check limits
     let total = width as u64 * height as u64;
     if total > config.max_pixels {
-        return Err(at!(RawError::LimitExceeded(format!(
-            "image {width}x{height} = {total} pixels exceeds limit of {}",
-            config.max_pixels
-        ))));
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Pixels,
+            format!(
+                "image {width}x{height} = {total} pixels exceeds limit of {}",
+                config.max_pixels
+            )
+        )));
     }
 
     // Build PixelBuffer
@@ -343,10 +350,10 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
     let id = BYTES_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let tmp_dir = std::env::temp_dir().join(format!("zenraw_dt_bytes_{pid}_{id}"));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| at!(RawError::Io(e.to_string())))?;
 
     let input_path = tmp_dir.join(format!("input.{ext}"));
-    std::fs::write(&input_path, data).map_err(|e| at!(RawError::Decode(e.to_string())))?;
+    std::fs::write(&input_path, data).map_err(|e| at!(RawError::Io(e.to_string())))?;
 
     let result = decode_file(&input_path, config);
 
@@ -371,15 +378,18 @@ pub fn decode_bytes(data: &[u8], config: &DtConfig) -> Result<RawDecodeOutput> {
 /// between metadata and open still can't drag in more than the cap.
 fn read_pfm_bounded(out_path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
     let metadata = std::fs::metadata(out_path)
-        .map_err(|e| at!(RawError::Decode(format!("failed to stat PFM output: {e}"))))?;
+        .map_err(|e| at!(RawError::Io(format!("failed to stat PFM output: {e}"))))?;
     if metadata.len() > max_bytes {
-        return Err(at!(RawError::LimitExceeded(format!(
-            "PFM output {} bytes exceeds budget of {max_bytes}",
-            metadata.len(),
-        ))));
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Memory,
+            format!(
+                "PFM output {} bytes exceeds budget of {max_bytes}",
+                metadata.len(),
+            )
+        )));
     }
     let file = std::fs::File::open(out_path)
-        .map_err(|e| at!(RawError::Decode(format!("failed to open PFM output: {e}"))))?;
+        .map_err(|e| at!(RawError::Io(format!("failed to open PFM output: {e}"))))?;
     // +1 byte trip-wire: if Read::take reads exactly max+1 we know the file
     // grew between stat and open or metadata lied.
     let cap = max_bytes.saturating_add(1);
@@ -387,11 +397,12 @@ fn read_pfm_bounded(out_path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
     let mut pfm_data = Vec::with_capacity(metadata.len().min(max_bytes) as usize);
     limited
         .read_to_end(&mut pfm_data)
-        .map_err(|e| at!(RawError::Decode(format!("failed to read PFM output: {e}"))))?;
+        .map_err(|e| at!(RawError::Io(format!("failed to read PFM output: {e}"))))?;
     if pfm_data.len() as u64 > max_bytes {
-        return Err(at!(RawError::LimitExceeded(format!(
-            "PFM output exceeded {max_bytes} bytes mid-read"
-        ))));
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Memory,
+            format!("PFM output exceeded {max_bytes} bytes mid-read")
+        )));
     }
     Ok(pfm_data)
 }
@@ -404,7 +415,7 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     read_line(&mut cursor, &mut header)?;
     let magic = header.trim();
     if magic != "PF" {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(at!(RawError::Malformed(format!(
             "not a color PFM file (magic: {magic:?})"
         ))));
     }
@@ -414,29 +425,36 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     read_line(&mut cursor, &mut header)?;
     let dims: Vec<&str> = header.split_whitespace().collect();
     if dims.len() != 2 {
-        return Err(at!(RawError::InvalidInput(
+        return Err(at!(RawError::Malformed(
             "invalid PFM dimensions line".into()
         )));
     }
     let width: u32 = dims[0]
         .parse()
-        .map_err(|_| at!(RawError::InvalidInput("invalid PFM width".into())))?;
+        .map_err(|_| at!(RawError::Malformed("invalid PFM width".into())))?;
     let height: u32 = dims[1]
         .parse()
-        .map_err(|_| at!(RawError::InvalidInput("invalid PFM height".into())))?;
+        .map_err(|_| at!(RawError::Malformed("invalid PFM height".into())))?;
 
     // Reject zero-dim and dimensions individually past 200M to defend the
     // arithmetic below independently of the multiplied total. A pathological
     // 1×u32::MAX would multiply within u64 but blow row_bytes / row_start.
     if width == 0 || height == 0 {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(at!(RawError::Malformed(format!(
             "PFM dimensions {width}x{height} not positive"
         ))));
     }
-    if width > 200_000 || height > 200_000 {
-        return Err(at!(RawError::LimitExceeded(format!(
-            "PFM dimension out of range: {width}x{height}"
-        ))));
+    if width > 200_000 {
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Width,
+            format!("PFM dimension out of range: {width}x{height}")
+        )));
+    }
+    if height > 200_000 {
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Height,
+            format!("PFM dimension out of range: {width}x{height}")
+        )));
     }
 
     // Read scale
@@ -445,7 +463,7 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     let scale: f64 = header
         .trim()
         .parse()
-        .map_err(|_| at!(RawError::InvalidInput("invalid PFM scale".into())))?;
+        .map_err(|_| at!(RawError::Malformed("invalid PFM scale".into())))?;
     let is_little_endian = scale < 0.0;
     let _abs_scale = scale.abs();
 
@@ -456,43 +474,50 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     // Validate dimensions with checked arithmetic BEFORE allocating.
     // Build up via checked_mul step by step so overflow at any tier is caught
     // (and on 32-bit usize targets we still catch it via the as_usize tail).
+    // These are genuine arithmetic-overflow guards (not a configured cap), so
+    // they report OutOfMemory: the size can never be allocated regardless of
+    // available RAM.
     let total_pixels = (width as u64).checked_mul(height as u64).ok_or_else(|| {
-        at!(RawError::LimitExceeded(format!(
+        at!(RawError::OutOfMemory(format!(
             "PFM dimensions overflow: {width}x{height}"
         )))
     })?;
     let total = total_pixels.checked_mul(3).ok_or_else(|| {
-        at!(RawError::LimitExceeded(format!(
+        at!(RawError::OutOfMemory(format!(
             "PFM channel count overflow: {width}x{height}x3"
         )))
     })?;
     let expected = total.checked_mul(4).ok_or_else(|| {
-        at!(RawError::LimitExceeded(format!(
+        at!(RawError::OutOfMemory(format!(
             "PFM byte count overflow: {width}x{height}x3x4"
         )))
     })?;
 
-    // Reject unreasonably large images before allocation (200M pixels max).
+    // Reject unreasonably large images before allocation (200M pixels max) —
+    // a fixed anti-DoS ceiling, so this is a configured/built-in limit.
     if total_pixels > 200_000_000 {
-        return Err(at!(RawError::LimitExceeded(format!(
-            "PFM dimensions {width}x{height} = {total_pixels} pixels exceeds 200M limit"
-        ))));
+        return Err(at!(RawError::LimitExceeded(
+            RawLimitKind::Pixels,
+            format!("PFM dimensions {width}x{height} = {total_pixels} pixels exceeds 200M limit")
+        )));
     }
 
-    // Convert to usize via try_into to catch u64→usize narrowing on 32-bit.
+    // Convert to usize via try_into to catch u64→usize narrowing on 32-bit —
+    // a value that doesn't fit `usize` on this platform can never be
+    // allocated, so this is OutOfMemory too.
     let total: usize = usize::try_from(total).map_err(|_| {
-        at!(RawError::LimitExceeded(format!(
+        at!(RawError::OutOfMemory(format!(
             "PFM total {total} doesn't fit in usize"
         )))
     })?;
     let expected: usize = usize::try_from(expected).map_err(|_| {
-        at!(RawError::LimitExceeded(format!(
+        at!(RawError::OutOfMemory(format!(
             "PFM expected size {expected} doesn't fit in usize"
         )))
     })?;
 
     if pixel_data.len() < expected {
-        return Err(at!(RawError::InvalidInput(format!(
+        return Err(at!(RawError::UnexpectedEof(format!(
             "PFM data too short: expected {expected} bytes, got {}",
             pixel_data.len()
         ))));
@@ -505,10 +530,10 @@ fn parse_pfm(data: &[u8]) -> Result<(Vec<f32>, u32, u32)> {
     // above) — pre-computing once keeps the inner loop branch-free.
     let row_bytes = (width as usize)
         .checked_mul(3 * 4)
-        .ok_or_else(|| at!(RawError::LimitExceeded("PFM row bytes overflow".into())))?;
+        .ok_or_else(|| at!(RawError::OutOfMemory("PFM row bytes overflow".into())))?;
     for row in (0..height as usize).rev() {
         let row_start = row.checked_mul(row_bytes).ok_or_else(|| {
-            at!(RawError::LimitExceeded(format!(
+            at!(RawError::OutOfMemory(format!(
                 "PFM row offset overflow at row {row}"
             )))
         })?;
@@ -538,10 +563,10 @@ fn read_line(cursor: &mut std::io::Cursor<&[u8]>, buf: &mut String) -> Result<()
     loop {
         if cursor
             .read(&mut byte)
-            .map_err(|e| at!(RawError::Decode(e.to_string())))?
+            .map_err(|e| at!(RawError::Io(e.to_string())))?
             == 0
         {
-            return Err(at!(RawError::InvalidInput(
+            return Err(at!(RawError::UnexpectedEof(
                 "unexpected EOF in PFM header".into()
             )));
         }
@@ -640,7 +665,10 @@ mod tests {
         let err = read_pfm_bounded(&path, 1024).unwrap_err();
         let _ = std::fs::remove_file(&path);
         match err.decompose().0 {
-            RawError::LimitExceeded(msg) => assert!(msg.contains("exceeds budget")),
+            RawError::LimitExceeded(kind, msg) => {
+                assert_eq!(kind, RawLimitKind::Memory);
+                assert!(msg.contains("exceeds budget"));
+            }
             other => panic!("expected LimitExceeded, got {other:?}"),
         }
     }
@@ -669,8 +697,8 @@ mod tests {
         let pfm = b"PF\n0 1\n-1.0\n";
         let err = parse_pfm(pfm).unwrap_err();
         match err.decompose().0 {
-            RawError::InvalidInput(msg) => assert!(msg.contains("not positive")),
-            other => panic!("expected InvalidInput, got {other:?}"),
+            RawError::Malformed(msg) => assert!(msg.contains("not positive")),
+            other => panic!("expected Malformed, got {other:?}"),
         }
     }
 
@@ -684,7 +712,10 @@ mod tests {
         let pfm = b"PF\n1 4294967295\n-1.0\n";
         let err = parse_pfm(pfm).unwrap_err();
         match err.decompose().0 {
-            RawError::LimitExceeded(msg) => assert!(msg.contains("dimension")),
+            RawError::LimitExceeded(kind, msg) => {
+                assert_eq!(kind, RawLimitKind::Height);
+                assert!(msg.contains("dimension"));
+            }
             other => panic!("expected LimitExceeded, got {other:?}"),
         }
     }
@@ -695,7 +726,10 @@ mod tests {
         // hits the "exceeds 200M limit" guard.
         let pfm = b"PF\n100000 100000\n-1.0\n";
         let err = parse_pfm(pfm).unwrap_err();
-        assert!(matches!(err.decompose().0, RawError::LimitExceeded(_)));
+        match err.decompose().0 {
+            RawError::LimitExceeded(kind, _) => assert_eq!(kind, RawLimitKind::Pixels),
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
     }
 
     #[test]
