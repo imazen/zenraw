@@ -390,28 +390,63 @@ pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
 }
 
 /// Apply sRGB gamma encoding to linear f32 data, producing u8 output.
+/// Linear-space thresholds for the 256 sRGB output levels.
+///
+/// `out == k` exactly when `srgb(v)*255 + 0.5` lands in `[k, k+1)`, i.e. when
+/// `srgb(v)` is in `[(k-0.5)/255, (k+0.5)/255)`. So the threshold for level `k`
+/// is `srgb_inv((k-0.5)/255)`, evaluated once in f64. Encoding is then a
+/// bucket lookup rather than a transcendental.
+fn srgb_thresholds() -> &'static [f32; 256] {
+    static T: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let srgb_inv = |s: f64| -> f64 {
+            if s <= 0.040_45 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let mut t = [0f32; 256];
+        for (k, slot) in t.iter_mut().enumerate().skip(1) {
+            *slot = srgb_inv((k as f64 - 0.5) / 255.0) as f32;
+        }
+        t
+    })
+}
+
+/// Convert linear f32 \[0,1\] to sRGB-gamma u8.
+///
+/// Uses a 256-entry threshold table and a branchless 8-step binary search
+/// instead of `powf` per element. Measured over 4.1M samples spanning [0,1]
+/// (densified around the 0.0031308 knee), against an exact f64 reference:
+///
+/// | implementation | throughput | wrong |
+/// |---|---|---|
+/// | `powf` per element (was) | 344 Melem/s | 17 / 4.1M |
+/// | this threshold table | **544 Melem/s** | **8 / 4.1M** |
+///
+/// So it is 1.58x faster AND half as often wrong — the residual 8 come from
+/// storing thresholds as f32, so a value within an ULP of a boundary can land
+/// on either side. This is a small output change versus the old `powf` form,
+/// in the direction of MORE correct.
+///
+/// Not vectorized, deliberately: the search indexes the table by a per-lane
+/// value, which is a gather, and AArch64 has no gather instruction. See
+/// benchmarks/srgb_encode_2026-07-28.md for the SIMD option that was rejected
+/// on accuracy.
 pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
-    // Preallocated slice writes rather than per-element `Vec::push`.
-    // Bit-identical (same powf, same rounding); worth only ~1.06x here because
-    // `powf` dominates, unlike the push-bound loops elsewhere in the workspace.
-    //
-    // A 14.2x SIMD path EXISTS and is deliberately not used: routing this
-    // through `linear-srgb`'s `linear_to_srgb_u8_slice` (rational polynomial)
-    // measured 14.2x faster but differs from this by +/-1 u8 on 1.97% of
-    // samples. Against an exact f64 reference over 4.1M samples in [0,1], THIS
-    // implementation is wrong on 0.0004% and the polynomial one on 1.97% —
-    // ~4600x more wrong pixels. For a RAW developer, where output fidelity is
-    // the product, that is a trade for the crate owner to make explicitly, not
-    // something to slip in for speed. See benchmarks/srgb_encode_2026-07-28.md.
+    let t = srgb_thresholds();
     let mut output = vec![0u8; linear.len()];
     for (&v, o) in linear.iter().zip(output.iter_mut()) {
         let v = v.clamp(0.0, 1.0);
-        let srgb = if v <= 0.003_130_8 {
-            v * 12.92
-        } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
-        };
-        *o = (srgb * 255.0 + 0.5) as u8;
+        let mut lo = 0usize;
+        for shift in (0..8).rev() {
+            let probe = lo + (1usize << shift);
+            if probe < 256 && v >= t[probe] {
+                lo = probe;
+            }
+        }
+        *o = lo as u8;
     }
     output
 }

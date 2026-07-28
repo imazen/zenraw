@@ -159,3 +159,13 @@ pub fn is_raw_file(data: &[u8]) -> bool {
 
 /// Result type alias for zenraw operations.
 pub type Result<T> = core::result::Result<T, whereat::At<RawError>>;
+
+/// Test-only shim exposing the sRGB encoder to `tests/srgb_encode_accuracy.rs`.
+///
+/// NOT public API. `linear_to_srgb_u8` is `pub(crate)`; this forwards to it so
+/// the accuracy of the threshold table can be pinned from an integration test
+/// without widening the module.
+#[doc(hidden)]
+pub fn __test_linear_to_srgb_u8(linear: &[f32]) -> alloc::vec::Vec<u8> {
+    crate::dng_render::linear_to_srgb_u8(linear)
+}
