@@ -391,15 +391,27 @@ pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
 
 /// Apply sRGB gamma encoding to linear f32 data, producing u8 output.
 pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(linear.len());
-    for &v in linear {
+    // Preallocated slice writes rather than per-element `Vec::push`.
+    // Bit-identical (same powf, same rounding); worth only ~1.06x here because
+    // `powf` dominates, unlike the push-bound loops elsewhere in the workspace.
+    //
+    // A 14.2x SIMD path EXISTS and is deliberately not used: routing this
+    // through `linear-srgb`'s `linear_to_srgb_u8_slice` (rational polynomial)
+    // measured 14.2x faster but differs from this by +/-1 u8 on 1.97% of
+    // samples. Against an exact f64 reference over 4.1M samples in [0,1], THIS
+    // implementation is wrong on 0.0004% and the polynomial one on 1.97% —
+    // ~4600x more wrong pixels. For a RAW developer, where output fidelity is
+    // the product, that is a trade for the crate owner to make explicitly, not
+    // something to slip in for speed. See benchmarks/srgb_encode_2026-07-28.md.
+    let mut output = vec![0u8; linear.len()];
+    for (&v, o) in linear.iter().zip(output.iter_mut()) {
         let v = v.clamp(0.0, 1.0);
         let srgb = if v <= 0.003_130_8 {
             v * 12.92
         } else {
             1.055 * v.powf(1.0 / 2.4) - 0.055
         };
-        output.push((srgb * 255.0 + 0.5) as u8);
+        *o = (srgb * 255.0 + 0.5) as u8;
     }
     output
 }
