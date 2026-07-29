@@ -72,6 +72,8 @@ zencodec = ["dep:zencodec"]
 darktable = ["std"]
 ultrahdr = ["dep:ultrahdr-core"]
 exif = ["dep:kamadak-exif"]
+# Dev-only: exposes internal SIMD kernels for per-tier benchmarking. Not API.
+_dev = ["archmage/testable_dispatch"]
 xmp = ["std"]
 apple = ["exif", "xmp"]
 
@@ -89,3 +91,7 @@ opt-level = 2
 # rev deliberately.
 zencodec = { git = "https://github.com/imazen/zencodec", rev = "44ca79279b265ba7dfe01a2b31ef74788429509a" }
 
+[[bench]]
+name = "kernel_tiers"
+harness = false
+required-features = ["_dev"]

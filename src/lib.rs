@@ -71,6 +71,12 @@ pub(crate) mod dt_sigmoid;
 mod error;
 #[allow(dead_code)]
 mod orient;
+/// SIMD kernels. Public only under `_dev` so `benches/kernel_tiers.rs` can
+/// measure each tier against the scalar one; NOT public API and not
+/// semver-covered.
+#[cfg(feature = "_dev")]
+pub mod simd;
+#[cfg(not(feature = "_dev"))]
 mod simd;
 #[allow(dead_code)]
 pub(crate) mod tiff_ifd;
