@@ -713,7 +713,6 @@ fn decode_non_bayer(
 }
 
 /// Build RawInfo from rawler RawImage metadata.
-#[allow(clippy::too_many_arguments)]
 fn build_raw_info(
     width: usize,
     height: usize,
