@@ -33,6 +33,9 @@ check:
     cargo check --features apple
     cargo check --features "rawler,darktable,exif,xmp,apple"
     cargo check --no-default-features --features std
+    cargo check --no-default-features --features std,rawloader
+    cargo check --no-default-features --features std,rawler
+    cargo check --no-default-features --features std,rawler,ultrahdr
 
 # Clippy all features
 lint:

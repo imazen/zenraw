@@ -14,6 +14,75 @@ const R: usize = 0;
 const G: usize = 1;
 const B: usize = 2;
 
+/// Row/column → CFA colour-index lookup, abstracted over the backend's CFA
+/// type so the Bayer kernels below compile without any decoder backend.
+///
+/// Implemented for [`BayerCfa`] (the rawler backend and the unit tests), for
+/// [`CfaPattern`] (generic tiles), and — behind the `rawloader` feature — for
+/// `rawloader::CFA` so the public [`demosaic_to_rgb_f32`] keeps its signature.
+/// Colour indices follow the rawloader convention: 0=R, 1=G, 2=B, 3=E.
+pub(crate) trait CfaColorAt {
+    /// Colour index of the sensor site at (`row`, `col`).
+    fn color_at(&self, row: usize, col: usize) -> usize;
+}
+
+#[cfg(feature = "rawloader")]
+impl CfaColorAt for rawloader::CFA {
+    #[inline]
+    fn color_at(&self, row: usize, col: usize) -> usize {
+        rawloader::CFA::color_at(self, row, col)
+    }
+}
+
+/// A 2×2 Bayer CFA tile — the backend-independent CFA description the Bayer
+/// demosaic kernels consume.
+///
+/// `color_at` is `tile[row & 1][col & 1]`, which is exactly what
+/// `rawloader::CFA::color_at` (a 48×48 tiled table indexed with `% 48`)
+/// returns for any 2×2 pattern, so output is bit-identical between the two
+/// lookups for Bayer sensors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
+pub(crate) struct BayerCfa {
+    tile: [[usize; 2]; 2],
+}
+
+#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
+impl BayerCfa {
+    /// Build from a 2×2 tile of colour indices, `tile[row][col]`.
+    pub(crate) const fn new(tile: [[usize; 2]; 2]) -> Self {
+        Self { tile }
+    }
+
+    /// Parse a 4-character pattern string such as `"RGGB"` (row-major).
+    /// Returns `None` for any other length or an unknown colour letter.
+    #[cfg(test)]
+    pub(crate) fn from_pattern_str(pattern: &str) -> Option<Self> {
+        let bytes = pattern.as_bytes();
+        if bytes.len() != 4 {
+            return None;
+        }
+        let mut tile = [[0usize; 2]; 2];
+        for (i, &b) in bytes.iter().enumerate() {
+            tile[i / 2][i % 2] = match b {
+                b'R' => R,
+                b'G' => G,
+                b'B' => B,
+                b'E' => 3,
+                _ => return None,
+            };
+        }
+        Some(Self { tile })
+    }
+}
+
+impl CfaColorAt for BayerCfa {
+    #[inline]
+    fn color_at(&self, row: usize, col: usize) -> usize {
+        self.tile[row & 1][col & 1]
+    }
+}
+
 /// Demosaicing algorithm selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -45,6 +114,19 @@ pub fn demosaic_to_rgb_f32(
     cfa: &rawloader::CFA,
     method: DemosaicMethod,
 ) -> Vec<f32> {
+    demosaic_to_rgb_f32_infallible(data, width, height, cfa, method)
+}
+
+/// Backend-independent body of [`demosaic_to_rgb_f32`]: infallible `vec![]`
+/// output allocation, any [`CfaColorAt`] lookup.
+#[cfg_attr(not(any(feature = "rawloader", test)), allow(dead_code))]
+fn demosaic_to_rgb_f32_infallible<C: CfaColorAt + ?Sized>(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &C,
+    method: DemosaicMethod,
+) -> Vec<f32> {
     let rgb = vec![0.0f32; width * height * 3];
     match method {
         DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
@@ -61,12 +143,16 @@ pub fn demosaic_to_rgb_f32(
 /// dimensions the file claims, so it defaults to the fallible (`try_reserve`)
 /// path. Behaviour and output bytes are identical to [`demosaic_to_rgb_f32`];
 /// only the allocation strategy differs.
-#[cfg(feature = "rawloader")]
-pub(crate) fn demosaic_to_rgb_f32_fallible(
+///
+/// Generic over the CFA lookup so both decoder backends (and neither, for
+/// unit tests) can drive it: the rawloader backend passes `&rawloader::CFA`,
+/// the rawler backend a [`BayerCfa`].
+#[cfg_attr(not(any(feature = "rawloader", feature = "rawler")), allow(dead_code))]
+pub(crate) fn demosaic_to_rgb_f32_fallible<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
     method: DemosaicMethod,
     alloc_pref: crate::alloc_util::AllocPref,
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
@@ -90,12 +176,11 @@ pub(crate) fn demosaic_to_rgb_f32_fallible(
 
 /// Bilinear interpolation demosaicing into a pre-allocated `rgb` buffer
 /// (length `width * height * 3`).
-#[cfg(feature = "rawloader")]
-fn demosaic_bilinear(
+fn demosaic_bilinear<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
     mut rgb: Vec<f32>,
 ) -> Vec<f32> {
     debug_assert_eq!(rgb.len(), width * height * 3);
@@ -135,7 +220,6 @@ fn demosaic_bilinear(
 }
 
 /// Green at a red or blue site: average of 4 neighbors (cross pattern).
-#[cfg(feature = "rawloader")]
 #[inline]
 fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
     let mut sum = 0.0f32;
@@ -162,15 +246,14 @@ fn green_at_rb_bilinear(data: &[f32], width: usize, height: usize, row: usize, c
 }
 
 /// R/B at a green site: average of 2 horizontal or 2 vertical neighbors.
-#[cfg(feature = "rawloader")]
 #[inline]
-fn rb_at_green_bilinear(
+fn rb_at_green_bilinear<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
     row: usize,
     col: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
 ) -> (f32, f32) {
     // Determine which neighbors are R and which are B.
     // At a green site, the horizontal neighbors are one color
@@ -192,15 +275,14 @@ fn rb_at_green_bilinear(
 }
 
 /// Opposite color at an R or B site (R at B, or B at R): average of 4 diagonal neighbors.
-#[cfg(feature = "rawloader")]
 #[inline]
-fn opposite_at_rb_bilinear(
+fn opposite_at_rb_bilinear<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
     row: usize,
     col: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
 ) -> f32 {
     let _ = cfa; // CFA not needed for diagonal average
     let mut sum = 0.0f32;
@@ -226,7 +308,6 @@ fn opposite_at_rb_bilinear(
     if count > 0 { sum / count as f32 } else { 0.0 }
 }
 
-#[cfg(feature = "rawloader")]
 #[inline]
 fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
     let left = if col > 0 {
@@ -247,7 +328,6 @@ fn avg_horizontal(data: &[f32], width: usize, row: usize, col: usize) -> f32 {
     }
 }
 
-#[cfg(feature = "rawloader")]
 #[inline]
 fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usize) -> f32 {
     let top = if row > 0 {
@@ -278,12 +358,11 @@ fn avg_vertical(data: &[f32], height: usize, width: usize, row: usize, col: usiz
 ///
 /// Reference: Malvar, He, Cutler. "High-Quality Linear Interpolation for
 /// Demosaicing of Bayer-Patterned Color Images" (2004).
-#[cfg(feature = "rawloader")]
-fn demosaic_malvar(
+fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
     mut rgb: Vec<f32>,
 ) -> Vec<f32> {
     debug_assert_eq!(rgb.len(), width * height * 3);
@@ -350,7 +429,6 @@ fn demosaic_malvar(
 ///
 /// Processes all pixels with row ∈ [2, height-2) and col ∈ [2, width-2)
 /// using direct array indexing (no boundary clamping).
-#[cfg(feature = "rawloader")]
 #[autoversion]
 fn malvar_interior(
     data: &[f32],
@@ -427,15 +505,14 @@ fn malvar_interior(
 
 /// Process a single pixel using the safe clamped `px()` access pattern.
 /// Used for border pixels where 5×5 kernel neighbors may be out of bounds.
-#[cfg(feature = "rawloader")]
-fn malvar_pixel_clamped(
+fn malvar_pixel_clamped<C: CfaColorAt + ?Sized>(
     data: &[f32],
     rgb: &mut [f32],
     width: usize,
     height: usize,
     row: usize,
     col: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
 ) {
     let color = cfa.color_at(row, col);
     let val = data[row * width + col];
@@ -465,7 +542,6 @@ fn malvar_pixel_clamped(
 }
 
 /// Safe pixel fetch with border clamping.
-#[cfg(feature = "rawloader")]
 #[inline]
 fn px(data: &[f32], width: usize, height: usize, row: isize, col: isize) -> f32 {
     let r = row.clamp(0, height as isize - 1) as usize;
@@ -477,7 +553,6 @@ fn px(data: &[f32], width: usize, height: usize, row: isize, col: isize) -> f32 
 /// G = (4*Gc + 2*Laplacian_cross) / 8
 /// where Gc = sum of 4 green cross neighbors
 /// and Laplacian_cross = 4*center - top2 - bottom2 - left2 - right2
-#[cfg(feature = "rawloader")]
 #[inline]
 fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col: usize) -> f32 {
     let r = row as isize;
@@ -511,15 +586,14 @@ fn malvar_green_at_rb(data: &[f32], width: usize, height: usize, row: usize, col
 ///        0  2   0   2  0
 ///        0  0 -3/2  0  0
 /// Divide by 8
-#[cfg(feature = "rawloader")]
 #[inline]
-fn malvar_opposite_at_rb(
+fn malvar_opposite_at_rb<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
     row: usize,
     col: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
 ) -> f32 {
     let _ = cfa;
     let r = row as isize;
@@ -541,14 +615,13 @@ fn malvar_opposite_at_rb(
 
 /// R and B at a green site. Uses directional kernels depending on
 /// whether the row has R or B horizontal neighbors.
-#[cfg(feature = "rawloader")]
-fn malvar_rb_at_green(
+fn malvar_rb_at_green<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
     row: usize,
     col: usize,
-    cfa: &rawloader::CFA,
+    cfa: &C,
 ) -> (f32, f32) {
     let r = row as isize;
     let c = col as isize;
@@ -625,6 +698,13 @@ impl CfaPattern {
         let r = row % self.height;
         let c = col % self.width;
         self.colors[r * self.width + c] as usize
+    }
+}
+
+impl CfaColorAt for CfaPattern {
+    #[inline]
+    fn color_at(&self, row: usize, col: usize) -> usize {
+        CfaPattern::color_at(self, row, col)
     }
 }
 
@@ -740,18 +820,23 @@ fn interpolate_channel_xtrans(
     if count > 0 { sum / count as f32 } else { 0.0 }
 }
 
-#[cfg(all(test, feature = "rawloader"))]
+// Runs under EVERY feature set (including `--no-default-features --features
+// std,rawler` and no backend at all): the Bayer kernels are backend-independent
+// since imazen/zenraw#10 and these tests are what keeps them that way.
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    const BAYER_PATTERNS: [&str; 4] = ["RGGB", "BGGR", "GRBG", "GBRG"];
+
     /// Create a simple 4x4 RGGB Bayer pattern with known values.
-    fn make_test_bayer() -> (Vec<f32>, usize, usize, rawloader::CFA) {
+    fn make_test_bayer() -> (Vec<f32>, usize, usize, BayerCfa) {
         // RGGB pattern:
         // R G R G
         // G B G B
         // R G R G
         // G B G B
-        let cfa = rawloader::CFA::new("RGGB");
+        let cfa = BayerCfa::from_pattern_str("RGGB").unwrap();
         let width = 4;
         let height = 4;
 
@@ -847,7 +932,7 @@ mod tests {
     #[test]
     fn uniform_input_produces_uniform_output() {
         // If all Bayer values are the same, all RGB outputs should be the same
-        let cfa = rawloader::CFA::new("RGGB");
+        let cfa = BayerCfa::from_pattern_str("RGGB").unwrap();
         let width = 8;
         let height = 8;
         let data = vec![0.5f32; width * height];
@@ -882,14 +967,135 @@ mod tests {
         let height = 8;
         let data = vec![0.5f32; width * height];
 
-        for pattern in &["RGGB", "BGGR", "GRBG", "GBRG"] {
-            let cfa = rawloader::CFA::new(pattern);
-            let rgb = demosaic_to_rgb_f32(&data, width, height, &cfa, DemosaicMethod::Bilinear);
+        for pattern in &BAYER_PATTERNS {
+            let cfa = BayerCfa::from_pattern_str(pattern).unwrap();
+            let rgb = demosaic_to_rgb_f32_infallible(
+                &data,
+                width,
+                height,
+                &cfa,
+                DemosaicMethod::Bilinear,
+            );
             assert_eq!(rgb.len(), width * height * 3, "Pattern {pattern}");
 
-            let rgb =
-                demosaic_to_rgb_f32(&data, width, height, &cfa, DemosaicMethod::MalvarHeCutler);
+            let rgb = demosaic_to_rgb_f32_infallible(
+                &data,
+                width,
+                height,
+                &cfa,
+                DemosaicMethod::MalvarHeCutler,
+            );
             assert_eq!(rgb.len(), width * height * 3, "Pattern {pattern}");
+        }
+    }
+
+    /// Deterministic, non-uniform sensor image so every kernel term matters.
+    fn make_gradient_noise(width: usize, height: usize) -> Vec<f32> {
+        (0..width * height)
+            .map(|i| ((i * 37 + 13) % 101) as f32 / 100.0)
+            .collect()
+    }
+
+    #[test]
+    fn bayer_cfa_from_pattern_str() {
+        let cfa = BayerCfa::from_pattern_str("GRBG").unwrap();
+        assert_eq!(cfa.color_at(0, 0), G);
+        assert_eq!(cfa.color_at(0, 1), R);
+        assert_eq!(cfa.color_at(1, 0), B);
+        assert_eq!(cfa.color_at(1, 1), G);
+        // Wraps every 2 rows/cols.
+        assert_eq!(cfa.color_at(6, 9), R);
+        assert_eq!(cfa.color_at(7, 8), B);
+
+        assert!(BayerCfa::from_pattern_str("RGG").is_none());
+        assert!(BayerCfa::from_pattern_str("RGGBX").is_none());
+        assert!(BayerCfa::from_pattern_str("RGGX").is_none());
+    }
+
+    #[test]
+    fn bayer_cfa_matches_generic_cfa_pattern() {
+        for pattern in &BAYER_PATTERNS {
+            let bayer = BayerCfa::from_pattern_str(pattern).unwrap();
+            let colors: Vec<u8> = pattern
+                .bytes()
+                .map(|b| match b {
+                    b'R' => R as u8,
+                    b'G' => G as u8,
+                    b'B' => B as u8,
+                    _ => unreachable!(),
+                })
+                .collect();
+            let generic = CfaPattern::new(colors, 2, 2);
+            for row in 0..7 {
+                for col in 0..9 {
+                    assert_eq!(
+                        CfaColorAt::color_at(&bayer, row, col),
+                        CfaColorAt::color_at(&generic, row, col),
+                        "{pattern} at ({row},{col})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `demosaic_to_rgb_f32_fallible` (the decode-pipeline entry) produces the
+    /// same bytes as the infallible entry for the same CFA — only the
+    /// allocation strategy differs.
+    #[test]
+    fn fallible_entry_matches_infallible_bytes() {
+        let (width, height) = (16, 12);
+        let data = make_gradient_noise(width, height);
+        for pattern in &BAYER_PATTERNS {
+            let cfa = BayerCfa::from_pattern_str(pattern).unwrap();
+            for method in [DemosaicMethod::Bilinear, DemosaicMethod::MalvarHeCutler] {
+                let a = demosaic_to_rgb_f32_infallible(&data, width, height, &cfa, method);
+                let b = demosaic_to_rgb_f32_fallible(
+                    &data,
+                    width,
+                    height,
+                    &cfa,
+                    method,
+                    crate::alloc_util::AllocPref::default(),
+                )
+                .unwrap();
+                assert_eq!(a.len(), b.len());
+                assert!(
+                    a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "{pattern} {method:?}: fallible/infallible outputs differ"
+                );
+            }
+        }
+    }
+
+    /// The rawler backend now feeds a [`BayerCfa`] into the same kernels the
+    /// rawloader backend drives with `rawloader::CFA`. Both lookups must
+    /// yield bit-identical pixels for every 2×2 pattern and both methods —
+    /// this is the guard that the #10 fix changed no output bytes.
+    #[cfg(feature = "rawloader")]
+    #[test]
+    fn bayer_cfa_is_bit_identical_to_rawloader_cfa() {
+        let (width, height) = (16, 12);
+        let data = make_gradient_noise(width, height);
+        for pattern in &BAYER_PATTERNS {
+            let rl = rawloader::CFA::new(pattern);
+            let bayer = BayerCfa::new([
+                [rl.color_at(0, 0), rl.color_at(0, 1)],
+                [rl.color_at(1, 0), rl.color_at(1, 1)],
+            ]);
+            assert_eq!(bayer, BayerCfa::from_pattern_str(pattern).unwrap());
+            for method in [DemosaicMethod::Bilinear, DemosaicMethod::MalvarHeCutler] {
+                let via_rawloader = demosaic_to_rgb_f32(&data, width, height, &rl, method);
+                let via_bayer =
+                    demosaic_to_rgb_f32_infallible(&data, width, height, &bayer, method);
+                assert_eq!(via_rawloader.len(), via_bayer.len());
+                for (i, (a, b)) in via_rawloader.iter().zip(&via_bayer).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "{pattern} {method:?}: byte mismatch at f32 index {i}: {a} vs {b}"
+                    );
+                }
+            }
         }
     }
 

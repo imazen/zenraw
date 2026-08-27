@@ -11,13 +11,18 @@
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 extern crate std;
 
-#[cfg(any(feature = "rawloader", feature = "rawler"))]
+// These three are only used by the rawloader-backend functions in this
+// module; the rawler backend lives in `rawler_backend.rs`. Gating them on
+// `rawloader` keeps a rawler-only build warning-free.
+#[cfg(feature = "rawloader")]
 use alloc::vec::Vec;
 
-#[cfg(any(feature = "rawloader", feature = "rawler"))]
+#[cfg(feature = "rawloader")]
 use enough::Stop;
+#[cfg(feature = "rawloader")]
+use whereat::ResultAtExt;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
-use whereat::{ResultAtExt, at};
+use whereat::at;
 use zenpixels::PixelBuffer;
 #[cfg(feature = "rawloader")]
 use zenpixels::PixelDescriptor;

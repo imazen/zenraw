@@ -4,6 +4,8 @@
 //! when available, real DNG/RAW files.
 
 use enough::Unstoppable;
+#[cfg(feature = "rawloader")]
+use zenraw::demosaic::demosaic_to_rgb_f32;
 use zenraw::{
     DemosaicMethod, OutputMode, OutputPrimaries, RawDecodeConfig, RawError, RawLimitKind,
 };
@@ -98,18 +100,21 @@ fn config_defaults() {
 }
 
 // ── Demosaic module tests (exposed via public API) ─────────────────────
+//
+// `demosaic_to_rgb_f32` takes a `rawloader::CFA`, so it (and these tests)
+// only exist with the `rawloader` feature. The backend-independent kernels
+// behind it are unit-tested in `src/demosaic.rs` under every feature set.
 
+#[cfg(feature = "rawloader")]
 #[test]
 fn demosaic_public_api() {
     let cfa = rawloader::CFA::new("RGGB");
     let data = vec![0.5f32; 16 * 16];
 
-    let rgb_bilinear =
-        zenraw::demosaic::demosaic_to_rgb_f32(&data, 16, 16, &cfa, DemosaicMethod::Bilinear);
+    let rgb_bilinear = demosaic_to_rgb_f32(&data, 16, 16, &cfa, DemosaicMethod::Bilinear);
     assert_eq!(rgb_bilinear.len(), 16 * 16 * 3);
 
-    let rgb_malvar =
-        zenraw::demosaic::demosaic_to_rgb_f32(&data, 16, 16, &cfa, DemosaicMethod::MalvarHeCutler);
+    let rgb_malvar = demosaic_to_rgb_f32(&data, 16, 16, &cfa, DemosaicMethod::MalvarHeCutler);
     assert_eq!(rgb_malvar.len(), 16 * 16 * 3);
 }
 
@@ -143,6 +148,7 @@ fn srgb_gamma_public_api() {
 
 // ── Full pipeline synthetic test ───────────────────────────────────────
 
+#[cfg(feature = "rawloader")]
 #[test]
 fn full_pipeline_synthetic_data() {
     // Test the color pipeline with a gradient
@@ -160,13 +166,7 @@ fn full_pipeline_synthetic_data() {
     }
 
     // Demosaic
-    let mut rgb = zenraw::demosaic::demosaic_to_rgb_f32(
-        &data,
-        width,
-        height,
-        &cfa,
-        DemosaicMethod::MalvarHeCutler,
-    );
+    let mut rgb = demosaic_to_rgb_f32(&data, width, height, &cfa, DemosaicMethod::MalvarHeCutler);
     assert_eq!(rgb.len(), width * height * 3);
 
     // Apply a reasonable color pipeline
@@ -206,7 +206,7 @@ fn full_pipeline_synthetic_data() {
 
 // ── Real file tests (skipped when test data unavailable) ───────────────
 
-/// Try to find a RAW file that rawloader can handle.
+/// Try to find a RAW file that the compiled-in backend can decode.
 fn find_working_raw_file() -> Option<(std::path::PathBuf, Vec<u8>)> {
     // Try common locations
     let search_dirs = [
@@ -231,8 +231,9 @@ fn find_working_raw_file() -> Option<(std::path::PathBuf, Vec<u8>)> {
             }
 
             if let Ok(data) = std::fs::read(&path) {
-                // Quick check if rawloader can handle it (without full decode)
-                if rawloader::decode(&mut std::io::Cursor::new(&data)).is_ok() {
+                // Backend-agnostic: whichever backend is compiled in
+                // (rawloader by default, rawler when enabled) must decode it.
+                if zenraw::decode(&data, &RawDecodeConfig::default(), &Unstoppable).is_ok() {
                     return Some((path, data));
                 }
             }

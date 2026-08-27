@@ -21,7 +21,7 @@ use rawler::imgop::xyz::Illuminant;
 use crate::color;
 use crate::decode::{OutputMode, RawDecodeConfig, RawDecodeOutput, RawInfo, SensorLayout};
 use crate::demosaic::{
-    CfaPattern, demosaic_to_rgb_f32_fallible, demosaic_xtrans_bilinear_fallible,
+    BayerCfa, CfaPattern, demosaic_to_rgb_f32_fallible, demosaic_xtrans_bilinear_fallible,
 };
 use crate::error::{RawError, RawLimitKind, Result};
 
@@ -248,13 +248,19 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             config.alloc_pref,
         )?
     } else {
-        // Standard 2x2 Bayer
-        let rl_cfa = rawloader::CFA::new(&cfa_str);
+        // Standard 2x2 Bayer. Sample rawler's own 48×48 tiled lookup for the
+        // top-left tile rather than round-tripping through a pattern string:
+        // this needs no rawloader dependency (issue #10) and, unlike
+        // `rawloader::CFA::new`, cannot panic on a 1–3 character pattern.
+        let bayer = BayerCfa::new([
+            [cfa.color_at(0, 0), cfa.color_at(0, 1)],
+            [cfa.color_at(1, 0), cfa.color_at(1, 1)],
+        ]);
         demosaic_to_rgb_f32_fallible(
             &normalized,
             width,
             height,
-            &rl_cfa,
+            &bayer,
             config.demosaic,
             config.alloc_pref,
         )?

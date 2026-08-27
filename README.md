@@ -187,13 +187,22 @@ let result = std::thread::spawn(move || {
 
 | Backend | Feature | Cameras | Formats | Notes |
 |---------|---------|---------|---------|-------|
-| **rawloader** | `rawloader` (default) | ~200 | Bayer only | Lightweight, LGPL-2.1 |
-| **rawler** | `rawler` | ~300+ | Bayer + X-Trans, CR3, JXL DNG | Broader support, LGPL-2.1 |
+| **rawloader** | `rawloader` (default) | ~200 | Bayer only | Lightweight, LGPL-2.1. No 10-bit lossless-JPEG DNGs (iPhone ProRAW) — see below |
+| **rawler** | `rawler` | ~300+ | Bayer + X-Trans, CR3, JXL DNG, 10-bit LJPEG DNG | Broader support, LGPL-2.1 |
 | **darktable** | `darktable` | 900+ | Everything darktable handles | Shells out to darktable-cli |
 
 When both `rawloader` and `rawler` are enabled, `rawler` takes priority.
 The darktable backend is independent — it delegates the entire pipeline to
 darktable-cli and returns its processed output.
+
+**iPhone ProRAW / 10-bit lossless-JPEG DNGs need `rawler`.** The default
+`rawloader` backend does not decode DNGs whose lossless-JPEG tiles use a
+10-bit sample precision (`sof.precision 10`) — the common iPhone 15/16 Pro
+ProRAW case. zenraw contains the resulting upstream panic and returns
+`RawError::Malformed`, so nothing crashes, but the file does not decode.
+Build with `--features rawler` for those files; rawler can also be used
+**without** rawloader (`--no-default-features --features "std,rawler"`) to
+drop the extra dependency.
 
 ## Supported formats
 

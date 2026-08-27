@@ -53,6 +53,19 @@ jobs:
       - name: Test (rawloader without rawler)
         run: cargo test --no-default-features --features "std,rawloader"
 
+  rawler-only:
+    name: Test rawler backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Regression gate for imazen/zenraw#10: the rawler backend must build
+      # and test WITHOUT the rawloader crate in the graph.
+      - name: Test (rawler without rawloader)
+        run: cargo test --no-default-features --features "std,rawler"
+
   feature-perms:
     name: Feature permutations
     runs-on: ubuntu-latest
@@ -66,6 +79,14 @@ jobs:
 
       - name: Check (rawler,std)
         run: cargo check --features "rawler,std"
+
+      # `--features rawler` above still pulls in default `rawloader`; these
+      # two are the combos from imazen/zenraw#10 that used to fail to compile.
+      - name: Check (no-default-features, std,rawler)
+        run: cargo check --no-default-features --features "std,rawler"
+
+      - name: Check (no-default-features, std,rawler,ultrahdr)
+        run: cargo check --no-default-features --features "std,rawler,ultrahdr"
 
       - name: Check (zencodec)
         run: cargo check --features zencodec
