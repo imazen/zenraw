@@ -50,7 +50,11 @@ fn is_exact_at_every_bucket_boundary() {
     // threshold — where a table-based encoder would fail if a threshold were
     // computed or compared wrongly.
     let srgb_inv = |s: f64| -> f64 {
-        if s <= 0.040_45 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        if s <= 0.040_45 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
     };
     let mut xs = Vec::new();
     for k in 1..256usize {

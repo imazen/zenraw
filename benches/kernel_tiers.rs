@@ -19,7 +19,11 @@ type TierToken = archmage::NeonToken;
 type TierToken = archmage::X64V3Token;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-const TIER_NAME: &str = if cfg!(target_arch = "aarch64") { "neon" } else { "v3(avx2)" };
+const TIER_NAME: &str = if cfg!(target_arch = "aarch64") {
+    "neon"
+} else {
+    "v3(avx2)"
+};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn set_simd(on: bool) -> bool {
@@ -27,7 +31,9 @@ fn set_simd(on: bool) -> bool {
     TierToken::dangerously_disable_token_process_wide(!on).is_ok()
 }
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-fn set_simd(_on: bool) -> bool { false }
+fn set_simd(_on: bool) -> bool {
+    false
+}
 
 fn bench(suite: &mut Suite) {
     if !set_simd(true) || !set_simd(false) {
@@ -39,7 +45,10 @@ fn bench(suite: &mut Suite) {
     // A 24 MP sensor frame — the realistic size for this kernel.
     for (label, n) in [("1MP", 1usize << 20), ("24MP", 24 << 20)] {
         let data: &'static [f32] = Box::leak(
-            (0..n).map(|i| (i % 4096) as f32).collect::<Vec<_>>().into_boxed_slice(),
+            (0..n)
+                .map(|i| (i % 4096) as f32)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
         );
         suite.compare(&format!("normalize_uniform/{label}"), move |g| {
             g.throughput(Throughput::Bytes((n * 4) as u64));
