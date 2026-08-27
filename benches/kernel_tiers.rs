@@ -27,7 +27,6 @@ const TIER_NAME: &str = if cfg!(target_arch = "aarch64") {
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn set_simd(on: bool) -> bool {
-    use archmage::SimdToken;
     TierToken::dangerously_disable_token_process_wide(!on).is_ok()
 }
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
@@ -50,7 +49,7 @@ fn bench(suite: &mut Suite) {
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         );
-        suite.compare(&format!("normalize_uniform/{label}"), move |g| {
+        suite.compare(format!("normalize_uniform/{label}"), move |g| {
             g.throughput(Throughput::Bytes((n * 4) as u64));
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {

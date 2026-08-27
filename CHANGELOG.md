@@ -12,6 +12,12 @@
 
 ### Fixed
 
+- **CI Clippy job green again under stable 1.98**: nine `chunks_exact`-with-constant-size
+  sites in `tests/{formats,integration,regression}.rs` moved to `as_chunks::<N>()`, and
+  `--all-features` (`_dev`) no longer errors with `private_interfaces` — the two
+  `simd::*_fallible` kernels (only ever called from the rawler backend) are `pub(crate)`
+  now, so the crate-local `AllocPref` stays private. Also cleared two `_dev`-only lints in
+  `benches/kernel_tiers.rs`. No behaviour change.
 - **rawler-only builds compile again** (`--no-default-features --features "std,rawler"`,
   with or without `ultrahdr`) — issue #10 item 1 (d2b1d473). The Bayer demosaic kernels
   were `#[cfg(feature = "rawloader")]` and the rawler backend called `rawloader::CFA::new`,

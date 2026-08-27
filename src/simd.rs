@@ -33,7 +33,7 @@ pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
 /// honoring the per-site [`AllocPref`](crate::alloc_util::AllocPref) — default
 /// fallible. Output bytes are identical.
 #[cfg(feature = "rawler")]
-pub fn normalize_uniform_fallible(
+pub(crate) fn normalize_uniform_fallible(
     data: &[f32],
     black: f32,
     inv_range: f32,
@@ -113,7 +113,7 @@ pub fn extract_rgb_from_cpp(data: &[f32], pixel_count: usize, cpp: usize) -> Vec
 /// [`AllocPref`](crate::alloc_util::AllocPref) — default fallible. Output bytes
 /// are identical.
 #[cfg(feature = "rawler")]
-pub fn extract_rgb_from_cpp_fallible(
+pub(crate) fn extract_rgb_from_cpp_fallible(
     data: &[f32],
     pixel_count: usize,
     cpp: usize,

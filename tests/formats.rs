@@ -64,8 +64,10 @@ fn verify_linear_stats(output: &RawDecodeOutput, format_name: &str) {
 
     let bytes = output.pixels.copy_to_contiguous_bytes();
     let floats: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_ne_bytes(*c))
         .collect();
 
     let mean: f32 = floats.iter().sum::<f32>() / floats.len() as f32;
@@ -100,8 +102,10 @@ fn verify_srgb_output(output: &RawDecodeOutput, format_name: &str) {
 
     // Check not all black or all white — interpret as u16
     let samples: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_ne_bytes(*c))
         .collect();
     let sum: u64 = samples.iter().map(|&s| s as u64).sum();
     let mean = sum as f64 / samples.len() as f64;
@@ -585,12 +589,16 @@ fn all_formats_bilinear_vs_malvar() {
 
         // Compare as u16 samples
         let m_samples: Vec<u16> = m_bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_ne_bytes(*c))
             .collect();
         let b_samples: Vec<u16> = b_bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_ne_bytes(*c))
             .collect();
 
         let diff: u64 = m_samples

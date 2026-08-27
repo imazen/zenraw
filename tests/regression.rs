@@ -82,8 +82,10 @@ fn find_dng_files(max_count: usize) -> Vec<PathBuf> {
 /// Convert linear f32 RGB data to sRGB u8 for comparison.
 fn linear_f32_to_srgb_u8(data: &[u8], width: u32, height: u32) -> Vec<[u8; 3]> {
     let floats: Vec<f32> = data
-        .chunks_exact(4)
-        .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_ne_bytes(*c))
         .collect();
 
     let expected = width as usize * height as usize * 3;
@@ -95,7 +97,7 @@ fn linear_f32_to_srgb_u8(data: &[u8], width: u32, height: u32) -> Vec<[u8; 3]> {
     );
 
     let mut pixels = Vec::with_capacity(width as usize * height as usize);
-    for chunk in floats.chunks_exact(3) {
+    for chunk in floats.as_chunks::<3>().0 {
         let r = linear_to_srgb_u8(chunk[0]);
         let g = linear_to_srgb_u8(chunk[1]);
         let b = linear_to_srgb_u8(chunk[2]);
@@ -164,7 +166,9 @@ fn zenraw_decode_srgb(data: &[u8]) -> Option<(Vec<[u8; 3]>, u32, u32)> {
         let bytes = output.pixels.copy_to_contiguous_bytes();
         // Convert u16 to u8 by taking high byte
         let pixels: Vec<[u8; 3]> = bytes
-            .chunks_exact(6) // 3 channels × 2 bytes
+            .as_chunks::<6>() // 3 channels × 2 bytes
+            .0
+            .iter()
             .map(|c| {
                 let r = u16::from_ne_bytes([c[0], c[1]]);
                 let g = u16::from_ne_bytes([c[2], c[3]]);
@@ -325,8 +329,10 @@ fn regression_darktable_dng_batch() {
                 // Verify reasonable output
                 let bytes = output.pixels.copy_to_contiguous_bytes();
                 let floats: Vec<f32> = bytes
-                    .chunks_exact(4)
-                    .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_ne_bytes(*c))
                     .collect();
 
                 let mean: f32 = floats.iter().sum::<f32>() / floats.len() as f32;
