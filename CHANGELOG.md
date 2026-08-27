@@ -38,8 +38,13 @@
 
 ### Changed
 
+- deps: `zencodec = "0.1.26"` and `zencodec-testkit = "0.1.0"` now come from crates.io; the
+  `[patch.crates-io]` git-rev pin (44ca7927) that carried the pre-release two-level
+  `ErrorCategory` taxonomy, and the git-rev testkit dev-dep, are removed. No source change —
+  `RawError`'s `CategorizedError` impl already matched the published 0.1.26 API.
 - **`RawError` reshaped onto zencodec's two-level origin-first `ErrorCategory` taxonomy**
-  (`Image`/`Request`/`Resource`/`Io`/`Internal`/`Lifecycle`, zencodec PR #116). Every variant
+  (`Image`/`Request`/`Resource`/`Io`/`Internal`/`Stopped` — named `Lifecycle` in the PR #116
+  pre-release, `Stopped` in the published 0.1.26). Every variant
   now maps to exactly one category via a new `#[cfg(feature = "zencodec")] impl
   CategorizedError for RawError` (8c069b6f):
   - `Decode(String)` split into `Malformed` (corrupt/invalid bitstream), `UnexpectedEof`
