@@ -63,3 +63,4 @@ copter-report/
 .workongoing
 Cargo.toml.original.txt
 *.rs.local
+.jj/

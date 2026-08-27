@@ -10,6 +10,32 @@
   single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
   new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
 
+### Fixed
+
+- **rawler-only builds compile again** (`--no-default-features --features "std,rawler"`,
+  with or without `ultrahdr`) — issue #10 item 1 (d2b1d473). The Bayer demosaic kernels
+  were `#[cfg(feature = "rawloader")]` and the rawler backend called `rawloader::CFA::new`,
+  so selecting `rawler` without `rawloader` failed with E0432/E0433. The kernels are now
+  generic over a crate-internal CFA lookup (`BayerCfa`, a 2×2 tile) and the rawler backend
+  builds that tile from rawler's own `color_at`. Output bytes are unchanged: a unit test
+  asserts bit-exact parity between the `rawloader::CFA` and `BayerCfa` lookups for all four
+  Bayer patterns and both demosaic methods. The public
+  `demosaic::demosaic_to_rgb_f32(.., &rawloader::CFA, ..)` signature is untouched.
+- **Latent panic in the rawler backend removed** (d2b1d473): `rawloader::CFA::new` panics
+  on any pattern string whose length is not 0/4/16/36/144, and the rawler backend called it
+  outside `catch_unwind` for every ≤4-character CFA. Sampling rawler's `color_at` instead
+  cannot panic.
+- CI now tests the rawler backend without rawloader (`rawler-only` job) and checks the two
+  feature combinations from #10 in the `feature-perms` job; `just check` mirrors them
+  (d2b1d473).
+
+### Documentation
+
+- README backend table + note: iPhone ProRAW / 10-bit lossless-JPEG DNGs need the `rawler`
+  backend — the default `rawloader` backend panics upstream on `sof.precision 10` (contained
+  by zenraw as `RawError::Malformed`, but the file does not decode). Issue #10 item 2
+  (d2b1d473).
+
 ### Changed
 
 - **`RawError` reshaped onto zencodec's two-level origin-first `ErrorCategory` taxonomy**
