@@ -42,14 +42,18 @@ use crate::error::{RawError, RawLimitKind, Result};
 #[non_exhaustive]
 pub enum OutputMode {
     /// Full develop: WB + color matrix + tone curve + gamma.
-    /// Produces display-ready u16 (or f32 if sensor data was float) in target primaries.
+    /// Produces display-ready, sRGB-encoded **u16** RGB
+    /// (`PixelDescriptor::RGB16_SRGB`) in target primaries — never u8, never
+    /// f32. Narrow to u8 yourself if you need 8-bit output.
     #[default]
     Develop,
     /// Linear scene-referred: WB + color matrix only.
-    /// Produces f32 linear in target primaries.
+    /// Produces **f32** linear RGB (`PixelDescriptor::RGBF32_LINEAR`) in
+    /// target primaries, not clamped to `[0, 1]`.
     Linear,
     /// Raw camera values: no WB, no color matrix.
-    /// Produces f32 in camera color space.
+    /// Produces **f32** RGB (`PixelDescriptor::RGBF32_LINEAR`, primaries
+    /// `Unknown`) in camera color space.
     CameraRaw,
 }
 

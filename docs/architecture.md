@@ -55,10 +55,11 @@ Raw file bytes (&[u8])
                         [2] Read PFM interchange format (linear f32)
                         [3] Wrap into PixelBuffer (RGBF32_LINEAR)
 
-                Final output conversion:
-                    auto_develop=true  → RGB8 sRGB (full DNG render via dng_render.rs)
-                    apply_gamma=true   → RGB8 sRGB (PixelBuffer)
-                    apply_gamma=false  → RGBF32 linear (PixelBuffer, default)
+                Final output conversion (RawDecodeConfig::output):
+                    OutputMode::Develop   → RGB16_SRGB u16 (default; sRGB gamma + quantise)
+                    OutputMode::Linear    → RGBF32_LINEAR f32 (scene-referred, unclamped)
+                    OutputMode::CameraRaw → RGBF32_LINEAR f32, primaries Unknown (no WB/matrix)
+                    (darktable backend: RGB8_SRGB or RGBF32_LINEAR, whatever darktable-cli wrote)
 ```
 
 ## Public API
@@ -78,15 +79,17 @@ pub fn is_raw_file(data: &[u8]) -> bool;
 ### Configuration
 
 ```rust
+#[non_exhaustive]                        // build with the with_* builders, not a literal
 pub struct RawDecodeConfig {
     pub demosaic: DemosaicMethod,        // Bilinear or MalvarHeCutler
-    pub max_pixels: u64,                 // DoS protection (default 200M)
-    pub apply_gamma: bool,               // false = linear f32, true = sRGB u8
+    pub max_pixels: u64,                 // resource cap (default 200M) → LimitExceeded(Pixels)
+    pub max_decode_bytes: u64,           // RGB f32 working-set cap (default 1 GiB) → LimitExceeded(Memory)
+    pub output: OutputMode,              // Develop (u16 sRGB, default) | Linear (f32) | CameraRaw (f32)
+    pub target: OutputPrimaries,         // Srgb | DisplayP3 | Bt2020 (Develop/Linear only)
+    pub exposure_ev: f32,                // exposure compensation in stops (Develop/Linear only)
     pub apply_crop: bool,                // apply camera crop metadata
     pub apply_orientation: bool,         // apply EXIF orientation (default true)
-    pub skip_color_pipeline: bool,       // output raw camera-space data (for DngPipeline)
     pub wb_override: Option<[f32; 3]>,   // replace camera as-shot WB with custom multipliers
-    pub auto_develop: bool,              // full DNG render → RGB8 sRGB (overrides apply_gamma)
 }
 ```
 
@@ -94,7 +97,7 @@ pub struct RawDecodeConfig {
 
 ```rust
 pub struct RawDecodeOutput {
-    pub pixels: PixelBuffer,         // RGB8_SRGB or RGBF32_LINEAR
+    pub pixels: PixelBuffer,         // untyped: RGB16_SRGB (Develop) or RGBF32_LINEAR (Linear/CameraRaw)
     pub info: RawInfo,
 }
 
@@ -154,7 +157,7 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 2. **`no_std + alloc`** — std opt-in for I/O (rawloader requires std)
 3. **Cooperative cancellation** — `Stop` tokens throughout for responsive cancellation
 4. **Non-exhaustive types** — future-proof public API
-5. **Scene-referred default** — linear f32 output by default, gamma opt-in
+5. **Display-ready default, scene-referred opt-in** — `OutputMode::Develop` (u16 sRGB) by default; `OutputMode::Linear` for unclamped linear f32
 
 ## Dependencies
 

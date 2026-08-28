@@ -200,16 +200,26 @@ fn invert_3x3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     ]
 }
 
-/// Apply sRGB gamma curve (linear → sRGB transfer function).
+/// Apply sRGB gamma curve (linear → sRGB transfer function), in place.
 ///
-/// Operates on interleaved RGB f32 data (values should be in \[0, 1\]).
+/// Operates on interleaved RGB f32 data (values should be in \[0, 1\]). The
+/// output is still f32 in \[0, 1\], now sRGB-*encoded*. This is the only
+/// public function in this module that applies a transfer function; feed its
+/// result to [`f32_to_u8_srgb`] to quantise. Do **not** call it on
+/// [`OutputMode::Develop`](crate::OutputMode::Develop) output, which is
+/// already sRGB-encoded — that double-encodes.
 pub fn apply_srgb_gamma(rgb: &mut [f32]) {
     for val in rgb.iter_mut() {
         *val = crate::simd::linear_to_srgb(*val);
     }
 }
 
-/// Convert f32 \[0,1\] RGB data to u8 \[0,255\] sRGB data.
+/// Quantise f32 \[0,1\] **already sRGB-encoded** samples to u8 \[0,255\].
+///
+/// A plain clamp-to-\[0, 1\], scale-by-255 and round: it applies **no**
+/// transfer function. The `_srgb` in the name says what the input is expected
+/// to be, not what this does — run [`apply_srgb_gamma`] first on linear data.
+/// Composing the two in that order is exactly one sRGB encode.
 pub fn f32_to_u8_srgb(src: &[f32]) -> alloc::vec::Vec<u8> {
     f32_to_u8_inner(src)
 }
@@ -312,6 +322,20 @@ mod tests {
             let sum: f32 = row.iter().sum();
             assert!((sum - 1.0).abs() < 1e-5, "Row sum = {sum}");
         }
+    }
+
+    /// `f32_to_u8_srgb` is a pure quantiser: it must NOT apply the sRGB curve
+    /// (issue #7 footgun — `apply_srgb_gamma` + `f32_to_u8_srgb` composed must
+    /// encode exactly once). Linear 0.5 → sRGB is 188, not 128; a quantiser
+    /// that secretly encoded would return 188 here.
+    #[test]
+    fn f32_to_u8_srgb_applies_no_transfer_function() {
+        let out = f32_to_u8_srgb(&[0.5, 0.25, 1.0 / 255.0]);
+        assert_eq!(out, [128, 64, 1]);
+        // And the documented composition encodes exactly once.
+        let mut lin = [0.5f32];
+        apply_srgb_gamma(&mut lin);
+        assert_eq!(f32_to_u8_srgb(&lin), [188]);
     }
 
     #[test]

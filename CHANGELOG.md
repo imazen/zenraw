@@ -51,6 +51,21 @@
 
 ### Documentation
 
+- **README docs audit, issue #7 (remaining items after cf551d2).** New "Output modes" table
+  states the pixel format and bytes-per-channel per `OutputMode` (`Develop` = `RGB16_SRGB`
+  u16 — there is no 8-bit mode; `Linear` / `CameraRaw` = f32) and how to narrow to u8; the
+  "Reading the pixels out" section now says `PixelBuffer` is untyped and that the meaning of
+  `into_vec()` / `as_contiguous_bytes()` bytes follows the mode. Quick start lists the helper
+  crates the API hands you types from (`enough`, `zenpixels`, `bytemuck`). New "Resource
+  limits & server error handling" section: `with_max_pixels` / `with_max_decode_bytes`
+  defaults, the `RawLimitKind` each rejects with, and a `whereat::At<RawError>` match
+  example (`.error()` / `.decompose()`). The `color::apply_srgb_gamma` /
+  `color::f32_to_u8_srgb` footgun is documented in both the README and the doc comments:
+  `f32_to_u8_srgb` is a pure quantiser that applies **no** transfer function, so the pair
+  composes to exactly one sRGB encode (a unit test now pins that). `docs/architecture.md` no
+  longer describes the removed `apply_gamma` / `auto_develop` fields or an RGB8 default;
+  `OutputMode` doc comments no longer claim `Develop` can yield f32. `README.crates.md`
+  regenerated (it had drifted: still named `RawError::Decode`).
 - README backend table + note: iPhone ProRAW / 10-bit lossless-JPEG DNGs need the `rawler`
   backend — the default `rawloader` backend panics upstream on `sof.precision 10` (contained
   by zenraw as `RawError::Malformed`, but the file does not decode). Issue #10 item 2

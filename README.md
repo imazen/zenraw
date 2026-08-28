@@ -10,6 +10,10 @@ coverage against dependency weight.
 ```toml
 [dependencies]
 zenraw = "0.2.0"
+# Helper crates the zenraw API hands you types from — add the ones you touch:
+enough = "0.4.3"     # `Unstoppable` / the `Stop` trait (decode's 3rd argument)
+zenpixels = "0.2.10" # `PixelBuffer` (what `output.pixels` is)
+bytemuck = "1.25.0"  # only for the `cast_slice` byte→f32/u16 views shown below
 ```
 
 ```rust
@@ -38,14 +42,31 @@ let output = decode(data, &config, &Unstoppable)?;
 //  OutputMode::CameraRaw = raw camera values as f32, no color processing.)
 ```
 
+## Output modes
+
+| `OutputMode` | Pixel format (`PixelDescriptor`) | Bytes/channel | Values |
+|---|---|---|---|
+| `Develop` (default) | `RGB16_SRGB` — display-ready sRGB-encoded | **2 (u16)** | `[0, 65535]`, gamma-encoded, in `with_target` primaries |
+| `Linear` | `RGBF32_LINEAR` — scene-referred linear | 4 (f32) | white-balanced + colour-matrixed, **not** clamped to `[0, 1]` |
+| `CameraRaw` | `RGBF32_LINEAR` (primaries `Unknown`) | 4 (f32) | raw camera values, no WB / matrix |
+
+There is **no 8-bit output mode**: `Develop` is `u16`, so a thumbnail/web
+pipeline that wants `u8` sRGB must narrow the u16 samples itself (`v >> 8`, or
+`(v as u32 * 255 + 32767) / 65535` for rounding). The
+`darktable` backend is the one exception — it returns whatever `darktable-cli`
+wrote (`RGB8_SRGB` for its sRGB profile, f32 linear otherwise).
+
 ## Reading the pixels out
 
 `output.pixels` is a
-[`zenpixels::PixelBuffer`](https://docs.rs/zenpixels/latest/zenpixels/struct.PixelBuffer.html).
-To get at the samples, ask it for the contiguous backing bytes and reinterpret
-them for the channel type the `OutputMode` produced. For `OutputMode::Linear`
-(and `CameraRaw`) that's interleaved **f32 RGB**; for the default `Develop` it's
-interleaved **u16 sRGB**.
+[`zenpixels::PixelBuffer`](https://docs.rs/zenpixels/latest/zenpixels/struct.PixelBuffer.html)
+— an *untyped* buffer: the element type is not in the Rust type, it is decided
+by the `OutputMode` you asked for (table above) and reported by
+`output.pixels.descriptor()`. So `into_vec()` / `as_contiguous_bytes()` give you
+`u8` bytes whose meaning changes with the mode: pairs of bytes per `u16` sample
+under `Develop`, four bytes per `f32` under `Linear` / `CameraRaw`. Reinterpret
+them for the channel type the mode produced — interleaved **f32 RGB** for
+`Linear` (and `CameraRaw`), interleaved **u16 sRGB** for the default `Develop`.
 
 ```rust
 use zenraw::{decode, OutputMode, RawDecodeConfig};
@@ -86,6 +107,12 @@ Key facts about the layout and value range (verified against the decode path):
 - **`OutputMode::Develop` (the default)** is display-ready **u16 sRGB**: read it
   the same way but `bytemuck::cast_slice::<u8, u16>(bytes)` for 3×`u16` per pixel
   in `[0, 65535]`.
+- **Don't re-apply gamma.** `Develop` output is already sRGB-encoded. The two
+  public helpers in `zenraw::color` split the job in two: `apply_srgb_gamma`
+  (linear f32 → sRGB-encoded f32, still `[0, 1]`) and `f32_to_u8_srgb` (a
+  plain clamp-and-scale of *already-encoded* `[0, 1]` f32 to `u8` — it applies
+  **no** transfer function). Run them in that order on `Linear` output; running
+  `apply_srgb_gamma` on `Develop` output double-encodes.
 
 If you'd rather own the bytes (e.g. to hand off to a thread or FFI), use
 `output.pixels.copy_to_contiguous_bytes()` for a fresh `Vec<u8>` with stride
@@ -136,6 +163,55 @@ underlying `RawError` with `.error()`. Add `almost-enough = "0.4.4"` for the
 cancellable `Stopper`; `enough` (the `Unstoppable` no-op and the `Stop` trait)
 comes in via zenraw, which depends on `enough` 0.4.
 
+## Resource limits & server error handling
+
+Two caps on `RawDecodeConfig` bound what a single decode may cost, and both are
+checked against the header *before* any sensor-sized allocation:
+
+| Builder | Default | Rejects with |
+|---|---|---|
+| `with_max_pixels(n)` | 200,000,000 (200 MP) | `RawError::LimitExceeded(RawLimitKind::Pixels, _)` |
+| `with_max_decode_bytes(n)` | 1 GiB | `RawError::LimitExceeded(RawLimitKind::Memory, _)` — the intermediate `RGB f32` working set is `width × height × 12` bytes |
+
+`probe` applies the default 200 MP cap too, so a hostile header can't make even
+a metadata-only call report absurd dimensions.
+
+Every fallible call returns `Result<_, whereat::At<RawError>>`: `At` wraps the
+error with the source location it was raised at. Call `.error()` to borrow the
+`RawError` and match on it (it is `#[non_exhaustive]`, so keep a `_` arm):
+
+```rust
+use zenraw::{decode, RawDecodeConfig, RawError, RawLimitKind};
+use enough::Unstoppable;
+
+let config = RawDecodeConfig::default()
+    .with_max_pixels(50_000_000)
+    .with_max_decode_bytes(600 * 1024 * 1024);
+
+match decode(data, &config, &Unstoppable) {
+    Ok(output) => { /* … */ }
+    Err(e) => match e.error() {
+        // Too big for this server's per-request budget — a 413-style reply.
+        RawError::LimitExceeded(RawLimitKind::Pixels, msg)
+        | RawError::LimitExceeded(RawLimitKind::Memory, msg) => eprintln!("rejected: {msg}"),
+        // Bad / truncated / unknown-dialect upload — a 4xx, not a server bug.
+        RawError::Malformed(_) | RawError::UnexpectedEof(_)
+        | RawError::UnsupportedType(_) | RawError::UnsupportedFeature(_) => eprintln!("bad input: {e}"),
+        // Allocation actually failed (distinct from a configured cap).
+        RawError::OutOfMemory(_) => eprintln!("out of memory: {e}"),
+        // Cancelled via the `Stop` token (see above).
+        RawError::Stopped(_) => eprintln!("cancelled"),
+        _ => eprintln!("decode failed: {e}"), // Io / Dependency / Buffer / …
+    },
+}
+```
+
+`e.to_string()` includes the location; `e.decompose()` gives you the owned
+`RawError` back. With the `zencodec` feature every variant also maps onto
+zencodec's `ErrorCategory` (`Image` / `Request` / `Resource` / `Io` /
+`Internal` / `Stopped`) via `CategorizedError`, so a format-agnostic pipeline can
+classify without matching zenraw's variants.
+
 ## Decoding untrusted input (panic safety)
 
 `decode` returns `Result`, and **both backends are panic-isolated**: each wraps
@@ -181,7 +257,7 @@ let result = std::thread::spawn(move || {
 6. Apply camera → XYZ → sRGB color matrix
 7. Crop to active area (from camera metadata)
 8. Apply EXIF orientation (rotation/flip)
-9. Optionally apply sRGB gamma curve
+9. `Develop` only: sRGB transfer function + quantise to u16
 
 ## Backends
 
