@@ -12,6 +12,20 @@
 
 ### Fixed
 
+- **Probe/decode dimension parity on the rawler backend** (issue #5). `rawler_backend::probe`
+  reported the camera `crop_area` / `active_area` size unconditionally, while the decode path's
+  `apply_rawler_crop` fell back to the full sensor when that rectangle was empty or extended
+  past the sensor — so a DNG with a malformed crop made `probe` and `decode(crop = true,
+  orientation = false)` disagree exactly like the rawloader case fixed in 5eb1dbf. Both now
+  share one `rawler_cropped_dims` helper (checked arithmetic; an absurd header offset can no
+  longer overflow in `apply_rawler_crop`). Unit tests pin the helper and the rawloader
+  `cropped_dims`/`apply_crop` pair (D70-shaped 3040→3008 crop, absent crop, three malformed
+  shapes) — the first direct tests of the crop math, so the parity can't silently regress
+  without the FiveK corpus present.
+- `tests/probe_parity.rs` no longer reads a hard-coded `/mnt/v/input/fivek/dng`: the FiveK DNG
+  tests are gated on `ZENRAW_FIVEK_DIR` (set by `just test-raw-parity`), the same caller-visible
+  skip chain as `ZENRAW_RAW_SAMPLES_DIR`. Unset → skip with a message; set → a directory
+  without a `.dng` is a hard failure, not a silent pass.
 - **CI Clippy job green again under stable 1.98**: nine `chunks_exact`-with-constant-size
   sites in `tests/{formats,integration,regression}.rs` moved to `as_chunks::<N>()`, and
   `--all-features` (`_dev`) no longer errors with `private_interfaces` — the two

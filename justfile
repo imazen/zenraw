@@ -9,11 +9,13 @@ regress:
     cargo test --features rawler,darktable regression -- --nocapture
 
 # Run probe-vs-decode parity tests against the local RAW sample corpus.
-# Gated on ZENRAW_RAW_SAMPLES_DIR (see tests/probe_parity.rs): CI leaves it
-# unset so the corpus-dependent assertions skip cleanly. Run `just
-# fetch-samples` first to populate the corpus.
+# Gated on ZENRAW_RAW_SAMPLES_DIR + ZENRAW_FIVEK_DIR (see tests/probe_parity.rs):
+# CI leaves both unset so the corpus-dependent assertions skip cleanly. Run
+# `just fetch-samples` first to populate the sample corpus; the FiveK dir is
+# the MIT-Adobe FiveK DNG set (issue #5 reproduces on a0001-jmac_DSC1459.dng).
 test-raw-parity:
     ZENRAW_RAW_SAMPLES_DIR=/mnt/v/input/raw-samples \
+    ZENRAW_FIVEK_DIR=/mnt/v/input/fivek/dng \
         cargo test --features rawler,darktable,exif,xmp,apple,zencodec,ultrahdr \
         --test probe_parity -- --nocapture
 

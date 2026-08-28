@@ -1056,6 +1056,43 @@ pub(crate) fn is_raw_file(data: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    /// Probe/decode parity (issue #5): `probe` reports `cropped_dims`, and
+    /// `apply_crop` must produce a buffer of exactly those dimensions — for a
+    /// real crop, an absent crop, and a malformed one.
+    #[cfg(feature = "rawloader")]
+    #[test]
+    fn cropped_dims_matches_apply_crop_output() {
+        use crate::alloc_util::AllocPref;
+        let pref = AllocPref::CodecDefault;
+        // Nikon D70-style sensor (FiveK a0001-jmac_DSC1459.dng): 3040 stored,
+        // 3008 after the camera crop. Scaled down so the buffer stays small
+        // but keeps the same [top, right, bottom, left] shape.
+        let (w, h) = (38usize, 26usize);
+        let rgb: Vec<f32> = (0..w * h * 3).map(|i| i as f32).collect();
+
+        let cases: [([usize; 4], (usize, usize)); 5] = [
+            ([0, 0, 0, 0], (38, 26)),   // no crop
+            ([7, 16, 7, 16], (6, 12)),  // 38 → 6 wide, 26 → 12 tall
+            ([0, 20, 0, 18], (38, 26)), // left+right == width → rejected
+            ([13, 0, 13, 0], (38, 26)), // top+bottom == height → rejected
+            ([100, 0, 0, 0], (38, 26)), // would underflow → rejected
+        ];
+        for (crops, expected) in cases {
+            assert_eq!(cropped_dims(w, h, &crops), expected, "crops={crops:?}");
+            let (out, ow, oh) = apply_crop(&rgb, w, h, &crops, pref).unwrap();
+            assert_eq!((ow, oh), expected, "apply_crop dims, crops={crops:?}");
+            assert_eq!(out.len(), ow * oh * 3, "buffer size, crops={crops:?}");
+        }
+
+        // The cropped pixels are the right ones: (0,0) of the crop is
+        // (left, top) of the source.
+        let crops = [7, 16, 7, 16];
+        let (out, ow, _) = apply_crop(&rgb, w, h, &crops, pref).unwrap();
+        assert_eq!(ow, 6);
+        assert_eq!(out[0], rgb[(7 * w + 16) * 3]);
+        assert_eq!(out[ow * 3 - 1], rgb[(7 * w + 16 + 6) * 3 - 1]);
+    }
+
     #[test]
     fn enforce_decode_limits_rejects_oversized_pixels() {
         let cfg = RawDecodeConfig {

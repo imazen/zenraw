@@ -14,7 +14,10 @@ use zenraw::{FileFormat, OutputMode, RawDecodeConfig, classify};
 /// in the CI -> justfile -> test chain, never a silent runtime check. See the
 /// `test-raw-parity` justfile target for the canonical local path.
 const SAMPLES_DIR_ENV: &str = "ZENRAW_RAW_SAMPLES_DIR";
-const FIVEK_DIR: &str = "/mnt/v/input/fivek/dng";
+/// Env var that points at a directory of FiveK-style DNGs (rawloader-decodable
+/// Bayer DNGs). Same caller-visible gating as [`SAMPLES_DIR_ENV`]: unset means
+/// the DNG parity tests skip; set means the directory MUST hold a `.dng`.
+const FIVEK_DIR_ENV: &str = "ZENRAW_FIVEK_DIR";
 
 /// Resolve the RAW sample corpus directory from the environment.
 ///
@@ -40,20 +43,36 @@ fn load_required_sample(dir: &str, name: &str) -> Vec<u8> {
     })
 }
 
+/// Load the first `.dng` (by sorted name) from `ZENRAW_FIVEK_DIR`.
+///
+/// Returns `None` only when the env var is unset — the caller prints a skip
+/// message and `return`s. When it IS set the corpus was requested, so an
+/// unreadable directory or one without a single `.dng` is a hard failure.
 fn load_first_fivek_dng() -> Option<(String, Vec<u8>)> {
-    let entries = std::fs::read_dir(FIVEK_DIR).ok()?;
-    for entry in entries.filter_map(|e| e.ok()).take(3) {
-        let path = entry.path();
-        if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
-        {
-            let name = path.file_name()?.to_str()?.to_string();
-            let data = std::fs::read(&path).ok()?;
-            return Some((name, data));
-        }
-    }
-    None
+    let dir = match std::env::var(FIVEK_DIR_ENV) {
+        Ok(dir) if !dir.is_empty() => dir,
+        _ => return None,
+    };
+    let entries = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{FIVEK_DIR_ENV}={dir} is set but unreadable: {e}"));
+    let mut dngs: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dng")))
+        .collect();
+    dngs.sort();
+    let path = dngs
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("{FIVEK_DIR_ENV}={dir} is set but contains no .dng file"));
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let data = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "{FIVEK_DIR_ENV}={dir} is set, but {} could not be read: {e}",
+            path.display()
+        )
+    });
+    Some((name, data))
 }
 
 // ── DNG detection agrees with decode ─────────────────────────────────
@@ -61,7 +80,10 @@ fn load_first_fivek_dng() -> Option<(String, Vec<u8>)> {
 #[test]
 fn dng_classify_agrees_with_probe_and_decode() {
     let Some((name, data)) = load_first_fivek_dng() else {
-        eprintln!("Skipping: no FiveK DNG files found at {FIVEK_DIR}");
+        eprintln!(
+            "{FIVEK_DIR_ENV} not set — skipping FiveK DNG parity test \
+             (run `just test-raw-parity` to exercise it)"
+        );
         return;
     };
 
@@ -281,7 +303,10 @@ fn non_raw_correctly_rejected() {
 #[test]
 fn xmp_extraction_consistent_across_methods() {
     let Some((name, data)) = load_first_fivek_dng() else {
-        eprintln!("Skipping: no FiveK DNG files found at {FIVEK_DIR}");
+        eprintln!(
+            "{FIVEK_DIR_ENV} not set — skipping FiveK DNG parity test \
+             (run `just test-raw-parity` to exercise it)"
+        );
         return;
     };
 

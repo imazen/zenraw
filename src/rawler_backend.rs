@@ -84,14 +84,12 @@ pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     let cfa_pattern = extract_cfa_pattern(&raw);
     let is_dng = crate::decode::is_dng_data(data);
 
-    // Use crop area if available for dimensions
-    let (width, height) = if let Some(ref crop) = raw.crop_area {
-        (crop.d.w as u32, crop.d.h as u32)
-    } else if let Some(ref active) = raw.active_area {
-        (active.d.w as u32, active.d.h as u32)
-    } else {
-        (raw.width as u32, raw.height as u32)
-    };
+    // Report the dimensions the default decode produces: the same crop math
+    // `apply_rawler_crop` runs (including its malformed-crop fallback to the
+    // full sensor), so probe and decode(crop = true, orientation = false)
+    // can never disagree on the output geometry.
+    let (width, height) = rawler_cropped_dims(raw.width, raw.height, rawler_crop_rect(&raw));
+    let (width, height) = (width as u32, height as u32);
 
     // Bound probe outputs against the default pixel cap; even probe-only
     // callers shouldn't see arbitrarily large dimensions reported back.
@@ -587,6 +585,42 @@ fn normalize_raw_data(
     }
 }
 
+/// The crop rectangle rawler's decode applies, as `(x, y, w, h)`: the
+/// camera's `crop_area` when present, else the `active_area`, else `None`.
+fn rawler_crop_rect(raw: &rawler::RawImage) -> Option<(usize, usize, usize, usize)> {
+    raw.crop_area
+        .as_ref()
+        .or(raw.active_area.as_ref())
+        .map(|r| (r.p.x, r.p.y, r.d.w, r.d.h))
+}
+
+/// Compute the output dimensions after applying rawler's crop rectangle.
+///
+/// `rect` is `(x, y, w, h)` from [`rawler_crop_rect`]. Returns the `(width,
+/// height)` the default decode produces: the crop size when the rectangle is
+/// valid, or the uncropped sensor size when it is absent, empty, or does not
+/// fit inside the sensor. This is the single source of truth shared by
+/// [`probe`] (so the reported dims match the decoded buffer) and
+/// [`apply_rawler_crop`] (which actually slices the pixels), so probe and
+/// decode can never disagree on the post-crop geometry.
+pub(crate) fn rawler_cropped_dims(
+    width: usize,
+    height: usize,
+    rect: Option<(usize, usize, usize, usize)>,
+) -> (usize, usize) {
+    let Some((x, y, w, h)) = rect else {
+        return (width, height);
+    };
+    // Reject malformed crops: empty, or extending past the sensor (checked
+    // arithmetic so an absurd header offset can't overflow either).
+    let fits_x = x.checked_add(w).is_some_and(|end| end <= width);
+    let fits_y = y.checked_add(h).is_some_and(|end| end <= height);
+    if w == 0 || h == 0 || !fits_x || !fits_y {
+        return (width, height);
+    }
+    (w, h)
+}
+
 /// Apply crop from rawler's crop_area or active_area (Rect-based).
 fn apply_rawler_crop(
     rgb: &[f32],
@@ -595,21 +629,14 @@ fn apply_rawler_crop(
     raw: &rawler::RawImage,
     alloc_pref: crate::alloc_util::AllocPref,
 ) -> Result<(Vec<f32>, usize, usize)> {
-    let rect = raw.crop_area.as_ref().or(raw.active_area.as_ref());
+    let rect = rawler_crop_rect(raw);
+    let (new_w, new_h) = rawler_cropped_dims(width, height, rect);
 
-    let Some(rect) = rect else {
+    // Crop was rejected (invalid / absent) — return the buffer unchanged so the
+    // dims still match what `rawler_cropped_dims` reported (the full sensor).
+    let Some((left, top, _, _)) = rect.filter(|_| (new_w, new_h) != (width, height)) else {
         return Ok((rgb.to_vec(), width, height));
     };
-
-    let left = rect.p.x;
-    let top = rect.p.y;
-    let new_w = rect.d.w;
-    let new_h = rect.d.h;
-
-    // Validate
-    if left + new_w > width || top + new_h > height {
-        return Ok((rgb.to_vec(), width, height));
-    }
 
     // Cropped output is sized from the (untrusted) header dims → default
     // fallible (bounded by `rgb`, but still full-image-scale).
@@ -844,5 +871,46 @@ fn orientation_to_u16(orient: &rawler::Orientation) -> u16 {
         rawler::Orientation::Rotate90 => 6,
         rawler::Orientation::Transverse => 7,
         rawler::Orientation::Rotate270 => 8,
+    }
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::rawler_cropped_dims;
+
+    #[test]
+    fn valid_crop_reports_crop_size() {
+        // Nikon D70-style sensor: 3040x2014 stored, 3008x2000 crop.
+        assert_eq!(
+            rawler_cropped_dims(3040, 2014, Some((16, 7, 3008, 2000))),
+            (3008, 2000)
+        );
+        // Crop flush against the sensor edge is still valid.
+        assert_eq!(
+            rawler_cropped_dims(100, 50, Some((90, 40, 10, 10))),
+            (10, 10)
+        );
+    }
+
+    #[test]
+    fn absent_or_malformed_crop_falls_back_to_full_sensor() {
+        assert_eq!(rawler_cropped_dims(3040, 2014, None), (3040, 2014));
+        // Extends past the right / bottom edge.
+        assert_eq!(
+            rawler_cropped_dims(100, 50, Some((91, 0, 10, 10))),
+            (100, 50)
+        );
+        assert_eq!(
+            rawler_cropped_dims(100, 50, Some((0, 41, 10, 10))),
+            (100, 50)
+        );
+        // Empty crop.
+        assert_eq!(rawler_cropped_dims(100, 50, Some((0, 0, 0, 10))), (100, 50));
+        assert_eq!(rawler_cropped_dims(100, 50, Some((0, 0, 10, 0))), (100, 50));
+        // Offset + size overflows usize: must not panic, must fall back.
+        assert_eq!(
+            rawler_cropped_dims(100, 50, Some((usize::MAX, 0, 10, 10))),
+            (100, 50)
+        );
     }
 }
