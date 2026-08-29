@@ -24,6 +24,18 @@ const B: usize = 2;
 pub(crate) trait CfaColorAt {
     /// Colour index of the sensor site at (`row`, `col`).
     fn color_at(&self, row: usize, col: usize) -> usize;
+
+    /// Size of the repeating CFA tile as `(width, height)`.
+    ///
+    /// `(2, 2)` for Bayer, `(6, 6)` for Fujifilm X-Trans, `(12, 12)` and
+    /// `(2, 8)` for the handful of oddball sensors rawloader knows about.
+    /// `(0, 0)` means the backend could not describe the pattern at all — the
+    /// colour lookup is then meaningless and no demosaic kernel can be correct.
+    ///
+    /// The Bayer kernels below index a precomputed 2×2 tile with `row & 1` /
+    /// `col & 1`, so they are only valid when this returns `(2, 2)`;
+    /// [`demosaic_to_rgb_f32_fallible`] and friends dispatch on it.
+    fn tile_dims(&self) -> (usize, usize);
 }
 
 #[cfg(feature = "rawloader")]
@@ -31,6 +43,13 @@ impl CfaColorAt for rawloader::CFA {
     #[inline]
     fn color_at(&self, row: usize, col: usize) -> usize {
         rawloader::CFA::color_at(self, row, col)
+    }
+
+    #[inline]
+    fn tile_dims(&self) -> (usize, usize) {
+        // `rawloader::CFA` exposes the repeating tile size directly; it is
+        // `(0, 0)` for an empty/unparsed pattern (`CFA::is_valid()` is false).
+        (self.width, self.height)
     }
 }
 
@@ -81,6 +100,11 @@ impl CfaColorAt for BayerCfa {
     fn color_at(&self, row: usize, col: usize) -> usize {
         self.tile[row & 1][col & 1]
     }
+
+    #[inline]
+    fn tile_dims(&self) -> (usize, usize) {
+        (2, 2)
+    }
 }
 
 /// Demosaicing algorithm selection.
@@ -95,12 +119,18 @@ pub enum DemosaicMethod {
     MalvarHeCutler,
 }
 
-/// Demosaic Bayer CFA data to RGB f32 pixels.
+/// Demosaic CFA data to RGB f32 pixels.
 ///
 /// Input: single-channel f32 data (already normalized to 0.0..1.0),
 /// width, height, and CFA pattern from rawloader.
 ///
 /// Output: interleaved RGB f32 data with 3 components per pixel.
+///
+/// `method` selects between the two Bayer kernels and only applies to 2×2
+/// patterns. A non-2×2 CFA (Fujifilm X-Trans is 6×6) is demosaiced with the
+/// pattern-agnostic same-colour-neighbour kernel regardless of `method`,
+/// because the Bayer kernels assume a 2×2 tile and would assign the wrong
+/// colour to most sites.
 ///
 /// Allocates the output buffer infallibly (`vec![]`). The
 /// [`decode`](crate::decode) pipeline uses
@@ -128,9 +158,17 @@ fn demosaic_to_rgb_f32_infallible<C: CfaColorAt + ?Sized>(
     method: DemosaicMethod,
 ) -> Vec<f32> {
     let rgb = vec![0.0f32; width * height * 3];
-    match method {
-        DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
-        DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb),
+    if cfa.tile_dims() == (2, 2) {
+        match method {
+            DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
+            DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb),
+        }
+    } else {
+        // Non-Bayer tile (X-Trans 6×6, 12×12, 2×8, or an undescribed pattern):
+        // the Bayer kernels index a precomputed 2×2 tile and would assign the
+        // wrong colour to most sites. Fall back to the pattern-agnostic
+        // same-colour-neighbour interpolation, which only ever asks the CFA.
+        demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb)
     }
 }
 
@@ -157,6 +195,15 @@ pub(crate) fn demosaic_to_rgb_f32_fallible<C: CfaColorAt + ?Sized>(
     alloc_pref: crate::alloc_util::AllocPref,
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
     use whereat::at;
+    let (tile_w, tile_h) = cfa.tile_dims();
+    if tile_w == 0 || tile_h == 0 {
+        // The backend could not describe the colour filter array at all, so
+        // every `color_at` answer is a guess. Refusing beats emitting an image
+        // whose colours are silently wrong.
+        return Err(at!(crate::error::RawError::UnsupportedFeature(
+            "RAW has no usable CFA pattern description — cannot demosaic".into()
+        )));
+    }
     let n = width
         .checked_mul(height)
         .and_then(|p| p.checked_mul(3))
@@ -168,14 +215,28 @@ pub(crate) fn demosaic_to_rgb_f32_fallible<C: CfaColorAt + ?Sized>(
     // Full-image demosaic output sized from the (untrusted) sensor dims →
     // default fallible.
     let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
-    Ok(match method {
-        DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
-        DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb),
+    Ok(if (tile_w, tile_h) == (2, 2) {
+        match method {
+            DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb),
+            DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb),
+        }
+    } else {
+        // Non-Bayer tile (X-Trans 6×6, 12×12, 2×8). The Bayer kernels index a
+        // precomputed 2×2 tile with `row & 1` / `col & 1`, so on a 6×6 X-Trans
+        // sensor they would read the wrong colour for most interior sites while
+        // the clamped border path used the true `color_at` — the two halves of
+        // the same image disagreeing. Route to the pattern-agnostic kernel,
+        // which is what the rawler backend has always used for these sensors.
+        demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb)
     })
 }
 
 /// Bilinear interpolation demosaicing into a pre-allocated `rgb` buffer
 /// (length `width * height * 3`).
+///
+/// Bayer-only: `rb_at_green_bilinear` assumes a green site's horizontal and
+/// vertical neighbours are the two opposite colours, which holds for a 2×2 tile
+/// and not for X-Trans. Callers dispatch on [`CfaColorAt::tile_dims`].
 fn demosaic_bilinear<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
@@ -184,6 +245,7 @@ fn demosaic_bilinear<C: CfaColorAt + ?Sized>(
     mut rgb: Vec<f32>,
 ) -> Vec<f32> {
     debug_assert_eq!(rgb.len(), width * height * 3);
+    debug_assert_eq!(cfa.tile_dims(), (2, 2), "Bayer kernel needs a 2×2 CFA tile");
 
     for row in 0..height {
         for col in 0..width {
@@ -366,6 +428,7 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     mut rgb: Vec<f32>,
 ) -> Vec<f32> {
     debug_assert_eq!(rgb.len(), width * height * 3);
+    debug_assert_eq!(cfa.tile_dims(), (2, 2), "Bayer kernel needs a 2×2 CFA tile");
 
     // The 5×5 Malvar kernels need a 2-pixel border with clamped access.
     // For images too small to have an interior region, use the safe path.
@@ -706,6 +769,11 @@ impl CfaColorAt for CfaPattern {
     fn color_at(&self, row: usize, col: usize) -> usize {
         CfaPattern::color_at(self, row, col)
     }
+
+    #[inline]
+    fn tile_dims(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 }
 
 /// Bilinear demosaic for X-Trans and other non-Bayer CFA patterns.
@@ -730,11 +798,11 @@ pub(crate) fn demosaic_xtrans_bilinear(
 /// buffer. Used by the rawler backend's decode pipeline; output bytes are
 /// identical to [`demosaic_xtrans_bilinear`].
 #[cfg(feature = "rawler")]
-pub(crate) fn demosaic_xtrans_bilinear_fallible(
+pub(crate) fn demosaic_xtrans_bilinear_fallible<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
-    cfa: &CfaPattern,
+    cfa: &C,
     alloc_pref: crate::alloc_util::AllocPref,
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
     use whereat::at;
@@ -754,12 +822,11 @@ pub(crate) fn demosaic_xtrans_bilinear_fallible(
 
 /// X-Trans bilinear demosaic into a pre-allocated `rgb` buffer (length
 /// `width * height * 3`).
-#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
-fn demosaic_xtrans_bilinear_into(
+fn demosaic_xtrans_bilinear_into<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
-    cfa: &CfaPattern,
+    cfa: &C,
     mut rgb: Vec<f32>,
 ) -> Vec<f32> {
     debug_assert_eq!(rgb.len(), width * height * 3);
@@ -787,15 +854,14 @@ fn demosaic_xtrans_bilinear_into(
 }
 
 /// Average same-color neighbors within a 5×5 window.
-#[cfg_attr(not(feature = "rawler"), allow(dead_code))]
-fn interpolate_channel_xtrans(
+fn interpolate_channel_xtrans<C: CfaColorAt + ?Sized>(
     data: &[f32],
     width: usize,
     height: usize,
     row: usize,
     col: usize,
     target_ch: usize,
-    cfa: &CfaPattern,
+    cfa: &C,
 ) -> f32 {
     let mut sum = 0.0f32;
     let mut count = 0u32;
@@ -1197,6 +1263,200 @@ mod tests {
         let rgb = demosaic_xtrans_bilinear(&data, width, height, &cfa);
         for val in &rgb {
             assert!(*val >= 0.0, "X-Trans produced negative value: {val}");
+        }
+    }
+
+    // ── CFA-tile dispatch (imazen/zenraw#… — X-Trans on the Bayer kernel) ──
+
+    /// A CFA whose pattern the backend could not describe at all.
+    struct UndescribedCfa;
+    impl CfaColorAt for UndescribedCfa {
+        fn color_at(&self, _row: usize, _col: usize) -> usize {
+            0
+        }
+        fn tile_dims(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    /// Fill every sensor site with a value that identifies its CFA colour, so
+    /// "the known channel survived demosaicing" is checkable per pixel.
+    fn fill_by_color<C: CfaColorAt + ?Sized>(cfa: &C, width: usize, height: usize) -> Vec<f32> {
+        let mut data = vec![0.0f32; width * height];
+        for row in 0..height {
+            for col in 0..width {
+                data[row * width + col] = match cfa.color_at(row, col) {
+                    R => 0.8,
+                    G => 0.5,
+                    B => 0.3,
+                    _ => 0.0,
+                };
+            }
+        }
+        data
+    }
+
+    /// **The X-Trans regression.** Every demosaic kernel must leave the channel
+    /// the sensor actually measured untouched at that site. The 2×2 Bayer
+    /// kernels cannot: they read a precomputed `cfa_tile[row & 1][col & 1]`, so
+    /// on a 6×6 X-Trans CFA they write `val` into the wrong channel for most
+    /// interior sites, while the clamped border path (which consults the real
+    /// `color_at`) writes it into the right one — the interior and the border of
+    /// one image disagreeing. Dispatching on `tile_dims()` is what fixes it.
+    ///
+    /// Both `DemosaicMethod`s are checked because both used to reach a
+    /// 2×2-only kernel.
+    #[test]
+    fn xtrans_known_channel_survives_top_level_dispatch() {
+        let cfa = make_xtrans_cfa();
+        let (width, height) = (24, 18);
+        let data = fill_by_color(&cfa, width, height);
+
+        for method in [DemosaicMethod::Bilinear, DemosaicMethod::MalvarHeCutler] {
+            let rgb = demosaic_to_rgb_f32_infallible(&data, width, height, &cfa, method);
+            for row in 0..height {
+                for col in 0..width {
+                    let known = cfa.color_at(row, col);
+                    let idx = (row * width + col) * 3;
+                    let expected = data[row * width + col];
+                    assert!(
+                        (rgb[idx + known] - expected).abs() < 1e-6,
+                        "{method:?}: measured channel {known} clobbered at ({row},{col}): \
+                         got {}, sensor said {expected}",
+                        rgb[idx + known]
+                    );
+                }
+            }
+        }
+    }
+
+    /// A 6×6 CFA must produce the same pixels through the top-level dispatch as
+    /// through the pattern-agnostic kernel called directly — i.e. the dispatch
+    /// really did route away from the Bayer kernels, and routed to *this* one.
+    #[test]
+    fn xtrans_dispatch_matches_pattern_agnostic_kernel() {
+        let cfa = make_xtrans_cfa();
+        let (width, height) = (24, 18);
+        let data = make_gradient_noise(width, height);
+        let direct = demosaic_xtrans_bilinear(&data, width, height, &cfa);
+        for method in [DemosaicMethod::Bilinear, DemosaicMethod::MalvarHeCutler] {
+            let routed = demosaic_to_rgb_f32_infallible(&data, width, height, &cfa, method);
+            assert_eq!(routed.len(), direct.len());
+            for (i, (a, b)) in routed.iter().zip(&direct).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{method:?}: dispatch diverged from the X-Trans kernel at f32 index {i}"
+                );
+            }
+        }
+    }
+
+    /// The dispatch must not disturb Bayer: a 2×2 CFA still selects the Bayer
+    /// kernel the caller asked for, bit for bit. This is what keeps every
+    /// existing Bayer corpus byte-identical across the routing change.
+    #[test]
+    fn bayer_dispatch_still_selects_the_requested_kernel() {
+        let (width, height) = (16, 12);
+        let data = make_gradient_noise(width, height);
+        for pattern in &BAYER_PATTERNS {
+            let cfa = BayerCfa::from_pattern_str(pattern).unwrap();
+            for method in [DemosaicMethod::Bilinear, DemosaicMethod::MalvarHeCutler] {
+                let routed = demosaic_to_rgb_f32_infallible(&data, width, height, &cfa, method);
+                let direct = match method {
+                    DemosaicMethod::Bilinear => demosaic_bilinear(
+                        &data,
+                        width,
+                        height,
+                        &cfa,
+                        vec![0.0f32; width * height * 3],
+                    ),
+                    DemosaicMethod::MalvarHeCutler => demosaic_malvar(
+                        &data,
+                        width,
+                        height,
+                        &cfa,
+                        vec![0.0f32; width * height * 3],
+                    ),
+                };
+                for (i, (a, b)) in routed.iter().zip(&direct).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "{pattern} {method:?}: dispatch changed the Bayer result at index {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A CFA the backend could not describe is refused with a typed error
+    /// rather than demosaiced against a fabricated pattern.
+    #[test]
+    fn undescribed_cfa_is_a_typed_error() {
+        let (width, height) = (8, 8);
+        let data = vec![0.5f32; width * height];
+        let err = demosaic_to_rgb_f32_fallible(
+            &data,
+            width,
+            height,
+            &UndescribedCfa,
+            DemosaicMethod::MalvarHeCutler,
+            crate::alloc_util::AllocPref::default(),
+        )
+        .expect_err("an undescribed CFA must not silently demosaic");
+        assert!(
+            matches!(err.error(), crate::error::RawError::UnsupportedFeature(_)),
+            "expected UnsupportedFeature, got {err:?}"
+        );
+    }
+
+    /// `tile_dims` must report what the pattern actually is — the dispatch is
+    /// only as good as this answer.
+    #[test]
+    fn tile_dims_reports_the_real_pattern_size() {
+        assert_eq!(
+            BayerCfa::from_pattern_str("RGGB").unwrap().tile_dims(),
+            (2, 2)
+        );
+        assert_eq!(make_xtrans_cfa().tile_dims(), (6, 6));
+        assert_eq!(UndescribedCfa.tile_dims(), (0, 0));
+    }
+
+    #[cfg(feature = "rawloader")]
+    #[test]
+    fn rawloader_cfa_tile_dims_match_upstream() {
+        // rawloader::CFA::new maps pattern length → tile size; a 36-char
+        // pattern is X-Trans's 6×6, and an empty pattern is undescribed.
+        assert_eq!(rawloader::CFA::new("RGGB").tile_dims(), (2, 2));
+        let xtrans = "GBGGRGRGRBGBGBGGRGGRGGBGBGBRGRGRGGBG";
+        assert_eq!(xtrans.len(), 36);
+        assert_eq!(rawloader::CFA::new(xtrans).tile_dims(), (6, 6));
+        assert_eq!(rawloader::CFA::new("").tile_dims(), (0, 0));
+    }
+
+    /// End-to-end through the public entry point with a real `rawloader::CFA`:
+    /// the X-Trans pattern that used to hit the Bayer kernel must now preserve
+    /// the measured channel everywhere.
+    #[cfg(feature = "rawloader")]
+    #[test]
+    fn public_entry_routes_rawloader_xtrans_correctly() {
+        let cfa = rawloader::CFA::new("GBGGRGRGRBGBGBGGRGGRGGBGBGBRGRGRGGBG");
+        let (width, height) = (24, 18);
+        let data = fill_by_color(&cfa, width, height);
+        for method in [DemosaicMethod::Bilinear, DemosaicMethod::MalvarHeCutler] {
+            let rgb = demosaic_to_rgb_f32(&data, width, height, &cfa, method);
+            for row in 0..height {
+                for col in 0..width {
+                    let known = CfaColorAt::color_at(&cfa, row, col);
+                    let idx = (row * width + col) * 3;
+                    let expected = data[row * width + col];
+                    assert!(
+                        (rgb[idx + known] - expected).abs() < 1e-6,
+                        "{method:?}: measured channel clobbered at ({row},{col})"
+                    );
+                }
+            }
         }
     }
 }
