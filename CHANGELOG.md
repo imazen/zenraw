@@ -117,6 +117,19 @@
 
 ### Changed
 
+- **`zencodec` / `zencodec-testkit` / `zenpixels` requirements now span the
+  published minor and the next one**: `zencodec >=0.1.26, <0.3.0`,
+  `zencodec-testkit >=0.1.0, <0.3.0`, `zenpixels >=0.2.10, <0.4.0`. For a `0.x`
+  crate Cargo treats the minor as the major, so a plain `"0.1.26"` meant
+  `^0.1.26` = `>=0.1.26, <0.2.0` and a `zencodec 0.2.0` release would have been
+  invisible until this manifest was hand-edited — the coordinated wave the
+  0.1.26 rollout already cost this repo. Floors are unchanged and nothing newer
+  is published, so resolution is identical (`cargo metadata --all-features`: one
+  copy of each). Caveat: the *published* `zencodec-testkit 0.1.0` still declares
+  `zencodec ^0.1.26`, so testkit must republish with its own widened range before
+  `zencodec 0.2.0` ships, or this dev-dep graph would carry two `zencodec`
+  copies. The standing current-plus-next rule is documented in the zencodec
+  repo's `CLAUDE.md`.
 - **`OutputMode::Linear` was documented "not clamped to `[0, 1]`" but is
   clamped.** `color::apply_color_pipeline` → `apply_color_matrix` clamps every
   component as it writes it, and it runs for `Develop` *and* `Linear`. **Chose
