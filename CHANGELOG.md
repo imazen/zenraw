@@ -10,6 +10,32 @@
   single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
   new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
 
+### Changed
+
+- **Third-party dependency pass.** zenraw gitignores its root `Cargo.lock`, so a
+  fresh resolve already picks the newest compatible third-party versions and
+  there was nothing to commit for it; the two **tracked** nested lockfiles were
+  refreshed under a third-party-only constraint (`cargo update -p` over each
+  third-party package, every zen-family crate excluded):
+  `fuzz/Cargo.lock` (29 packages) and `apidoc/Cargo.lock` (14 packages —
+  `rustdoc-types` 0.57.4, `serde` 1.0.229, `syn` 3.0.4, `thiserror` 2.0.20).
+  The fuzz workspace still `cargo check --all-targets` clean.
+
+  Verified the refreshed third-party graph with the CI feature set
+  (`rawler,darktable,exif,xmp,apple,zencodec,ultrahdr`): **234 tests pass, 0
+  fail**, including `bayer_cfa_is_bit_identical_to_rawloader_cfa` — the
+  bit-identity check against rawloader, which is the gate that matters because
+  this pass moved **`rawloader` 0.37.1 → 0.37.2** along with the SIMD
+  primitives **`wide` 1.5.0 → 1.7.0** and **`safe_arch` 1.1.0 → 1.2.0**.
+  Clippy (CI invocation), `cargo fmt --all --check` and
+  `cargo hack check --rust-version` (MSRV 1.93) are clean. No third-party
+  manifest requirement needed widening.
+
+  Note for whoever bumps the zen-family deps (out of scope here):
+  `ultrahdr-core` 0.3.4 → 0.6.0 is available, and `cargo outdated` warns its
+  `transfer` feature — which this manifest selects — is obsolete in 0.6.0, so
+  that bump needs a feature-list edit rather than a version-only change.
+
 ### Fixed
 
 - **Every non-Bayer CFA was demosaiced with the 2×2 Bayer kernel, corrupting
