@@ -49,8 +49,8 @@ let output = decode(data, &config, &Unstoppable)?;
 | `OutputMode` | Pixel format (`PixelDescriptor`) | Bytes/channel | Values |
 |---|---|---|---|
 | `Develop` (default) | `RGB16_SRGB` — display-ready sRGB-encoded | **2 (u16)** | `[0, 65535]`, gamma-encoded, in `with_target` primaries |
-| `Linear` | `RGBF32_LINEAR` — scene-referred linear | 4 (f32) | white-balanced + colour-matrixed, **not** clamped to `[0, 1]` |
-| `CameraRaw` | `RGBF32_LINEAR` (primaries `Unknown`) | 4 (f32) | raw camera values, no WB / matrix |
+| `Linear` | `RGBF32_LINEAR` — scene-referred linear | 4 (f32) | white-balanced + colour-matrixed, clamped to `[0, 1]` (see below) |
+| `CameraRaw` | `RGBF32_LINEAR` (primaries `Unknown`) | 4 (f32) | raw camera values, no WB / matrix, **not** clamped to `1.0` |
 
 There is **no 8-bit output mode**: `Develop` is `u16`, so a thumbnail/web
 pipeline that wants `u8` sRGB must narrow the u16 samples itself (`v >> 8`, or
@@ -102,10 +102,20 @@ Key facts about the layout and value range (verified against the decode path):
   alpha, in `width * height * 3` order (row-major, top-to-bottom). The pixel
   format is `PixelDescriptor::RGBF32_LINEAR` (`ChannelType::F32`,
   `ChannelLayout::Rgb`, `TransferFunction::Linear`).
-- **`OutputMode::Linear` is scene-referred** — white-balanced and
-  colour-matrixed, but **not** clamped to `[0, 1]`. Highlights routinely exceed
-  `1.0`; expect to tone-map or clip yourself before display. `CameraRaw` is also
-  f32 but carries raw camera values with no colour processing.
+- **`OutputMode::Linear` is scene-referred in its transfer function, not in
+  its dynamic range** — white-balanced and colour-matrixed, with no tone curve
+  and no gamma, but **clamped to `[0, 1]`**. Sensor samples are normalised with
+  `clamp(0.0, 1.0)` against the black/white levels, and the combined WB +
+  camera→output matrix clamps every component again as it writes it, so
+  highlights above the sensor's white level are not preserved and negative
+  out-of-gamut components are floored at zero. Values above `1.0` reach the
+  output only via `exposure_ev`, which multiplies after the clamp.
+- **`OutputMode::CameraRaw` is the mode that keeps values above `1.0`.** Sensor
+  samples are normalised with `clamp(0.0, 1.0)`, but demosaicing runs next and
+  the Malvar-He-Cutler Laplacian correction floors at zero without a ceiling, so
+  high-contrast neighbourhoods overshoot. `Linear` and `Develop` lose that
+  overshoot to the colour matrix's clamp; `CameraRaw` skips the colour pipeline
+  and keeps it. Samples are always finite and never negative.
 - **`OutputMode::Develop` (the default)** is display-ready **u16 sRGB**: read it
   the same way but `bytemuck::cast_slice::<u8, u16>(bytes)` for 3×`u16` per pixel
   in `[0, 65535]`.

@@ -12,6 +12,49 @@
 
 ### Fixed
 
+- **Every non-Bayer CFA was demosaiced with the 2×2 Bayer kernel, corrupting
+  colour on the default backend.** `demosaic_malvar` precomputed a 2×2
+  `cfa_tile` and the interior loop read it as `cfa_tile[row & 1][col & 1]`,
+  while the border path used the sensor's true `cfa.color_at(row, col)`. On a
+  Fujifilm X-Trans sensor (a 6×6 CFA) the two halves of one image therefore
+  disagreed: interior sites were assigned the colour a Bayer sensor would have
+  had at that parity, so the measured sample was written into the wrong output
+  channel. The default feature set is `["std", "rawloader", "ultrahdr"]` and
+  `decode::decode` routed every `cpp == 1` image into the Bayer kernels with no
+  CFA-dimension check, so the correct pattern-agnostic kernel was reachable only
+  from the non-default `rawler` backend. `CfaColorAt` now carries
+  `tile_dims()`, and both demosaic entry points dispatch on it: `(2, 2)` keeps
+  the Bayer kernels (bit-identical output for every Bayer sensor — pinned by
+  `bayer_dispatch_still_selects_the_requested_kernel`), any other described tile
+  routes to the same same-colour-neighbour kernel the rawler backend has always
+  used for X-Trans, and a CFA the backend could not describe at all is now a
+  typed `RawError::UnsupportedFeature` instead of pixels demosaiced against a
+  fabricated pattern. Mutation-verified: forcing the Bayer branch back on makes
+  `xtrans_known_channel_survives_top_level_dispatch` fail at interior pixel
+  (2, 3) with "measured channel 1 clobbered … got 0.5125, sensor said 0.5" while
+  the border pixels still pass — the interior/border split, reproduced.
+- **`probe` was the one RAW entry point without panic isolation.**
+  `decode::decode` and both `rawler_backend` entry points wrap their parse call
+  in `std::panic::catch_unwind`; `decode::probe` called `rawloader::decode`
+  directly, on the metadata-only path callers reach for precisely because it is
+  meant to be the cheap, safe one. Now wrapped to match. **Corrected claim:**
+  this is defense-in-depth, not a live host crash — rawloader 0.37.2 wraps its
+  own `decode_unsafe` in `catch_unwind`, so a panicking decoder already
+  surfaced as an `Err`; `Buffer::new` runs outside that guard and the behaviour
+  is not part of rawloader's documented contract (the same reasoning
+  `tests/rawler_panic.rs` already records for rawler). Verified live on the
+  probe path by injecting a `panic!` inside the guard: with it, the new tests
+  return `RawError::Malformed`; without it, they unwind through the caller
+  while the `decode` case keeps passing.
+- **The rawloader backend reported `SensorLayout::Bayer` for every
+  single-channel sensor**, so an X-Trans file was described to callers as
+  Bayer. Now derived from the CFA tile: 2×2 → `Bayer`, 6×6 → `XTrans`,
+  anything else → `Unknown`. Mutation-verified against the new
+  `sensor_layout_distinguishes_bayer_from_xtrans`.
+- **New `tests/synthetic_dng.rs`** builds valid DNGs in-process (little-endian
+  TIFF, one IFD, uncompressed 16-bit strip), so panic isolation, output-mode
+  ranges, and sensor-layout reporting are all covered with no external corpus
+  and no runtime file-existence skips.
 - **Pushes to `main` now cancel their superseded CI runs.** `ci.yml` keyed its
   concurrency group on `${{ github.head_ref || github.run_id }}`.
   `github.head_ref` is populated only for `pull_request` events, so on a push it
@@ -71,6 +114,34 @@
 - CI now tests the rawler backend without rawloader (`rawler-only` job) and checks the two
   feature combinations from #10 in the `feature-perms` job; `just check` mirrors them
   (d2b1d473).
+
+### Changed
+
+- **`OutputMode::Linear` was documented "not clamped to `[0, 1]`" but is
+  clamped.** `color::apply_color_pipeline` → `apply_color_matrix` clamps every
+  component as it writes it, and it runs for `Develop` *and* `Linear`. **Chose
+  to correct the documentation, not the behaviour**, because
+  `apply_color_pipeline` is public API shared by both modes: making the clamp
+  conditional needs either a signature change or a new public function, and
+  removing it outright changes rendering for every `Linear` decode — both are
+  public-API decisions that need the maintainer's approval, not a bug fix.
+  Removing the clamp is also not obviously right on its own: with it deleted,
+  the new `linear_output_is_clamped_to_unit_range` reports `Linear sample 0 =
+  -2.6078527`, i.e. deeply negative out-of-gamut components, so an unclamped
+  `Linear` needs a deliberate gamut policy rather than a deletion. Flagged for a
+  maintainer decision.
+- **`CameraRaw` is the mode that is genuinely unclamped above `1.0`** — and the
+  docs said the opposite of that too. Found by measurement while pinning the
+  above: sensor samples are normalised with `clamp(0.0, 1.0)`, but demosaicing
+  runs next and the Malvar-He-Cutler Laplacian correction floors at zero with no
+  ceiling, so high-contrast neighbourhoods overshoot; `Linear`/`Develop` lose the
+  overshoot to the colour matrix, `CameraRaw` keeps it. The "not clamped" /
+  "unclamped" / "highlights routinely exceed 1.0" claims were repeated in
+  `README.md`, `README.crates.md`, `docs/architecture.md` and the `OutputMode`
+  rustdoc; all four are corrected, and the ranges are pinned by
+  `linear_output_is_clamped_to_unit_range`,
+  `camera_raw_preserves_demosaic_overshoot_above_one` and
+  `exposure_ev_multiplies_after_the_clamp`.
 
 ### Documentation
 

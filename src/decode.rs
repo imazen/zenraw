@@ -49,11 +49,35 @@ pub enum OutputMode {
     Develop,
     /// Linear scene-referred: WB + color matrix only.
     /// Produces **f32** linear RGB (`PixelDescriptor::RGBF32_LINEAR`) in
-    /// target primaries, not clamped to `[0, 1]`.
+    /// target primaries.
+    ///
+    /// **Clamped to `[0, 1]` by the colour pipeline.** The combined
+    /// white-balance + camera→output matrix is applied by
+    /// [`color::apply_color_pipeline`](crate::color::apply_color_pipeline),
+    /// which clamps every component as it writes it, so highlights that
+    /// exceeded the sensor's white level are not preserved and negative
+    /// out-of-gamut components are floored at zero. Values above `1.0` reach
+    /// the output only through [`exposure_ev`](RawDecodeConfig::exposure_ev),
+    /// which is a plain multiplier applied *after* the clamp.
+    ///
+    /// This mode is therefore scene-referred in its *transfer function* (no
+    /// tone curve, no gamma — unlike [`Develop`](Self::Develop)) but not in its
+    /// dynamic range. [`CameraRaw`](Self::CameraRaw) is the mode that keeps
+    /// values above `1.0`: it skips the colour pipeline, so the demosaic
+    /// overshoot survives.
     Linear,
     /// Raw camera values: no WB, no color matrix.
     /// Produces **f32** RGB (`PixelDescriptor::RGBF32_LINEAR`, primaries
     /// `Unknown`) in camera color space.
+    ///
+    /// The only mode that is **not clamped to `1.0`**. Sensor samples are
+    /// normalised against the black/white levels with `clamp(0.0, 1.0)`, but
+    /// demosaicing runs afterwards and the Malvar-He-Cutler kernels' Laplacian
+    /// correction has a floor (`.max(0.0)`) and no ceiling, so high-contrast
+    /// neighbourhoods overshoot past `1.0`. [`Linear`](Self::Linear) and
+    /// [`Develop`](Self::Develop) lose that overshoot to the colour matrix's
+    /// clamp; this mode skips the colour pipeline and keeps it. Values are
+    /// always finite and never negative.
     CameraRaw,
 }
 
@@ -372,8 +396,29 @@ pub struct RawInfo {
 pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
-    let raw =
-        rawloader::decode(&mut std::io::Cursor::new(data)).map_err(|e| at!(RawError::from(e)))?;
+    // Decoder code can panic on malformed inputs — `CFA::new` alone panics on
+    // any CFAPattern tag whose length is not 0/4/16/36/144, and on unknown
+    // colour letters. `decode` and both rawler entry points have always
+    // contained that; `probe` was the one entry point that did not, on the
+    // metadata-only path callers reach for precisely because it is meant to be
+    // the cheap, safe one.
+    //
+    // rawloader 0.37.2 happens to wrap its own `decode_unsafe` in
+    // `catch_unwind`, so today a panicking *decoder* already surfaces as an
+    // `Err` — but `Buffer::new` runs outside that guard, the behaviour is not
+    // part of rawloader's documented contract, and `tests/rawler_panic.rs`
+    // records the identical reasoning for the rawler backend. This is the
+    // defense-in-depth that keeps the host alive regardless of which upstream
+    // path panics.
+    let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawloader::decode(&mut std::io::Cursor::new(data))
+    }))
+    .map_err(|_| {
+        at!(RawError::Malformed(
+            "rawloader panicked while probing".into()
+        ))
+    })?
+    .map_err(|e| at!(RawError::from(e)))?;
 
     let pixels = (raw.width as u64).checked_mul(raw.height as u64);
     let limit = RawDecodeConfig::default().max_pixels;
@@ -446,12 +491,28 @@ pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
         crop_rect,
         active_area: None, // rawloader doesn't distinguish active_area from crop
         baseline_exposure: None, // rawloader doesn't extract this
-        sensor_layout: if raw.cpp > 1 {
-            SensorLayout::LinearRaw
-        } else {
-            SensorLayout::Bayer
-        },
+        sensor_layout: rawloader_sensor_layout(&raw),
     })
+}
+
+/// Classify what the rawloader backend is actually looking at.
+///
+/// `cpp > 1` is already-demosaiced data. Otherwise the repeating CFA tile
+/// decides: 2×2 is Bayer, 6×6 is Fujifilm X-Trans, and anything else (a 12×12
+/// or 2×8 oddball, or a pattern rawloader could not describe) is `Unknown`.
+/// Reporting `Bayer` for every single-channel sensor, as this used to, told
+/// callers an X-Trans file was Bayer.
+#[cfg(feature = "rawloader")]
+fn rawloader_sensor_layout(raw: &rawloader::RawImage) -> SensorLayout {
+    use crate::demosaic::CfaColorAt;
+    if raw.cpp > 1 {
+        return SensorLayout::LinearRaw;
+    }
+    match raw.cfa.tile_dims() {
+        (2, 2) => SensorLayout::Bayer,
+        (6, 6) => SensorLayout::XTrans,
+        _ => SensorLayout::Unknown,
+    }
 }
 
 /// Decode a RAW/DNG file to a pixel buffer.
@@ -610,7 +671,7 @@ pub(crate) fn decode(
         crop_rect,
         active_area: None,
         baseline_exposure: None,
-        sensor_layout: SensorLayout::Bayer,
+        sensor_layout: rawloader_sensor_layout(&raw),
     };
 
     match config.output {

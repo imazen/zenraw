@@ -57,7 +57,7 @@ Raw file bytes (&[u8])
 
                 Final output conversion (RawDecodeConfig::output):
                     OutputMode::Develop   → RGB16_SRGB u16 (default; sRGB gamma + quantise)
-                    OutputMode::Linear    → RGBF32_LINEAR f32 (scene-referred, unclamped)
+                    OutputMode::Linear    → RGBF32_LINEAR f32 (scene-referred TF, clamped [0,1])
                     OutputMode::CameraRaw → RGBF32_LINEAR f32, primaries Unknown (no WB/matrix)
                     (darktable backend: RGB8_SRGB or RGBF32_LINEAR, whatever darktable-cli wrote)
 ```
@@ -157,7 +157,7 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 2. **`no_std + alloc`** — std opt-in for I/O (rawloader requires std)
 3. **Cooperative cancellation** — `Stop` tokens throughout for responsive cancellation
 4. **Non-exhaustive types** — future-proof public API
-5. **Display-ready default, scene-referred opt-in** — `OutputMode::Develop` (u16 sRGB) by default; `OutputMode::Linear` for unclamped linear f32
+5. **Display-ready default, scene-referred opt-in** — `OutputMode::Develop` (u16 sRGB) by default; `OutputMode::Linear` for linear f32 (no tone curve or gamma, but clamped to `[0,1]` by the colour matrix); `OutputMode::CameraRaw` when the demosaic overshoot above `1.0` must survive
 
 ## Dependencies
 
