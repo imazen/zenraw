@@ -37,7 +37,7 @@
 #![cfg(all(feature = "rawloader", not(feature = "rawler")))]
 
 use enough::Unstoppable;
-use zenraw::RawDecodeConfig;
+use zenraw::{OutputMode, RawDecodeConfig};
 
 // TIFF field types.
 const BYTE: u16 = 1;
@@ -364,4 +364,161 @@ fn sensor_layout_distinguishes_bayer_from_xtrans() {
         zenraw::SensorLayout::XTrans,
         "a 36-entry CFAPattern is X-Trans's 6×6 tile, not Bayer"
     );
+}
+
+// ── End-to-end X-Trans demosaic through the public `decode` ───────────────
+
+/// Build a DNG with the given square CFA tile whose sensor samples encode the
+/// colour of each site, so the measured channel is checkable after decoding.
+///
+/// Sample values are chosen well inside the black/white range so normalisation
+/// (`(v - black) / (white - black)`, clamped) is exact and distinct per colour.
+fn dng_with_cfa_tile(tile: &[u8], tile_size: usize) -> (Vec<u8>, Vec<f32>) {
+    assert_eq!(tile.len(), tile_size * tile_size);
+    const W: u32 = 24;
+    const H: u32 = 18;
+
+    // 0 = R, 1 = G, 2 = B — the same encoding rawloader's CFAPattern uses.
+    let level = |c: u8| -> u16 {
+        match c {
+            0 => 48_000,
+            1 => 32_000,
+            _ => 16_000,
+        }
+    };
+
+    let mut strip = Vec::new();
+    let mut expected = Vec::new();
+    for row in 0..H as usize {
+        for col in 0..W as usize {
+            let c = tile[(row % tile_size) * tile_size + (col % tile_size)];
+            let v = level(c);
+            strip.extend_from_slice(&v.to_le_bytes());
+            expected.push(v as f32 / u16::MAX as f32);
+        }
+    }
+    strip.extend_from_slice(&[0u8; 64]);
+
+    let entries = vec![
+        short(0x0100, W as u16),
+        short(0x0101, H as u16),
+        short(0x0102, 16),
+        short(0x0103, 1),
+        short(0x0106, 32803),
+        ascii(0x010F, "ZenRaw"),
+        ascii(0x0110, "SyntheticDng"),
+        long(0x0111, 0),
+        short(0x0115, 1),
+        long(0x0117, W * H * 2),
+        bytes(0x828E, tile),
+        bytes(0xC612, &[1, 4, 0, 0]),
+        short(0xC61D, u16::MAX),
+    ];
+    (build_tiff(entries, &strip, 0x0111), expected)
+}
+
+/// The standard Fujifilm X-Trans 6×6 tile, in rawloader's colour encoding.
+#[rustfmt::skip]
+const XTRANS_TILE: [u8; 36] = [
+    1, 2, 1, 1, 0, 1,
+    0, 1, 0, 2, 1, 2,
+    1, 2, 1, 1, 0, 1,
+    1, 0, 1, 1, 2, 1,
+    2, 1, 2, 0, 1, 0,
+    1, 0, 1, 1, 2, 1,
+];
+
+/// **The X-Trans regression, end to end.** `zenraw::decode` on the default
+/// backend must leave the channel the sensor actually measured untouched at
+/// every site of a 6×6 CFA. `OutputMode::CameraRaw` skips white balance and the
+/// colour matrix, so what comes out is the demosaic result directly.
+///
+/// Before the CFA-tile dispatch, the interior of this image was demosaiced with
+/// the 2×2 Bayer kernel — which reads `cfa_tile[row & 1][col & 1]` and so wrote
+/// the measured value into the wrong channel for most interior sites, while the
+/// clamped border path used the real `color_at`.
+///
+/// rawloader's own camera database carries 19 models with a 36-character
+/// (6×6) `color_pattern` — every X-Trans Fujifilm it supports — so this was
+/// reachable on real files, not only on synthetic ones.
+#[test]
+fn decode_preserves_measured_channel_for_xtrans_cfa() {
+    let (data, expected) = dng_with_cfa_tile(&XTRANS_TILE, 6);
+
+    let info = zenraw::probe(&data, &Unstoppable).expect("probe 6x6 DNG");
+    assert_eq!(info.sensor_layout, zenraw::SensorLayout::XTrans);
+
+    for method in [
+        zenraw::DemosaicMethod::Bilinear,
+        zenraw::DemosaicMethod::MalvarHeCutler,
+    ] {
+        let config = RawDecodeConfig::new()
+            .with_output(OutputMode::CameraRaw)
+            .with_demosaic(method);
+        let out = zenraw::decode(&data, &config, &Unstoppable).expect("decode 6x6 DNG");
+        let w = out.info.width as usize;
+        let h = out.info.height as usize;
+        let bytes = out.pixels.copy_to_contiguous_bytes();
+        let px: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        assert_eq!(px.len(), w * h * 3, "{method:?}: unexpected buffer size");
+
+        for row in 0..h {
+            for col in 0..w {
+                let known = XTRANS_TILE[(row % 6) * 6 + (col % 6)] as usize;
+                let want = expected[row * w + col];
+                let got = px[(row * w + col) * 3 + known];
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "{method:?}: measured channel {known} clobbered at ({row},{col}): \
+                     got {got}, sensor said {want}"
+                );
+            }
+        }
+    }
+}
+
+/// The same end-to-end path on a 2×2 Bayer tile must be unchanged — this is the
+/// byte-level guard that the dispatch did not disturb Bayer sensors.
+#[test]
+fn decode_preserves_measured_channel_for_bayer_cfa() {
+    let tile: [u8; 4] = [0, 1, 1, 2]; // RGGB
+    let (data, expected) = dng_with_cfa_tile(&tile, 2);
+
+    let info = zenraw::probe(&data, &Unstoppable).expect("probe 2x2 DNG");
+    assert_eq!(info.sensor_layout, zenraw::SensorLayout::Bayer);
+
+    for method in [
+        zenraw::DemosaicMethod::Bilinear,
+        zenraw::DemosaicMethod::MalvarHeCutler,
+    ] {
+        let config = RawDecodeConfig::new()
+            .with_output(OutputMode::CameraRaw)
+            .with_demosaic(method);
+        let out = zenraw::decode(&data, &config, &Unstoppable).expect("decode 2x2 DNG");
+        let w = out.info.width as usize;
+        let h = out.info.height as usize;
+        let bytes = out.pixels.copy_to_contiguous_bytes();
+        let px: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        for row in 0..h {
+            for col in 0..w {
+                let known = tile[(row % 2) * 2 + (col % 2)] as usize;
+                let want = expected[row * w + col];
+                let got = px[(row * w + col) * 3 + known];
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "{method:?}: Bayer measured channel clobbered at ({row},{col})"
+                );
+            }
+        }
+    }
 }

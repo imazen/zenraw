@@ -33,6 +33,18 @@
   `xtrans_known_channel_survives_top_level_dispatch` fail at interior pixel
   (2, 3) with "measured channel 1 clobbered … got 0.5125, sensor said 0.5" while
   the border pixels still pass — the interior/border split, reproduced.
+  Reproduced end to end through the public API as well: with the dispatch
+  reverted, `zenraw::decode` on the default backend writes `0.549` into the red
+  channel of a 6×6-CFA DNG at interior pixel (2, 4) where the sensor measured
+  `0.732` (`decode_preserves_measured_channel_for_xtrans_cfa`, using
+  `OutputMode::CameraRaw` so the demosaic output is observed directly), while
+  `decode_preserves_measured_channel_for_bayer_cfa` keeps passing under the same
+  mutation — the change is scoped to non-2×2 CFAs. Real-world reach, measured
+  from rawloader 0.37.2's own camera database: **19 models carry a 36-character
+  (6×6) `color_pattern`** — every X-Trans Fujifilm it supports (X-Pro1/2,
+  X-T1/T2/T10/T20, X-E1/E2/E2S/E3, X-M1, X100S/T/F, X20, X30, X70, XQ1, XQ2) —
+  plus one 16-character (2×8) oddball (Canon PowerShot Pro70), against 488
+  ordinary 4-character Bayer entries.
 - **`probe` was the one RAW entry point without panic isolation.**
   `decode::decode` and both `rawler_backend` entry points wrap their parse call
   in `std::panic::catch_unwind`; `decode::probe` called `rawloader::decode`
