@@ -80,8 +80,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build
+      # Hard gate. Until 2026-08-29 this step read:
+      #
+      #   if [ -d fuzz/regression ] && [ "$(ls fuzz/regression/ | wc -l)" -gt 0 ]; then
+      #     cargo test --test fuzz_regression 2>/dev/null || echo "No regression test found..."
+      #   fi
+      #
+      # which could not fail: `|| echo` swallowed the exit status of a genuinely
+      # failing suite, `2>/dev/null` hid the reason, and the `if` skipped the whole
+      # thing when the corpus went missing. tests/fuzz_regression.rs has existed
+      # the whole time, so the fallback was masking real failures, not a missing
+      # target. Do not reintroduce a fallback: if the suite cannot run, go red.
       - name: Regression seeds
-        run: |
-          if [ -d fuzz/regression ] && [ "$(ls fuzz/regression/ 2>/dev/null | wc -l)" -gt 0 ]; then
-            cargo test --test fuzz_regression 2>/dev/null || echo "No regression test found — seeds exist but no test harness"
-          fi
+        run: cargo test --test fuzz_regression

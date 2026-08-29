@@ -12,6 +12,20 @@
 
 ### Fixed
 
+- **The `Fuzz regression` CI job could not fail.** It ran
+  `cargo test --test fuzz_regression 2>/dev/null || echo "No regression test
+  found…"` inside an `if [ -d fuzz/regression ]` guard, so a genuinely failing
+  suite, a missing corpus, and a missing harness all reported green.
+  `tests/fuzz_regression.rs` has existed the whole time, so the fallback was
+  masking real failures rather than covering a missing target. The step is now
+  a bare `cargo test --test fuzz_regression`, and the harness asserts at least
+  `MIN_SEEDS` (1) replayable seeds are present — `zenutils_fuzz::RegressionSuite`
+  treats a missing or empty seed dir as a clean no-op, so an emptied or renamed
+  `fuzz/regression/` previously passed without replaying anything.
+  Mutation-verified: removing the corpus and injecting a panic into the
+  `classify` target each fail the test with exit code 101, the latter on the
+  `x3f-oob-panic-issue12.bin` seed.
+
 - **Probe/decode dimension parity on the rawler backend** (issue #5). `rawler_backend::probe`
   reported the camera `crop_area` / `active_area` size unconditionally, while the decode path's
   `apply_rawler_crop` fell back to the full sensor when that rectangle was empty or extended
