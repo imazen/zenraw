@@ -44,7 +44,7 @@
   (6×6) `color_pattern`** — every X-Trans Fujifilm it supports (X-Pro1/2,
   X-T1/T2/T10/T20, X-E1/E2/E2S/E3, X-M1, X100S/T/F, X20, X30, X70, XQ1, XQ2) —
   plus one 16-character (2×8) oddball (Canon PowerShot Pro70), against 488
-  ordinary 4-character Bayer entries.
+  ordinary 4-character Bayer entries. (7fed6ee, 298cc96)
 - **`probe` was the one RAW entry point without panic isolation.**
   `decode::decode` and both `rawler_backend` entry points wrap their parse call
   in `std::panic::catch_unwind`; `decode::probe` called `rawloader::decode`
@@ -57,16 +57,16 @@
   `tests/rawler_panic.rs` already records for rawler). Verified live on the
   probe path by injecting a `panic!` inside the guard: with it, the new tests
   return `RawError::Malformed`; without it, they unwind through the caller
-  while the `decode` case keeps passing.
+  while the `decode` case keeps passing. (f0c3b32)
 - **The rawloader backend reported `SensorLayout::Bayer` for every
   single-channel sensor**, so an X-Trans file was described to callers as
   Bayer. Now derived from the CFA tile: 2×2 → `Bayer`, 6×6 → `XTrans`,
   anything else → `Unknown`. Mutation-verified against the new
-  `sensor_layout_distinguishes_bayer_from_xtrans`.
+  `sensor_layout_distinguishes_bayer_from_xtrans`. (f0c3b32)
 - **New `tests/synthetic_dng.rs`** builds valid DNGs in-process (little-endian
   TIFF, one IFD, uncompressed 16-bit strip), so panic isolation, output-mode
   ranges, and sensor-layout reporting are all covered with no external corpus
-  and no runtime file-existence skips.
+  and no runtime file-existence skips. (f0c3b32, 298cc96)
 - **Pushes to `main` now cancel their superseded CI runs.** `ci.yml` keyed its
   concurrency group on `${{ github.head_ref || github.run_id }}`.
   `github.head_ref` is populated only for `pull_request` events, so on a push it
@@ -154,7 +154,7 @@
   the new `linear_output_is_clamped_to_unit_range` reports `Linear sample 0 =
   -2.6078527`, i.e. deeply negative out-of-gamut components, so an unclamped
   `Linear` needs a deliberate gamut policy rather than a deletion. Flagged for a
-  maintainer decision.
+  maintainer decision. (f0c3b32)
 - **`CameraRaw` is the mode that is genuinely unclamped above `1.0`** — and the
   docs said the opposite of that too. Found by measurement while pinning the
   above: sensor samples are normalised with `clamp(0.0, 1.0)`, but demosaicing
@@ -166,7 +166,7 @@
   rustdoc; all four are corrected, and the ranges are pinned by
   `linear_output_is_clamped_to_unit_range`,
   `camera_raw_preserves_demosaic_overshoot_above_one` and
-  `exposure_ev_multiplies_after_the_clamp`.
+  `exposure_ev_multiplies_after_the_clamp`. (f0c3b32)
 
 ### Documentation
 
