@@ -30,3 +30,32 @@ bit. Non-finite input semantics are not established by these comparisons.
 Baseline default+_dev tests and strict library/bench clippy passed; feature-gated
 backend tests are not covered by that baseline. Whole-decode profiling follows
 separately; no end-to-end speedup is claimed.
+
+## Whole decode, both backends
+
+Fixture: `/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef`,
+5,844,273 bytes, SHA256
+`44e88bc77b7a531b22647bcd07b9393c4568062e8f0906d3bbdecb42fbe29e03`.
+Rawloader outputs 3038×2014; rawler outputs 3008×2000. The backend outputs
+are not asserted equal to each other. Each backend's native/scalar pair has
+identical dimensions and every output byte matches, in all three modes.
+
+| Backend / mode | Native ms | Scalar ms | Paired scalar delta 95% CI |
+|---|---:|---:|---|
+| rawloader / Develop | 114.1 | 113.3 | −1.8% to +0.4% |
+| rawloader / Linear | 61.4 | 61.3 | −1.7% to +1.4% |
+| rawloader / CameraRaw | 58.2 | 58.4 | −1.2% to +1.7% |
+| rawler / Develop | 242.7 | 243.4 | −0.3% to +0.9% |
+| rawler / Linear | 67.7 | 67.7 | −1.0% to +1.1% |
+| rawler / CameraRaw | 64.4 | 64.4 | −1.0% to +1.2% |
+
+All six intervals cross zero. No whole-decode speedup is claimed; one NEF
+fixture does not represent every camera, sensor layout or RAW format.
+The configurations use different output crops and development paths, so the
+table is not a backend quality/speed ranking.
+
+Commands: `ZENRAW_BENCH_INPUT=<fixture> cargo bench --features _dev --bench
+kernel_tiers -- --group=decode`, then the same command with
+`--features rawler,_dev`. Both used the resource settings above. Harness source
+is `benches/kernel_tiers.rs`; token toggles and correctness checks are outside
+timing. Both arms include decoding and output allocation.

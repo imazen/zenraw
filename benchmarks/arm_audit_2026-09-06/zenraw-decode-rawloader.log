@@ -1,0 +1,45 @@
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `bench` profile [optimized] target(s) in 0.27s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-74c320e3f9976eba)
+rawloader/develop: 3038x2014 exact tier pixels, fixture=/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef
+rawloader/linear: 3038x2014 exact tier pixels, fixture=/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef
+rawloader/camera_raw: 3038x2014 exact tier pixels, fixture=/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef
+[zenbench] calibration: int=0.27ns/iter mem_bw=118.4GiB/s mem_lat=7.5ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.22ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788734112-16b6b.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788734112-16b6b
+  git: 5591b3b65d22c9d35e4ce17c721d4fd9e0b6d37f
+═══════════════════════════════════════════════════════════════
+
+  decode/rawloader/develop  44 rounds × 1 calls
+              mean ±mad ms  95% CI vs base     ops/s
+  ├─ neon     114.1 ±2.5ms  [113.4–114.8]ms    53.6M
+  ╰─ scalar   113.3 ±2.1ms  [-1.8%–+0.4%]      54.0M [1]
+
+  scalar  ██████████████████████████████████████████████████████████ 54.0 Mops/s
+  neon    ██████████████████████████████████████████████████████████ 53.6 Mops/s
+  [1] CI crosses zero
+
+  decode/rawloader/linear  82 rounds × 1 calls
+             mean ±mad ms  95% CI vs base   ops/s
+  ├─ neon     61.4 ±2.8ms  [60.8–61.9]ms    99.7M
+  ╰─ scalar   61.3 ±3.3ms  [-1.7%–+1.4%]    99.9M [1]
+
+  scalar  ██████████████████████████████████████████████████████████ 99.9 Mops/s
+  neon    ██████████████████████████████████████████████████████████ 99.7 Mops/s
+  [1] CI crosses zero
+
+  decode/rawloader/camera_raw  86 rounds × 1 calls
+             mean ±mad ms  95% CI vs base   ops/s
+  ├─ neon     58.2 ±2.2ms  [57.8–58.7]ms    105M
+  ╰─ scalar   58.4 ±3.3ms  [-1.2%–+1.7%]    105M [1]
+
+  neon    ███████████████████████████████████████████████████████████ 105 Mops/s
+  scalar  ███████████████████████████████████████████████████████████ 105 Mops/s
+  [1] CI crosses zero
+
+  total: 53.7s  (21 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

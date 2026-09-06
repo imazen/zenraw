@@ -1,0 +1,136 @@
+   Compiling once_cell v1.21.4
+   Compiling syn v2.0.119
+   Compiling num-traits v0.2.19
+   Compiling pin-project-lite v0.2.17
+   Compiling either v1.18.0
+   Compiling tracing-core v0.1.36
+   Compiling rayon v1.12.0
+   Compiling tracing v0.1.44
+   Compiling hashbrown v0.17.1
+   Compiling jxl-bitstream v1.1.0
+   Compiling equivalent v1.0.2
+   Compiling jxl-oxide-common v1.0.0
+   Compiling indexmap v2.14.1
+   Compiling jxl-grid v0.6.2
+   Compiling jxl-coding v1.0.1
+   Compiling jxl-threadpool v1.0.0
+   Compiling target-features v0.1.6
+   Compiling jxl-image v0.13.0
+   Compiling jxl-modular v0.11.3
+   Compiling winnow v1.0.4
+   Compiling num-integer v0.1.47
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling archmage-macros v0.9.28
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling jxl-vardct v0.11.1
+   Compiling toml_write v0.1.2
+   Compiling winnow v0.7.15
+   Compiling alloc-stdlib v0.2.4
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling archmage v0.9.28
+   Compiling zerocopy-derive v0.8.56
+   Compiling no_std_io2 v0.9.4
+   Compiling toml_edit v0.22.27
+   Compiling object v0.37.3
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling getrandom v0.4.3
+   Compiling jxl-frame v0.13.3
+   Compiling hashbrown v0.16.1
+   Compiling zerocopy v0.8.56
+   Compiling toml v0.8.23
+   Compiling magetypes v0.9.28
+   Compiling proc-macro-crate v3.5.0
+   Compiling brotli-decompressor v5.0.3
+   Compiling num-bigint v0.4.8
+   Compiling jxl-color v0.11.0
+   Compiling rle-decode-fast v1.0.3
+   Compiling gimli v0.32.3
+   Compiling zune-core v0.5.3
+   Compiling core-foundation-sys v0.8.7
+   Compiling zune-jpeg v0.5.15
+   Compiling iana-time-zone v0.1.65
+   Compiling moxcms v0.8.1
+   Compiling linear-srgb v0.6.12
+   Compiling addr2line v0.25.1
+   Compiling libflate_lz77 v2.3.0
+   Compiling num-rational v0.4.2
+   Compiling jxl-render v0.12.4
+   Compiling jxl-jbr v0.2.1
+   Compiling num_enum_derive v0.7.6
+   Compiling multiversion-macros v0.8.0
+   Compiling rawler v0.7.2
+   Compiling enumn v0.1.14
+   Compiling num-iter v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling adler32 v1.2.0
+   Compiling rustc-demangle v0.1.28
+   Compiling dary_heap v0.3.9
+   Compiling libflate v2.3.1
+   Compiling num v0.4.3
+   Compiling jxl-oxide v0.12.6
+   Compiling image v0.25.10
+   Compiling uuid v1.26.0
+   Compiling backtrace v0.3.76
+   Compiling multiversion v0.8.0
+   Compiling num_enum v0.7.6
+   Compiling chrono v0.4.45
+   Compiling half v2.7.1
+   Compiling bitstream-io v4.10.0
+   Compiling memmap2 v0.9.11
+   Compiling itertools v0.14.0
+   Compiling hex v0.4.3
+   Compiling weezl v0.1.12
+   Compiling md5 v0.8.1
+   Compiling log v0.4.34
+   Compiling ultrahdr-core v0.3.4
+   Compiling rawloader v0.37.2
+   Compiling zensim v0.2.7
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `bench` profile [optimized] target(s) in 21.48s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-95905490f657e193)
+rawler/develop: 3008x2000 exact tier pixels, fixture=/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef
+rawler/linear: 3008x2000 exact tier pixels, fixture=/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef
+rawler/camera_raw: 3008x2000 exact tier pixels, fixture=/Users/lilith/work/codec-artifacts/zenraw-arm-audit/nikon_d40.nef
+[zenbench] calibration: int=0.28ns/iter mem_bw=106.1GiB/s mem_lat=7.3ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.22ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788734241-16ed4.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788734241-16ed4
+  git: 5591b3b65d22c9d35e4ce17c721d4fd9e0b6d37f
+═══════════════════════════════════════════════════════════════
+
+  decode/rawler/develop  21 rounds × 1 calls
+              mean ±mad ms  95% CI vs base     ops/s
+  ├─ neon     242.7 ±1.2ms  [241.9–243.5]ms    24.8M
+  ╰─ scalar   243.4 ±2.4ms  [-0.3%–+0.9%]      24.7M [1]
+
+  neon    ██████████████████████████████████████████████████████████ 24.8 Mops/s
+  scalar  ██████████████████████████████████████████████████████████ 24.7 Mops/s
+  [1] CI crosses zero
+
+  decode/rawler/linear  74 rounds × 1 calls
+             mean ±mad ms  95% CI vs base   ops/s
+  ├─ neon     67.7 ±2.5ms  [67.3–68.1]ms    88.8M
+  ╰─ scalar   67.7 ±1.6ms  [-1.0%–+1.1%]    88.8M [1]
+
+  neon    ██████████████████████████████████████████████████████████ 88.8 Mops/s
+  scalar  ██████████████████████████████████████████████████████████ 88.8 Mops/s
+  [1] CI crosses zero
+
+  decode/rawler/camera_raw  78 rounds × 1 calls
+             mean ±mad ms  95% CI vs base   ops/s
+  ├─ neon     64.4 ±2.1ms  [64.0–64.7]ms    93.5M
+  ╰─ scalar   64.4 ±1.9ms  [-1.0%–+1.2%]    93.3M [1]
+
+  neon    ██████████████████████████████████████████████████████████ 93.5 Mops/s
+  scalar  ██████████████████████████████████████████████████████████ 93.3 Mops/s
+  [1] CI crosses zero
+
+  total: 50.9s  (12 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

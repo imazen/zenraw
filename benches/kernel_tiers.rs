@@ -69,4 +69,59 @@ fn bench(suite: &mut Suite) {
     set_simd(true);
 }
 
-zenbench::main!(bench);
+// Whole-decode cells are explicitly enabled by the caller with a fixture path.
+// Backend selection remains Cargo feature controlled (rawloader by default;
+// rawler when that feature is enabled).
+fn bench_decode(suite: &mut Suite) {
+    let Ok(path) = std::env::var("ZENRAW_BENCH_INPUT") else {
+        return;
+    };
+    let data: &'static [u8] = Box::leak(
+        std::fs::read(&path)
+            .expect("RAW fixture")
+            .into_boxed_slice(),
+    );
+    let backend = if cfg!(feature = "rawler") {
+        "rawler"
+    } else {
+        "rawloader"
+    };
+    for (name, mode) in [
+        ("develop", zenraw::OutputMode::Develop),
+        ("linear", zenraw::OutputMode::Linear),
+        ("camera_raw", zenraw::OutputMode::CameraRaw),
+    ] {
+        let config = zenraw::RawDecodeConfig::default().with_output(mode);
+        assert!(set_simd(false));
+        let scalar = zenraw::decode(data, &config, &enough::Unstoppable).unwrap();
+        assert!(set_simd(true));
+        let simd = zenraw::decode(data, &config, &enough::Unstoppable).unwrap();
+        assert_eq!(scalar.pixels.width(), simd.pixels.width());
+        assert_eq!(scalar.pixels.height(), simd.pixels.height());
+        assert_eq!(
+            scalar.pixels.as_contiguous_bytes().unwrap(),
+            simd.pixels.as_contiguous_bytes().unwrap()
+        );
+        let pixels = u64::from(simd.pixels.width()) * u64::from(simd.pixels.height());
+        eprintln!(
+            "{backend}/{name}: {}x{} exact tier pixels, fixture={path}",
+            simd.pixels.width(),
+            simd.pixels.height()
+        );
+        drop((scalar, simd));
+        suite.compare(format!("decode/{backend}/{name}"), move |g| {
+            g.throughput(Throughput::Elements(pixels));
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                let config = config.clone();
+                g.bench(arm, move |b| {
+                    let config = config.clone();
+                    b.with_input(move || assert!(set_simd(simd)))
+                        .run(move |_| zenraw::decode(data, &config, &enough::Unstoppable).unwrap())
+                });
+            }
+        });
+    }
+    assert!(set_simd(true));
+}
+
+zenbench::main!(bench, bench_decode);

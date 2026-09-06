@@ -105,3 +105,7 @@ fetch-samples:
 # Native runtime-tier comparison; keep compile-time ISA flags unset.
 arm-kernel-audit:
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 cargo bench --features _dev --bench kernel_tiers
+
+# Explicit fixture, selected backend, exact tier bytes before timing.
+arm-decode-audit fixture features="_dev":
+    ZENRAW_BENCH_INPUT="{{fixture}}" CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 cargo bench --features {{features}} --bench kernel_tiers -- --group=decode
