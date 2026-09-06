@@ -1,0 +1,159 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+   Compiling bitflags v2.13.1
+   Compiling libm v0.2.16
+   Compiling autocfg v1.5.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling libc v0.2.189
+   Compiling num-traits v0.2.19
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling crossbeam-epoch v0.9.20
+   Compiling bytemuck_derive v1.12.0
+   Compiling bytemuck v1.25.2
+   Compiling serde v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling cfg-if v1.0.4
+   Compiling crossbeam-deque v0.8.7
+   Compiling archmage-macros v0.9.28
+   Compiling rayon-core v1.13.0
+   Compiling safe_unaligned_simd v0.2.5
+   Compiling simd-adler32 v0.3.10
+   Compiling archmage v0.9.28
+   Compiling serde_derive v1.0.229
+   Compiling crc32fast v1.5.1
+   Compiling zerocopy v0.8.56
+   Compiling semver v1.0.28
+   Compiling thiserror v2.0.20
+   Compiling utf8parse v0.2.2
+   Compiling enough v0.4.4
+   Compiling rustix v1.1.4
+   Compiling adler2 v2.0.1
+   Compiling anstyle-parse v1.0.0
+   Compiling rustc_version v0.4.1
+   Compiling magetypes v0.9.28
+   Compiling toml v0.5.11
+   Compiling errno v0.3.14
+   Compiling zerocopy-derive v0.8.56
+   Compiling thiserror-impl v2.0.20
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling zmij v1.0.23
+   Compiling colorchoice v1.0.5
+   Compiling either v1.18.0
+   Compiling anstyle v1.0.14
+   Compiling memchr v2.8.3
+   Compiling anstyle-query v1.1.5
+   Compiling whereat v0.1.5
+   Compiling glob v0.3.4
+   Compiling zenpixels v0.2.16
+   Compiling rawloader v0.37.2
+   Compiling anstream v1.0.0
+   Compiling rayon v1.12.0
+   Compiling miniz_oxide v0.9.1
+   Compiling objc2-core-foundation v0.3.2
+   Compiling clap_lex v1.1.0
+   Compiling heck v0.5.0
+   Compiling strsim v0.11.1
+   Compiling serde_json v1.0.151
+   Compiling clap_builder v4.6.6
+   Compiling linear-srgb v0.6.12
+   Compiling clap_derive v4.6.4
+   Compiling objc2-io-kit v0.3.2
+   Compiling flate2 v1.1.10
+   Compiling miniz_oxide v0.8.9
+   Compiling almost-enough v0.4.4
+   Compiling fdeflate v0.3.7
+   Compiling wide v1.7.0
+   Compiling enumn v0.1.14
+   Compiling pxfm v0.1.30
+   Compiling itoa v1.0.18
+   Compiling half v2.7.1
+   Compiling byteorder v1.5.0
+   Compiling lazy_static v1.5.0
+   Compiling moxcms v0.8.1
+   Compiling png v0.18.1
+   Compiling zencodec v0.1.26
+   Compiling clap v4.6.6
+   Compiling sysinfo v0.36.1
+   Compiling terminal_size v0.4.4
+   Compiling fs4 v1.1.0
+   Compiling rgb v0.8.53
+   Compiling imgref v1.12.3
+   Compiling byteorder-lite v0.1.0
+   Compiling image v0.25.10
+   Compiling zensim v0.2.7
+   Compiling ultrahdr-core v0.3.4
+   Compiling zenbench v0.1.9
+   Compiling zencodec-testkit v0.1.0
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+   Compiling zenutils-fuzz v0.1.0
+    Finished `bench` profile [optimized] target(s) in 11.98s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-74c320e3f9976eba)
+[zenbench] calibration: int=0.27ns/iter mem_bw=118.4GiB/s mem_lat=7.4ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.22ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788732409-128f7.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788732409-128f7
+  git: 20220cf30a9b1ea097c0929869efc7b57acdf217
+═══════════════════════════════════════════════════════════════
+
+  normalize_uniform/17  200 rounds × 58K calls
+             mean ±mad ns  95% CI vs base    iB/s
+  ├─ neon     41.2 ±3.6ns  [40.6–41.9]ns    1.54G
+  ╰─ scalar   43.7 ±3.8ns  [+4.2%–+7.4%]    1.45G
+
+  neon    ███████████████████████████████████████████████████████████ 1.54 GiB/s
+  scalar  ████████████████████████████████████████████████████████ 1.45 GiB/s
+
+  normalize_uniform/64x64  200 rounds × 2K calls
+             mean ±mad µs  95% CI vs base      iB/s
+  ├─ neon     1.1 ±0.1µs  [1.1–1.1]µs        13.7G [1]
+  ╰─ scalar   1.3 ±0.2µs  [+10.3%–+13.5%]    12.2G [2]
+
+  neon    ███████████████████████████████████████████████████████████ 13.7 GiB/s
+  scalar  █████████████████████████████████████████████████████ 12.2 GiB/s
+  [1] CV=23%
+  [2] CV=25%
+
+  normalize_uniform/256x256  200 rounds × 197 calls
+              mean ±mad µs  95% CI vs base     iB/s
+  ├─ neon     16.0 ±2.0µs  [15.6–16.3]µs     15.3G
+  ╰─ scalar   16.9 ±2.1µs  [+2.5%–+6.5%]     14.4G
+
+  neon    ███████████████████████████████████████████████████████████ 15.3 GiB/s
+  scalar  ████████████████████████████████████████████████████████ 14.4 GiB/s
+
+  normalize_uniform/1024x1024  200 rounds × 62 calls
+                mean ±mad µs  95% CI vs base       iB/s
+  ├─ neon     144.1 ±25.3µs  [140.1–148.3]µs     27.1G [1]
+  ╰─ scalar   143.1 ±20.7µs  [-2.4%–+2.2%]       27.3G [2]
+
+  scalar  ███████████████████████████████████████████████████████████ 27.3 GiB/s
+  neon    ███████████████████████████████████████████████████████████ 27.1 GiB/s
+  [1] CV=21%
+  [2] CI crosses zero
+
+  normalize_uniform/4096x4096  200 rounds × 3 calls
+             mean ±mad ms  95% CI vs base    iB/s
+  ├─ neon     2.7 ±0.3ms  [2.7–2.8]ms      22.8G
+  ╰─ scalar   2.8 ±0.4ms  [-1.3%–+2.9%]    22.7G [1]
+
+  neon    ███████████████████████████████████████████████████████████ 22.8 GiB/s
+  scalar  ███████████████████████████████████████████████████████████ 22.7 GiB/s
+  [1] CI crosses zero
+
+  normalize_uniform/24MP  200 rounds × 2 calls
+             mean ±mad ms  95% CI vs base    iB/s
+  ├─ neon     4.1 ±0.6ms  [4.0–4.2]ms      23.0G
+  ╰─ scalar   4.1 ±0.4ms  [-1.9%–+2.2%]    23.0G [1]
+
+  neon    ███████████████████████████████████████████████████████████ 23.0 GiB/s
+  scalar  ███████████████████████████████████████████████████████████ 23.0 GiB/s
+  [1] CI crosses zero
+
+  total: 146.7s  (18 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

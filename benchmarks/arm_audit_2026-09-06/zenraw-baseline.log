@@ -1,0 +1,295 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.189
+   Compiling autocfg v1.5.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling libm v0.2.16
+   Compiling bitflags v2.13.1
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-epoch v0.9.20
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling bytemuck_derive v1.12.0
+   Compiling bytemuck v1.25.2
+   Compiling cfg-if v1.0.4
+   Compiling crossbeam-deque v0.8.7
+   Compiling serde v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling archmage-macros v0.9.28
+   Compiling rayon-core v1.13.0
+   Compiling simd-adler32 v0.3.10
+   Compiling safe_unaligned_simd v0.2.5
+   Compiling archmage v0.9.28
+   Compiling serde_derive v1.0.229
+   Compiling thiserror v2.0.20
+   Compiling zerocopy v0.8.56
+   Compiling utf8parse v0.2.2
+   Compiling adler2 v2.0.1
+   Compiling enough v0.4.4
+   Compiling rustix v1.1.4
+   Compiling semver v1.0.28
+   Compiling crc32fast v1.5.1
+   Compiling magetypes v0.9.28
+   Compiling rustc_version v0.4.1
+   Compiling anstyle-parse v1.0.0
+   Compiling toml v0.5.11
+   Compiling errno v0.3.14
+   Compiling zerocopy-derive v0.8.56
+   Compiling thiserror-impl v2.0.20
+   Compiling glob v0.3.4
+   Compiling colorchoice v1.0.5
+   Compiling memchr v2.8.3
+   Compiling zmij v1.0.23
+   Compiling whereat v0.1.5
+   Compiling either v1.18.0
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle v1.0.14
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling rayon v1.12.0
+   Compiling anstream v1.0.0
+   Compiling zenpixels v0.2.16
+   Compiling rawloader v0.37.2
+   Compiling linear-srgb v0.6.12
+   Compiling miniz_oxide v0.9.1
+   Compiling objc2-core-foundation v0.3.2
+   Compiling serde_json v1.0.151
+   Compiling clap_lex v1.1.0
+   Compiling strsim v0.11.1
+   Compiling heck v0.5.0
+   Compiling clap_builder v4.6.6
+   Compiling clap_derive v4.6.4
+   Compiling objc2-io-kit v0.3.2
+   Compiling flate2 v1.1.10
+   Compiling almost-enough v0.4.4
+   Compiling miniz_oxide v0.8.9
+   Compiling fdeflate v0.3.7
+   Compiling wide v1.7.0
+   Compiling enumn v0.1.14
+   Compiling byteorder v1.5.0
+   Compiling itoa v1.0.18
+   Compiling pxfm v0.1.30
+   Compiling lazy_static v1.5.0
+   Compiling moxcms v0.8.1
+   Compiling half v2.7.1
+   Compiling png v0.18.1
+   Compiling zencodec v0.1.26
+   Compiling clap v4.6.6
+   Compiling sysinfo v0.36.1
+   Compiling terminal_size v0.4.4
+   Compiling fs4 v1.1.0
+   Compiling rgb v0.8.53
+   Compiling byteorder-lite v0.1.0
+   Compiling imgref v1.12.3
+   Compiling image v0.25.10
+   Compiling zenbench v0.1.9
+   Compiling ultrahdr-core v0.3.4
+   Compiling zensim v0.2.7
+   Compiling zencodec-testkit v0.1.0
+   Compiling zenutils-fuzz v0.1.0
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `test` profile [optimized + debuginfo] target(s) in 12.98s
+     Running unittests src/lib.rs (target/debug/deps/zenraw-086d78f0c5214041)
+
+running 86 tests
+test alloc_util::tests::alloc_filled_nonzero_fill ... ok
+test alloc_util::tests::alloc_filled_all_modes_equal_bytes ... ok
+test alloc_util::tests::codec_default_keeps_site_default_false ... ok
+test alloc_util::tests::alloc_filled_fallible_oom_returns_err ... ok
+test alloc_util::tests::codec_default_keeps_site_default_true ... ok
+test alloc_util::tests::explicit_fallible_overrides_any_site_default ... ok
+test alloc_util::tests::explicit_infallible_overrides_any_site_default ... ok
+test alloc_util::tests::vec_with_capacity_fallible_oom_returns_err ... ok
+test alloc_util::tests::vec_with_capacity_reserves_and_is_empty ... ok
+test classify::tests::classify_ampf ... ok
+test classify::tests::classify_android_dng ... ok
+test classify::tests::classify_appledng ... ok
+test classify::tests::classify_jpeg ... ok
+test classify::tests::classify_standard_dng ... ok
+test classify::tests::classify_unknown ... ok
+test classify::tests::format_display ... ok
+test color::tests::color_pipeline_does_not_crash ... ok
+test color::tests::f32_to_u8_clamps ... ok
+test color::tests::f32_to_u8_srgb_applies_no_transfer_function ... ok
+test color::tests::identity_matrix_inversion ... ok
+test color::tests::invert_and_multiply_is_identity ... ok
+test color::tests::matrix_mul_identity ... ok
+test color::tests::normalize_rows_sums_to_one ... ok
+test color::tests::srgb_gamma_boundaries ... ok
+test color::tests::srgb_gamma_monotonic ... ok
+test decode::tests::enforce_decode_limits_accepts_default_size ... ok
+test decode::tests::cropped_dims_matches_apply_crop_output ... ok
+test decode::tests::enforce_decode_limits_rejects_overflow ... ok
+test decode::tests::enforce_decode_limits_rejects_oversized_pixels ... ok
+test decode::tests::enforce_decode_limits_rejects_oversized_working_set ... ok
+test demosaic::tests::bayer_cfa_from_pattern_str ... ok
+test demosaic::tests::bayer_cfa_matches_generic_cfa_pattern ... ok
+test demosaic::tests::bilinear_known_channel_preserved ... ok
+test demosaic::tests::bilinear_output_non_negative ... ok
+test demosaic::tests::bayer_cfa_is_bit_identical_to_rawloader_cfa ... ok
+test demosaic::tests::bilinear_produces_correct_dimensions ... ok
+test demosaic::tests::bayer_dispatch_still_selects_the_requested_kernel ... ok
+test demosaic::tests::different_cfa_patterns ... ok
+test demosaic::tests::malvar_known_channel_preserved ... ok
+test demosaic::tests::malvar_output_non_negative ... ok
+test demosaic::tests::malvar_produces_correct_dimensions ... ok
+test demosaic::tests::fallible_entry_matches_infallible_bytes ... ok
+test demosaic::tests::rawloader_cfa_tile_dims_match_upstream ... ok
+test demosaic::tests::tile_dims_reports_the_real_pattern_size ... ok
+test demosaic::tests::undescribed_cfa_is_a_typed_error ... ok
+test demosaic::tests::uniform_input_produces_uniform_output ... ok
+test demosaic::tests::public_entry_routes_rawloader_xtrans_correctly ... ok
+test demosaic::tests::xtrans_bilinear_known_channel_preserved ... ok
+test demosaic::tests::xtrans_bilinear_non_negative ... ok
+test demosaic::tests::xtrans_bilinear_dimensions ... ok
+test demosaic::tests::xtrans_bilinear_uniform_input ... ok
+test error::tests::error_display_variants ... ok
+test error::tests::from_buffer_error ... ok
+test error::tests::from_stop_reason ... ok
+test error::tests::raw_limit_kind_display ... ok
+test demosaic::tests::xtrans_known_channel_survives_top_level_dispatch ... ok
+test orient::tests::bytes_flip_horizontal_oracle ... ok
+test orient::tests::bytes_flip_vertical_oracle ... ok
+test orient::tests::bytes_identity_copies_through ... ok
+test demosaic::tests::xtrans_dispatch_matches_pattern_agnostic_kernel ... ok
+test orient::tests::bytes_matches_f32_baker_for_all_orientations ... ok
+test orient::tests::bytes_rotate180_oracle ... ok
+test orient::tests::bytes_rotate270_oracle ... ok
+test orient::tests::bytes_rotate90_oracle_rgbf32 ... ok
+test orient::tests::bytes_transpose_oracle_rgb16 ... ok
+test orient::tests::bytes_transverse_oracle ... ok
+test orient::tests::orient_1_identity ... ok
+test orient::tests::orient_2_flip_horizontal ... ok
+test orient::tests::orient_3_rotate_180 ... ok
+test orient::tests::orient_4_flip_vertical ... ok
+test orient::tests::orient_5_transpose ... ok
+test orient::tests::orient_6_rotate_90_cw ... ok
+test orient::tests::orient_7_transverse ... ok
+test orient::tests::orient_8_rotate_270_cw ... ok
+test orient::tests::orient_roundtrips ... ok
+test simd::tests::extract_rgb_cpp3 ... ok
+test simd::tests::extract_rgb_cpp4_drops_alpha ... ok
+test simd::tests::extract_rgb_cpp6 ... ok
+test simd::tests::extract_rgb_short_data_pads_zeros ... ok
+test simd::tests::normalize_uniform_basic ... ok
+test simd::tests::normalize_uniform_clamps ... ok
+test simd::tests::normalize_uniform_empty ... ok
+test simd::tests::normalize_uniform_many_elements ... ok
+test tiff_ifd::tests::parse_android_dng_structure ... ok
+test tiff_ifd::tests::parse_appledng_structure ... ok
+test tiff_ifd::tests::parse_fivek_dng_structure ... ok
+
+test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/formats.rs (target/debug/deps/formats-13c02691686c4dec)
+
+running 13 tests
+test format_apple_proraw_batch ... ok
+test format_android_dng ... ok
+test all_formats_probe_consistency ... ok
+test all_formats_bilinear_vs_malvar ... ok
+test format_canon_cr2 ... ok
+test format_canon_cr3 ... ok
+test format_dng_iphone ... ok
+test format_fivek_dng ... ok
+test format_fuji_raf_xtrans ... ok
+test format_nikon_nef ... ok
+test format_olympus_orf ... ok
+test format_panasonic_rw2 ... ok
+test format_sony_arw ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fuzz_regression.rs (target/debug/deps/fuzz_regression-490870acc4521a70)
+
+running 1 test
+test fuzz_regression ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/integration.rs (target/debug/deps/integration-2be5e37bf904e7f9)
+
+running 13 tests
+test color_pipeline_public_api ... ok
+test config_defaults ... ok
+test config_builder ... ok
+test decode_empty_input_fails ... ok
+test decode_garbage_input_fails ... ok
+test decode_jpeg_input_fails ... ok
+test decode_real_raw_file ... ok
+test demosaic_public_api ... ok
+test is_raw_file_detection ... ok
+test full_pipeline_synthetic_data ... ok
+test pixel_limit_with_real_file ... ok
+test srgb_gamma_public_api ... ok
+test probe_empty_input_fails ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/orientation.rs (target/debug/deps/orientation-02f7c5755b7a1971)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/probe_parity.rs (target/debug/deps/probe_parity-661a7ebc5aaaedea)
+
+running 3 tests
+test dng_classify_agrees_with_probe_and_decode ... ok
+test non_dng_raw_classify_agrees_with_probe_and_decode ... ok
+test non_raw_correctly_rejected ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/rawler_panic.rs (target/debug/deps/rawler_panic-05dc33da57899255)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/regression.rs (target/debug/deps/regression-6f73ecd8775df856)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/srgb_encode_accuracy.rs (target/debug/deps/srgb_encode_accuracy-e3e664667f098ce0)
+
+running 3 tests
+test clamps_out_of_range_input ... ok
+test is_exact_at_every_bucket_boundary ... ok
+test matches_reference_across_the_domain ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/synthetic_dng.rs (target/debug/deps/synthetic_dng-984350f5598fa351)
+
+running 10 tests
+test camera_raw_preserves_demosaic_overshoot_above_one ... ok
+test decode_preserves_measured_channel_for_bayer_cfa ... ok
+test decode_contains_rawloader_panic ... ok
+test exposure_ev_multiplies_after_the_clamp ... ok
+test linear_output_is_clamped_to_unit_range ... ok
+test decode_preserves_measured_channel_for_xtrans_cfa ... ok
+test synthetic_dng_is_recognised_as_raw ... ok
+test probe_contains_rawloader_panic ... ok
+test sensor_layout_distinguishes_bayer_from_xtrans ... ok
+test probe_contains_panic_for_several_bad_cfa_sizes ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/zencodec_integration.rs (target/debug/deps/zencodec_integration-1475e7b961137592)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests zenraw
+
+running 1 test
+test src/lib.rs - (line 31) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.33s; merged doctests compilation took 0.11s
