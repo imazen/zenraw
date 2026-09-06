@@ -1,0 +1,21 @@
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.71s
+     Running unittests src/lib.rs (target/debug/deps/zenraw-086d78f0c5214041)
+
+running 1 test
+
+thread 'simd::tests::normalization_matches_scalar_bits_for_special_values' (144049208) panicked at src/simd.rs:180:21:
+assertion `left == right` failed: len=8, offset=0
+  left: [0, 0, 0, 0, 1056964608, 1065353216, 1065353216, 2143289344]
+ right: [0, 0, 2147483648, 0, 1056964608, 1065353216, 1065353216, 2143289344]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test simd::tests::normalization_matches_scalar_bits_for_special_values ... FAILED
+
+failures:
+
+failures:
+    simd::tests::normalization_matches_scalar_bits_for_special_values
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zenraw --lib`

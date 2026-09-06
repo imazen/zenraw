@@ -59,3 +59,18 @@ kernel_tiers -- --group=decode`, then the same command with
 `--features rawler,_dev`. Both used the resource settings above. Harness source
 is `benches/kernel_tiers.rs`; token toggles and correctness checks are outside
 timing. Both arms include decoding and output allocation.
+
+## Exact floating-point clamp correction
+
+The `normalization_matches_scalar_bits_for_special_values` regression fails
+on the previous vector body at length 8: -0.0 becomes +0.0. Scalar tails
+use `f32::clamp`, whose comparison decisions preserve that sign. Ordered
+comparisons and `f32x8::blend` now reproduce those decisions, including NaN
+payloads. The test rotates 11 edge values through lengths 1–33 to cover
+vector lanes and tails, and requires bitwise equality with scalar arithmetic.
+
+87 native library tests pass; strict clippy passes. The focused regression
+also passes x86_64 through Rosetta and WASM SIMD under Wasmtime. Native CI
+now enables `_dev` for this regression. No public API changed. Earlier kernel
+and whole-decode timing tables precede this arithmetic correction; post-fix
+measurements are pending and must not be inferred from those tables.

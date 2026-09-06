@@ -67,7 +67,10 @@ fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32
     for (src, dst) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
         let v = f32x8::load(token, src);
         let normalized = (v - black_v) * inv_range_v;
-        let clamped = normalized.max(zero).min(one);
+        // Ordered comparisons preserve signed zero and NaN payloads like
+        // scalar f32::clamp; ISA min/max instructions have different rules.
+        let lower = f32x8::blend(normalized.simd_lt(zero), zero, normalized);
+        let clamped = f32x8::blend(lower.simd_gt(one), one, lower);
         clamped.store(dst);
     }
 
@@ -163,6 +166,62 @@ pub(crate) fn linear_to_srgb(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(
+        feature = "_dev",
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "wasm32"
+        )
+    ))]
+    #[test]
+    fn normalization_matches_scalar_bits_for_special_values() {
+        #[cfg(not(target_arch = "wasm32"))]
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let values = [
+            f32::NEG_INFINITY,
+            -1.0,
+            -0.0,
+            0.0,
+            0.5,
+            1.0,
+            f32::INFINITY,
+            f32::NAN,
+            f32::from_bits(0x7fc01234),
+            f32::MIN_POSITIVE,
+            f32::from_bits(1),
+        ];
+        let check = || {
+            for len in 1..=33 {
+                for offset in 0..values.len() {
+                    let input: Vec<f32> = (0..len)
+                        .map(|i| values[(i + offset) % values.len()])
+                        .collect();
+                    let expected: Vec<u32> = input
+                        .iter()
+                        .map(|&v| ((v - 0.0) * 1.0).clamp(0.0, 1.0).to_bits())
+                        .collect();
+                    let actual: Vec<u32> = normalize_uniform(&input, 0.0, 1.0)
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect();
+                    assert_eq!(actual, expected, "len={len}, offset={offset}");
+                }
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| check());
+            assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+            assert!(report.permutations_run >= 2);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            assert!(Wasm128Token::summon().is_some());
+            check();
+        }
+    }
 
     #[test]
     fn normalize_uniform_basic() {

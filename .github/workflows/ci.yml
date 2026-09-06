@@ -42,6 +42,9 @@ jobs:
       - name: Test (default features)
         run: cargo test
 
+      - name: Exact normalization across runtime SIMD tiers
+        run: cargo test --features _dev --lib normalization_matches_scalar_bits_for_special_values -- --nocapture
+
       - name: Test (all features)
         run: cargo test --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr"
 

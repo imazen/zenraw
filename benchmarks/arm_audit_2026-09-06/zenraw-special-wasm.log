@@ -1,0 +1,80 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling crossbeam-utils v0.8.22
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-epoch v0.9.20
+   Compiling simd-adler32 v0.3.10
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling crc32fast v1.5.1
+   Compiling serde_core v1.0.229
+   Compiling adler2 v2.0.1
+   Compiling utf8parse v0.2.2
+   Compiling crossbeam-deque v0.8.7
+   Compiling rustversion v1.0.23
+   Compiling anstyle-parse v1.0.0
+   Compiling bytemuck_derive v1.12.0
+   Compiling archmage-macros v0.9.28
+   Compiling colorchoice v1.0.5
+   Compiling cfg-if v1.0.4
+   Compiling rayon-core v1.13.0
+   Compiling safe_unaligned_simd v0.2.5
+   Compiling zmij v1.0.23
+   Compiling anstyle-query v1.1.5
+   Compiling bytemuck v1.25.2
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle v1.0.14
+   Compiling archmage v0.9.28
+   Compiling anstream v1.0.0
+   Compiling miniz_oxide v0.9.1
+   Compiling serde_json v1.0.151
+   Compiling strsim v0.11.1
+   Compiling memchr v2.8.3
+   Compiling thiserror v2.0.20
+   Compiling clap_lex v1.1.0
+   Compiling whereat v0.1.5
+   Compiling enough v0.4.4
+   Compiling serde v1.0.229
+   Compiling heck v0.5.0
+   Compiling clap_builder v4.6.6
+   Compiling clap_derive v4.6.4
+   Compiling zenpixels v0.2.16
+   Compiling almost-enough v0.4.4
+   Compiling flate2 v1.1.10
+   Compiling magetypes v0.9.28
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling miniz_oxide v0.8.9
+   Compiling fdeflate v0.3.7
+   Compiling bitflags v2.13.1
+   Compiling itoa v1.0.18
+   Compiling pxfm v0.1.30
+   Compiling either v1.18.0
+   Compiling png v0.18.1
+   Compiling rayon v1.12.0
+   Compiling clap v4.6.6
+   Compiling linear-srgb v0.6.12
+   Compiling zencodec v0.1.26
+   Compiling sysinfo v0.36.1
+   Compiling moxcms v0.8.1
+   Compiling rgb v0.8.53
+   Compiling imgref v1.12.3
+   Compiling terminal_size v0.4.4
+   Compiling byteorder-lite v0.1.0
+   Compiling zenbench v0.1.9
+   Compiling zensim v0.2.7
+   Compiling zencodec-testkit v0.1.0
+   Compiling zenutils-fuzz v0.1.0
+   Compiling image v0.25.10
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `test` profile [optimized + debuginfo] target(s) in 14.91s
+     Running unittests src/lib.rs (target/arm-audit-wasm/wasm32-wasip1/debug/deps/zenraw-7e6887b0e760ea88.wasm)
+
+running 1 test
+test simd::tests::normalization_matches_scalar_bits_for_special_values ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 0.00s
+
