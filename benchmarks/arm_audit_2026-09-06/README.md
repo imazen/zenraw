@@ -91,3 +91,25 @@ Both backends completed 200 full Develop decodes under the sampling profiler.
 The prominent sampled costs are scalar `powf`, NEF decoding, demosaic and,
 for rawler, sigmoid development. See [profile provenance](profiles.pointer.md).
 These profiles do not attribute a whole-decode gain to normalization.
+
+
+## Direct scalar fallback
+
+The generic scalar comparison/blend path is replaced by a direct per-sample
+`f32::clamp` loop. `#[magetypes(..., -scalar)]` excludes the generated scalar
+body while retaining the three vector tiers. The explicit exclusion requires
+archmage/magetypes 0.9.28, now the declared minimum; `cargo update --workspace`
+changed no lock entries. No public API changed.
+
+The direct fallback auto-vectorizes into packed multiply, ordered comparison
+and selection instructions. Full dispatcher assembly is retained in
+[direct-scalar-normalization.asm](direct-scalar-normalization.asm).
+Native/scalar means: 41.8/42.8 ns (17), 1.5/1.5 us (64²), 20.4/20.5 us (256²),
+200.6/201.2 us (1024²), 3.9/3.9 ms (4096²), 7.4/7.6 ms (24 × 2²⁰).
+The five larger paired intervals cross zero. The run contains 307 noisy rounds,
+so no separate-build native improvement is claimed. The direct scalar path
+removes the earlier generic scalar gap without changing the vector algorithm.
+
+All 87 native library tests and strict clippy pass. The bitwise special-value
+regression also passes x86 through Rosetta and WASM SIMD. Exact pixels remain
+the gate; approximate replacement of `powf` is not part of this change.

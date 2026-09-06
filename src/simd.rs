@@ -7,6 +7,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use archmage::prelude::*;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "wasm32"
+))]
 use magetypes::simd::generic::f32x8 as GenericF32x8;
 
 // ── Normalize ────────────────────────────────────────────────────────────
@@ -50,7 +55,7 @@ pub(crate) fn normalize_uniform_fallible(
 }
 
 /// Normalize `data` into the pre-allocated `out` (same length as `data`).
-#[magetypes(v3, neon, wasm128, scalar)]
+#[magetypes(v3, neon, wasm128, -scalar)]
 fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32, out: &mut [f32]) {
     #[allow(non_camel_case_types)]
     type f32x8 = GenericF32x8<Token>;
@@ -76,6 +81,19 @@ fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32
 
     for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
         *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
+    }
+}
+
+fn normalize_uniform_into_scalar(
+    _token: ScalarToken,
+    data: &[f32],
+    black: f32,
+    inv_range: f32,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(out.len(), data.len());
+    for (src, dst) in data.iter().zip(out.iter_mut()) {
+        *dst = ((*src - black) * inv_range).clamp(0.0, 1.0);
     }
 }
 

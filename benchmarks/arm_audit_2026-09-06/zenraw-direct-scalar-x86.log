@@ -1,0 +1,9 @@
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.61s
+     Running unittests src/lib.rs (target/x86_64-apple-darwin/debug/deps/zenraw-46c3834fa631786f)
+
+running 1 test
+test simd::tests::normalization_matches_scalar_bits_for_special_values ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.00s
+
