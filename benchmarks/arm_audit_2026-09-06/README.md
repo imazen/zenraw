@@ -74,3 +74,20 @@ also passes x86_64 through Rosetta and WASM SIMD under Wasmtime. Native CI
 now enables `_dev` for this regression. No public API changed. Earlier kernel
 and whole-decode timing tables precede this arithmetic correction; post-fix
 measurements are pending and must not be inferred from those tables.
+
+
+## Post-correctness-fix measurements and profiles
+
+At `060b6a67`, ordered compare/blend normalization preserves special-value
+bits. Native/scalar means are 40.7/46.0 ns (17 samples), 1.7/3.1 us (64²),
+20.8/43.2 us (256²), 236.0/520.7 us (1024²), 4.5/10.2 ms (4096²), and
+4.8/12.1 ms (24 × 2²⁰ samples). All six paired intervals favor NEON.
+This is not a speedup over the old, bit-inconsistent min/max implementation:
+the new native normalization is slower at most sizes in separate-build
+measurements. The generic scalar compare/blend lowering is under inspection.
+[Full results](normalize-after-exact-clamp.log).
+
+Both backends completed 200 full Develop decodes under the sampling profiler.
+The prominent sampled costs are scalar `powf`, NEF decoding, demosaic and,
+for rawler, sigmoid development. See [profile provenance](profiles.pointer.md).
+These profiles do not attribute a whole-decode gain to normalization.

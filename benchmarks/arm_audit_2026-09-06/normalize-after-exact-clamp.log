@@ -1,0 +1,66 @@
+   Compiling zenraw v0.2.0 (/Users/lilith/work/zen/zenraw)
+    Finished `bench` profile [optimized] target(s) in 0.85s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-74c320e3f9976eba)
+[zenbench] calibration: int=0.27ns/iter mem_bw=117.8GiB/s mem_lat=7.4ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.22ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788737726-4d10.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788737726-4d10
+  git: 060b6a673881318d6e018abd360f2976021a42a7
+═══════════════════════════════════════════════════════════════
+
+  normalize_uniform/17  200 rounds × 58K calls
+             mean ±mad ns  95% CI vs base      iB/s
+  ├─ neon     40.7 ±3.1ns  [39.8–41.6]ns      1.56G
+  ╰─ scalar   46.0 ±4.0ns  [+11.9%–+15.0%]    1.38G
+
+  neon    ███████████████████████████████████████████████████████████ 1.56 GiB/s
+  scalar  ████████████████████████████████████████████████████ 1.38 GiB/s
+
+  normalize_uniform/64x64  30 rounds × 1K calls
+             mean ±mad µs  95% CI vs base      iB/s
+  ├─ neon     1.7 ±0.2µs  [1.5–1.8]µs        9.24G [1]
+  ╰─ scalar   3.1 ±0.3µs  [+90.7%–+97.7%]    4.91G
+
+  neon    ███████████████████████████████████████████████████████████ 9.24 GiB/s
+  scalar  ███████████████████████████████ 4.91 GiB/s
+  [1] CV=27%
+
+  normalize_uniform/256x256  30 rounds × 65 calls
+              mean ±mad µs  95% CI vs base       iB/s
+  ├─ neon     20.8 ±4.7µs  [19.1–22.6]µs       11.7G [1]
+  ╰─ scalar   43.2 ±4.6µs  [+98.4%–+113.4%]    5.65G
+
+  neon    ███████████████████████████████████████████████████████████ 11.7 GiB/s
+  scalar  ████████████████████████████ 5.65 GiB/s
+  [1] CV=24%
+
+  normalize_uniform/1024x1024  30 rounds × 21 calls
+                mean ±mad µs  95% CI vs base        iB/s
+  ├─ neon     236.0 ±38.8µs  [221.3–250.6]µs      16.5G
+  ╰─ scalar   520.7 ±41.1µs  [+111.5%–+129.7%]    7.50G
+
+  neon    ███████████████████████████████████████████████████████████ 16.5 GiB/s
+  scalar  ███████████████████████████ 7.50 GiB/s
+
+  normalize_uniform/4096x4096  50 rounds × 1 calls
+             mean ±mad ms  95% CI vs base        iB/s
+  ├─ neon      4.5 ±0.5ms  [4.1–4.9]ms          14.0G [1]
+  ╰─ scalar   10.2 ±1.1ms  [+137.2%–+155.6%]    6.11G
+
+  neon    ███████████████████████████████████████████████████████████ 14.0 GiB/s
+  scalar  ██████████████████████████ 6.11 GiB/s
+  [1] CV=33%
+
+  normalize_uniform/24MP  30 rounds × 1 calls
+             mean ±mad ms  95% CI vs base        iB/s
+  ├─ neon      4.8 ±0.9ms  [4.5–5.0]ms          19.7G
+  ╰─ scalar   12.1 ±1.6ms  [+143.6%–+165.5%]    7.72G
+
+  neon    ███████████████████████████████████████████████████████████ 19.7 GiB/s
+  scalar  ███████████████████████ 7.72 GiB/s
+
+  total: 49.5s  (9 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json
