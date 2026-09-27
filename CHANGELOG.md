@@ -38,6 +38,35 @@
 
 ### Fixed
 
+- **`stop` is now polled inside every O(pixels) post-parse pass on both decode
+  backends.** Measured with `almost_enough::PollMeter` on a real 12 MP DNG
+  (decode ≈ 700 ms), the gaps between `stop.check()` calls exceeded 50 ms in
+  three places, so a cancellation request could go unobserved for that long:
+  ~157 ms inside the normalize + demosaic span, ~89 ms inside the EXIF
+  orientation permutation (orientation 3 hits the in-place `rotate_180`
+  whole-image swap), and ~78 ms inside `apply_crop`'s rejected-crop fallback
+  (a single unpolled `slice::to_vec` of the full 144 MB f32 buffer). Normalize
+  (scalar + SIMD tiers, per-256K elements / per-32K vectors), the Malvar /
+  bilinear / X-Trans demosaic kernels (per-32 rows), crop row loops
+  (per-256 rows), the orientation permutations (per-64 rows), the colour
+  pipeline / sigmoid / gamma / quantisation passes (per-64K–256K elements),
+  and the full-buffer copies (`alloc_util::copy_with_stop`, per-8M elements)
+  now check the token at bounded intervals; cancellation surfaces as
+  `RawError::Stopped` and early-exited partial buffers are never returned —
+  each interior pass is followed by a propagating check before its output is
+  consumed. The `rawler` backend received the same treatment end-to-end
+  (normalize, demosaic, crop, orientation, and the `DngPipeline` develop
+  chain: EV multiply, camera→output matrix, `dt_sigmoid`, `linear_to_srgb_u16`,
+  and the basic-pipeline fallback). New pinned behaviour:
+  `decode_with_non_firing_stop_is_byte_identical` (a never-firing counting
+  token produces byte-identical output) and
+  `decode_cancelled_mid_pipeline_returns_stopped` (budgets landing inside
+  normalize/demosaic surface `Stopped(Cancelled)`). The remaining ~170 ms gap
+  in the same measurement is upstream `rawloader::decode` itself — the
+  container parse + sensor decompress is a single unpolled call inside the
+  third-party crate; the rawler backend has the identical structural bound
+  inside `rawler::decode`.
+
 - **Every non-Bayer CFA was demosaiced with the 2×2 Bayer kernel, corrupting
   colour on the default backend.** `demosaic_malvar` precomputed a 2×2
   `cfa_tile` and the interior loop read it as `cfa_tile[row & 1][col & 1]`,

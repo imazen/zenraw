@@ -562,7 +562,7 @@ pub(crate) fn decode(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 2: Extract and normalize sensor data to f32 [0, 1]
-    let normalized = normalize_raw_data(&raw, config.alloc_pref).map_err(|e| at!(e))?;
+    let normalized = normalize_raw_data(&raw, config.alloc_pref, stop).map_err(|e| at!(e))?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -579,6 +579,7 @@ pub(crate) fn decode(
         &raw.cfa,
         config.demosaic,
         config.alloc_pref,
+        stop,
     )?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -595,13 +596,17 @@ pub(crate) fn decode(
         } else {
             raw.wb_coeffs
         };
-        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam, config.target);
+        color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, stop)
+            .map_err(|r| at!(RawError::from(r)))?;
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
             let mult = 2.0f32.powf(config.exposure_ev);
-            for v in rgb.iter_mut() {
-                *v *= mult;
+            for chunk in rgb.chunks_mut(1 << 20) {
+                stop.check().map_err(|r| at!(RawError::from(r)))?;
+                for v in chunk {
+                    *v *= mult;
+                }
             }
         }
     }
@@ -610,7 +615,7 @@ pub(crate) fn decode(
 
     // Step 5: Crop
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref)?
+        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref, stop)?
     } else {
         (rgb, width, height)
     };
@@ -623,7 +628,11 @@ pub(crate) fn decode(
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
-        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        let (data, w, h) =
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop);
+        // The permutation early-exits on cancellation; propagate before the
+        // partially-permuted buffer is consumed downstream.
+        stop.check().map_err(|r| at!(RawError::from(r)))?;
         (data, w, h, 1u16)
     } else {
         (cropped_rgb, out_w, out_h, raw_orient)
@@ -677,8 +686,10 @@ pub(crate) fn decode(
     match config.output {
         OutputMode::Develop => {
             let mut gamma_rgb = final_rgb;
-            color::apply_srgb_gamma(&mut gamma_rgb);
-            let u16_data = color::f32_to_u16(&gamma_rgb);
+            color::apply_srgb_gamma_stop(&mut gamma_rgb, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
+            let u16_data =
+                color::f32_to_u16(&gamma_rgb, stop).map_err(|r| at!(RawError::from(r)))?;
 
             let buf = PixelBuffer::from_vec(
                 u16_data,
@@ -691,7 +702,10 @@ pub(crate) fn decode(
             Ok(RawDecodeOutput { pixels: buf, info })
         }
         OutputMode::Linear => {
-            let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
+            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                stop,
+            )?;
 
             let buf = PixelBuffer::from_vec(
                 byte_data,
@@ -704,7 +718,10 @@ pub(crate) fn decode(
             Ok(RawDecodeOutput { pixels: buf, info })
         }
         OutputMode::CameraRaw => {
-            let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
+            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                stop,
+            )?;
 
             let buf = PixelBuffer::from_vec(
                 byte_data,
@@ -743,6 +760,9 @@ fn decode_non_bayer(
         })?;
     let mut rgb = crate::alloc_util::vec_with_capacity(config.alloc_pref, true, rgb_len)?;
     for i in 0..width * height {
+        if i & 0x3FFFF == 0 {
+            stop.check().map_err(|r| at!(RawError::from(r)))?;
+        }
         let base = i * cpp;
         rgb.push(if base < normalized.len() {
             normalized[base]
@@ -775,13 +795,17 @@ fn decode_non_bayer(
         } else {
             raw.wb_coeffs
         };
-        color::apply_color_pipeline(&mut rgb, wb, raw.xyz_to_cam, config.target);
+        color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, stop)
+            .map_err(|r| at!(RawError::from(r)))?;
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
             let mult = 2.0f32.powf(config.exposure_ev);
-            for v in rgb.iter_mut() {
-                *v *= mult;
+            for chunk in rgb.chunks_mut(1 << 20) {
+                stop.check().map_err(|r| at!(RawError::from(r)))?;
+                for v in chunk {
+                    *v *= mult;
+                }
             }
         }
     }
@@ -789,7 +813,7 @@ fn decode_non_bayer(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref)?
+        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref, stop)?
     } else {
         (rgb, width, height)
     };
@@ -800,7 +824,11 @@ fn decode_non_bayer(
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
-        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        let (data, w, h) =
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop);
+        // The permutation early-exits on cancellation; propagate before the
+        // partially-permuted buffer is consumed downstream.
+        stop.check().map_err(|r| at!(RawError::from(r)))?;
         (data, w, h, 1u16)
     } else {
         (cropped_rgb, out_w, out_h, raw_orient)
@@ -851,8 +879,10 @@ fn decode_non_bayer(
     match config.output {
         OutputMode::Develop => {
             let mut gamma_rgb = final_rgb;
-            color::apply_srgb_gamma(&mut gamma_rgb);
-            let u16_data = color::f32_to_u16(&gamma_rgb);
+            color::apply_srgb_gamma_stop(&mut gamma_rgb, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
+            let u16_data =
+                color::f32_to_u16(&gamma_rgb, stop).map_err(|r| at!(RawError::from(r)))?;
 
             let buf = PixelBuffer::from_vec(
                 u16_data,
@@ -865,7 +895,10 @@ fn decode_non_bayer(
             Ok(RawDecodeOutput { pixels: buf, info })
         }
         OutputMode::Linear => {
-            let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
+            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                stop,
+            )?;
 
             let buf = PixelBuffer::from_vec(
                 byte_data,
@@ -878,7 +911,10 @@ fn decode_non_bayer(
             Ok(RawDecodeOutput { pixels: buf, info })
         }
         OutputMode::CameraRaw => {
-            let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&final_rgb).to_vec();
+            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                stop,
+            )?;
 
             let buf = PixelBuffer::from_vec(
                 byte_data,
@@ -898,6 +934,7 @@ fn decode_non_bayer(
 fn normalize_raw_data(
     raw: &rawloader::RawImage,
     alloc_pref: crate::alloc_util::AllocPref,
+    stop: &dyn Stop,
 ) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;
@@ -926,6 +963,9 @@ fn normalize_raw_data(
 
             let mut out = new_buf(total)?;
             for (i, &sample) in data.iter().enumerate().take(total) {
+                if i & 0x3FFFF == 0 {
+                    stop.check().map_err(RawError::from)?;
+                }
                 let ch = if cpp == 1 {
                     raw.cfa.color_at(i / width, i % width)
                 } else {
@@ -950,6 +990,9 @@ fn normalize_raw_data(
 
             let mut out = new_buf(total)?;
             for (i, &sample) in data.iter().enumerate().take(total) {
+                if i & 0x3FFFF == 0 {
+                    stop.check().map_err(RawError::from)?;
+                }
                 let ch = if cpp == 1 {
                     raw.cfa.color_at(i / width, i % width)
                 } else {
@@ -1000,13 +1043,14 @@ fn apply_crop(
     height: usize,
     crops: &[usize; 4],
     alloc_pref: crate::alloc_util::AllocPref,
+    stop: &dyn Stop,
 ) -> Result<(Vec<f32>, usize, usize)> {
     let (new_w, new_h) = cropped_dims(width, height, crops);
 
     // Crop was rejected (invalid / absent) — return the buffer unchanged so the
     // dims still match what `cropped_dims` reported (the full sensor).
     if (new_w, new_h) == (width, height) {
-        return Ok((rgb.to_vec(), width, height));
+        return Ok((crate::alloc_util::copy_with_stop(rgb, stop)?, width, height));
     }
 
     let top = crops[0];
@@ -1017,6 +1061,9 @@ fn apply_crop(
     // fallible (bounded by `rgb`, but still full-image-scale).
     let mut cropped = crate::alloc_util::vec_with_capacity(alloc_pref, true, new_w * new_h * 3)?;
     for row in top..height - bottom {
+        if row & 255 == 0 {
+            stop.check().map_err(|r| at!(RawError::from(r)))?;
+        }
         let src_start = (row * width + left) * 3;
         let src_end = src_start + new_w * 3;
         cropped.extend_from_slice(&rgb[src_start..src_end]);
@@ -1144,7 +1191,7 @@ mod tests {
         ];
         for (crops, expected) in cases {
             assert_eq!(cropped_dims(w, h, &crops), expected, "crops={crops:?}");
-            let (out, ow, oh) = apply_crop(&rgb, w, h, &crops, pref).unwrap();
+            let (out, ow, oh) = apply_crop(&rgb, w, h, &crops, pref, &enough::Unstoppable).unwrap();
             assert_eq!((ow, oh), expected, "apply_crop dims, crops={crops:?}");
             assert_eq!(out.len(), ow * oh * 3, "buffer size, crops={crops:?}");
         }
@@ -1152,7 +1199,7 @@ mod tests {
         // The cropped pixels are the right ones: (0,0) of the crop is
         // (left, top) of the source.
         let crops = [7, 16, 7, 16];
-        let (out, ow, _) = apply_crop(&rgb, w, h, &crops, pref).unwrap();
+        let (out, ow, _) = apply_crop(&rgb, w, h, &crops, pref, &enough::Unstoppable).unwrap();
         assert_eq!(ow, 6);
         assert_eq!(out[0], rgb[(7 * w + 16) * 3]);
         assert_eq!(out[ow * 3 - 1], rgb[(7 * w + 16 + 6) * 3 - 1]);

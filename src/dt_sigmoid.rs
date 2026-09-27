@@ -152,9 +152,19 @@ pub(crate) fn default_params() -> DtSigmoidParams {
 ///
 /// This applies the log-logistic sigmoid to each RGB channel independently,
 /// with optional hue preservation (interpolating the middle channel).
-pub(crate) fn apply_dt_sigmoid(data: &mut [f32], params: &DtSigmoidParams) {
+///
+/// Checks `stop` once per 64K pixels; on fire the loop early-returns with a
+/// partially-mapped buffer — callers must propagate before consuming it.
+pub(crate) fn apply_dt_sigmoid(
+    data: &mut [f32],
+    params: &DtSigmoidParams,
+    stop: &dyn enough::Stop,
+) {
     let n = data.len() / 3;
     for i in 0..n {
+        if i & 0xFFFF == 0 && stop.check().is_err() {
+            return;
+        }
         let base = i * 3;
         let r = data[base];
         let g = data[base + 1];

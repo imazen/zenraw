@@ -522,3 +522,128 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         }
     }
 }
+
+// ── Cancellation ──────────────────────────────────────────────────────────
+//
+// The O(pixels) passes (normalize → demosaic → crop → orient → colour →
+// quantise) all poll `stop` at bounded intervals. A 1 MP synthetic frame is
+// big enough to cross every interior check cadence (per-32-row in the
+// demosaic kernels, per-256-row in crop, per-256K elements elsewhere), so a
+// counting token can prove the checks are actually reached mid-pipeline —
+// not only at the pre-existing phase boundaries.
+
+/// A DNG with a plain ascending gradient at `w`×`h`, Bayer RGGB.
+fn dng_sized(w: u16, h: u16) -> Vec<u8> {
+    let entries = vec![
+        short(0x0100, w),
+        short(0x0101, h),
+        short(0x0102, 16),
+        short(0x0103, 1),
+        short(0x0106, 32803),
+        ascii(0x010F, "ZenRaw"),
+        ascii(0x0110, "SyntheticDng"),
+        long(0x0111, 0),
+        short(0x0115, 1),
+        long(0x0117, w as u32 * h as u32 * 2),
+        bytes(0x828E, &[0, 1, 1, 2]), // RGGB
+        bytes(0xC612, &[1, 4, 0, 0]),
+        short(0xC61D, u16::MAX),
+    ];
+    let mut strip = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        strip.extend_from_slice(&((i * 61 % u16::MAX as usize) as u16).to_le_bytes());
+    }
+    strip.extend_from_slice(&[0u8; 64]);
+    build_tiff(entries, &strip, 0x0111)
+}
+
+/// `Stop` that cancels once `check()` has been called `budget` times.
+/// `budget = u64::MAX` records calls without ever firing.
+struct CountdownStop {
+    remaining: std::sync::atomic::AtomicU64,
+}
+
+impl CountdownStop {
+    fn new(budget: u64) -> Self {
+        Self {
+            remaining: std::sync::atomic::AtomicU64::new(budget),
+        }
+    }
+    fn calls(&self) -> u64 {
+        u64::MAX - self.remaining.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl enough::Stop for CountdownStop {
+    fn check(&self) -> Result<(), enough::StopReason> {
+        let prev = self
+            .remaining
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_sub(1),
+            )
+            .unwrap_or(0);
+        if prev == 0 {
+            Err(enough::StopReason::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+    fn should_stop(&self) -> bool {
+        self.remaining.load(std::sync::atomic::Ordering::Relaxed) == 0
+    }
+    fn may_stop(&self) -> bool {
+        true
+    }
+}
+
+/// A token that never fires must not perturb output bytes anywhere in the
+/// pipeline — the checks are a pure observation point.
+#[test]
+fn decode_with_non_firing_stop_is_byte_identical() {
+    let data = dng_sized(1024, 1024);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
+
+    let base = zenraw::decode(&data, &config, &Unstoppable)
+        .expect("baseline decode")
+        .pixels
+        .copy_to_contiguous_bytes();
+
+    let metered = CountdownStop::new(u64::MAX);
+    let out = zenraw::decode(&data, &config, &metered)
+        .expect("decode with non-firing stop")
+        .pixels
+        .copy_to_contiguous_bytes();
+
+    assert_eq!(base, out, "stop checks changed the output bytes");
+    assert!(
+        metered.calls() > 10,
+        "only {} interior checks fired on a 1 MP decode — the pipeline polls \
+         far more often than that",
+        metered.calls()
+    );
+}
+
+/// A token that fires mid-pipeline must surface `RawError::Stopped`, not a
+/// partial image. Small budgets land inside normalize/demosaic — the spans
+/// that were unpolled before this work.
+#[test]
+fn decode_cancelled_mid_pipeline_returns_stopped() {
+    let data = dng_sized(1024, 1024);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
+
+    for budget in [0u64, 2, 6, 20] {
+        let stop = CountdownStop::new(budget);
+        let err = zenraw::decode(&data, &config, &stop)
+            .err()
+            .expect("decode should report cancellation");
+        assert!(
+            matches!(
+                err.error(),
+                zenraw::RawError::Stopped(enough::StopReason::Cancelled)
+            ),
+            "budget {budget}: expected Stopped(Cancelled), got {err:?}"
+        );
+    }
+}

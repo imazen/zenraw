@@ -22,47 +22,63 @@ use alloc::vec::Vec;
 /// - 7: Transverse
 /// - 8: Rotate 270° CW
 pub(crate) fn apply_orientation(
-    mut rgb: Vec<f32>,
+    rgb: Vec<f32>,
     width: usize,
     height: usize,
     orientation: u16,
 ) -> (Vec<f32>, usize, usize) {
+    apply_orientation_stop(rgb, width, height, orientation, &enough::Unstoppable)
+}
+
+/// [`apply_orientation`] with cooperative cancellation — each O(pixels)
+/// permutation checks `stop` once per 64 rows. On fire the helpers
+/// early-return a partially-permuted buffer; callers must propagate before
+/// consuming it.
+pub(crate) fn apply_orientation_stop(
+    mut rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    orientation: u16,
+    stop: &dyn enough::Stop,
+) -> (Vec<f32>, usize, usize) {
+    // Entry check: bounds the gap attributed to the first in-helper check.
+    let _ = stop.check();
     let w = width;
     let h = height;
     match orientation {
         0 | 1 => (rgb, w, h),
         2 => {
-            flip_horizontal(&mut rgb, w, h);
+            flip_horizontal(&mut rgb, w, h, stop);
             (rgb, w, h)
         }
         3 => {
-            rotate_180(&mut rgb, w, h);
+            rotate_180(&mut rgb, w, h, stop);
             (rgb, w, h)
         }
         4 => {
-            flip_vertical(&mut rgb, w, h);
+            flip_vertical(&mut rgb, w, h, stop);
             (rgb, w, h)
         }
         // Orientations 5-8 swap width and height.
         // Display image: new_width = h, new_height = w.
         5 => {
             // Transpose: display(dr,dc) ← src(dc, dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (dc, dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (dc, dr));
             (out, h, w)
         }
         6 => {
             // Rotate 90° CW: display(dr,dc) ← src(h-1-dc, dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (h - 1 - dc, dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (h - 1 - dc, dr));
             (out, h, w)
         }
         7 => {
             // Transverse: display(dr,dc) ← src(h-1-dc, w-1-dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (h - 1 - dc, w - 1 - dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (h - 1 - dc, w - 1 - dr));
             (out, h, w)
         }
         8 => {
             // Rotate 270° CW: display(dr,dc) ← src(dc, w-1-dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (dc, w - 1 - dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (dc, w - 1 - dr));
             (out, h, w)
         }
         _ => (rgb, w, h),
@@ -178,8 +194,11 @@ fn remap_bytes(
 }
 
 /// Flip horizontally (mirror left↔right) in place.
-fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize) {
+fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize, stop: &dyn enough::Stop) {
     for r in 0..height {
+        if r & 63 == 0 && stop.check().is_err() {
+            return;
+        }
         for c in 0..width / 2 {
             let l = (r * width + c) * 3;
             let ri = (r * width + (width - 1 - c)) * 3;
@@ -191,9 +210,12 @@ fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize) {
 }
 
 /// Rotate 180° in place (reverse pixel order).
-fn rotate_180(rgb: &mut [f32], width: usize, height: usize) {
+fn rotate_180(rgb: &mut [f32], width: usize, height: usize, stop: &dyn enough::Stop) {
     let n = width * height;
     for i in 0..n / 2 {
+        if i & 0x3FFFF == 0 && stop.check().is_err() {
+            return;
+        }
         let j = n - 1 - i;
         let a = i * 3;
         let b = j * 3;
@@ -204,9 +226,12 @@ fn rotate_180(rgb: &mut [f32], width: usize, height: usize) {
 }
 
 /// Flip vertically (mirror top↔bottom) in place.
-fn flip_vertical(rgb: &mut [f32], width: usize, height: usize) {
+fn flip_vertical(rgb: &mut [f32], width: usize, height: usize, stop: &dyn enough::Stop) {
     let row_len = width * 3;
     for r in 0..height / 2 {
+        if r & 63 == 0 && stop.check().is_err() {
+            return;
+        }
         let top = r * row_len;
         let bot = (height - 1 - r) * row_len;
         for i in 0..row_len {
@@ -225,10 +250,14 @@ fn remap(
     src_w: usize,
     new_w: usize,
     new_h: usize,
+    stop: &dyn enough::Stop,
     map: impl Fn(usize, usize) -> (usize, usize),
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; new_w * new_h * 3];
     for dr in 0..new_h {
+        if dr & 63 == 0 && stop.check().is_err() {
+            return out;
+        }
         for dc in 0..new_w {
             let (sr, sc) = map(dr, dc);
             let si = (sr * src_w + sc) * 3;
