@@ -647,3 +647,42 @@ fn decode_cancelled_mid_pipeline_returns_stopped() {
         );
     }
 }
+
+/// Cancellation is an error even when the token only reports it once.
+#[test]
+fn single_poll_cancellation_is_never_lost() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct FireOnce {
+        calls: AtomicUsize,
+        fire_at: usize,
+    }
+    impl enough::Stop for FireOnce {
+        fn check(&self) -> Result<(), enough::StopReason> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == self.fire_at {
+                Err(enough::StopReason::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let data = dng_sized(128, 96);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
+    let count = FireOnce {
+        calls: AtomicUsize::new(0),
+        fire_at: usize::MAX,
+    };
+    zenraw::decode(&data, &config, &count).expect("uncancelled decode");
+    for fire_at in 0..count.calls.load(Ordering::Relaxed) {
+        let stop = FireOnce {
+            calls: AtomicUsize::new(0),
+            fire_at,
+        };
+        let err = zenraw::decode(&data, &config, &stop)
+            .err()
+            .expect("each observed cancellation must terminate decoding");
+        assert!(
+            matches!(err.error(), zenraw::RawError::Stopped(_)),
+            "poll {fire_at}: {err}"
+        );
+    }
+}

@@ -163,9 +163,11 @@ fn demosaic_to_rgb_f32_infallible<C: CfaColorAt + ?Sized>(
         match method {
             DemosaicMethod::Bilinear => {
                 demosaic_bilinear(data, width, height, cfa, rgb, &Unstoppable)
+                    .expect("Unstoppable cannot cancel")
             }
             DemosaicMethod::MalvarHeCutler => {
                 demosaic_malvar(data, width, height, cfa, rgb, &Unstoppable)
+                    .expect("Unstoppable cannot cancel")
             }
         }
     } else {
@@ -174,6 +176,7 @@ fn demosaic_to_rgb_f32_infallible<C: CfaColorAt + ?Sized>(
         // wrong colour to most sites. Fall back to the pattern-agnostic
         // same-colour-neighbour interpolation, which only ever asks the CFA.
         demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb, &Unstoppable)
+            .expect("Unstoppable cannot cancel")
     }
 }
 
@@ -223,8 +226,10 @@ pub(crate) fn demosaic_to_rgb_f32_fallible<C: CfaColorAt + ?Sized>(
     let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
     let rgb = if (tile_w, tile_h) == (2, 2) {
         match method {
-            DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb, stop),
-            DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb, stop),
+            DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb, stop)
+                .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?,
+            DemosaicMethod::MalvarHeCutler => demosaic_malvar(data, width, height, cfa, rgb, stop)
+                .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?,
         }
     } else {
         // Non-Bayer tile (X-Trans 6×6, 12×12, 2×8). The Bayer kernels index a
@@ -234,9 +239,8 @@ pub(crate) fn demosaic_to_rgb_f32_fallible<C: CfaColorAt + ?Sized>(
         // the same image disagreeing. Route to the pattern-agnostic kernel,
         // which is what the rawler backend has always used for these sensors.
         demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb, stop)
+            .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?
     };
-    // A kernel may have early-exited on cancellation; do not return the
-    // partial buffer as a successful result.
     stop.check()
         .map_err(|r| at!(crate::error::RawError::from(r)))?;
     Ok(rgb)
@@ -255,15 +259,13 @@ fn demosaic_bilinear<C: CfaColorAt + ?Sized>(
     cfa: &C,
     mut rgb: Vec<f32>,
     stop: &dyn Stop,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, enough::StopReason> {
     debug_assert_eq!(rgb.len(), width * height * 3);
     debug_assert_eq!(cfa.tile_dims(), (2, 2), "Bayer kernel needs a 2×2 CFA tile");
 
     for row in 0..height {
-        if row & 31 == 0 && stop.check().is_err() {
-            // Early-exit with a partial buffer; the caller's next check
-            // propagates the cancellation before the buffer is consumed.
-            return rgb;
+        if row & 31 == 0 {
+            stop.check()?;
         }
         for col in 0..width {
             let color = cfa.color_at(row, col);
@@ -295,7 +297,7 @@ fn demosaic_bilinear<C: CfaColorAt + ?Sized>(
         }
     }
 
-    rgb
+    Ok(rgb)
 }
 
 /// Green at a red or blue site: average of 4 neighbors (cross pattern).
@@ -444,7 +446,7 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     cfa: &C,
     mut rgb: Vec<f32>,
     stop: &dyn Stop,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, enough::StopReason> {
     debug_assert_eq!(rgb.len(), width * height * 3);
     debug_assert_eq!(cfa.tile_dims(), (2, 2), "Bayer kernel needs a 2×2 CFA tile");
 
@@ -453,14 +455,14 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     const BORDER: usize = 2;
     if width <= 2 * BORDER || height <= 2 * BORDER {
         for row in 0..height {
-            if row & 31 == 0 && stop.check().is_err() {
-                return rgb;
+            if row & 31 == 0 {
+                stop.check()?;
             }
             for col in 0..width {
                 malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
             }
         }
-        return rgb;
+        return Ok(rgb);
     }
 
     // Precompute CFA 2×2 tile colors (Bayer patterns repeat every 2 rows/cols)
@@ -495,8 +497,8 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     }
     // Left/right 2 columns of interior rows
     for row in BORDER..(height - BORDER) {
-        if row & 31 == 0 && stop.check().is_err() {
-            return rgb;
+        if row & 31 == 0 {
+            stop.check()?;
         }
         for col in 0..BORDER {
             malvar_pixel_clamped(data, &mut rgb, width, height, row, col, cfa);
@@ -507,9 +509,9 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     }
 
     // ── Interior pixels: direct indexing, no boundary checks ──
-    malvar_interior_stop(data, &mut rgb, width, height, cfa_tile, gh, stop);
+    malvar_interior_stop(data, &mut rgb, width, height, cfa_tile, gh, stop)?;
 
-    rgb
+    Ok(rgb)
 }
 
 /// Interior Malvar demosaic loop — autoversioned for AVX2/NEON dispatch.
@@ -525,12 +527,12 @@ fn malvar_interior_stop(
     cfa_tile: [[usize; 2]; 2],
     gh: [[usize; 2]; 2],
     stop: &dyn Stop,
-) {
+) -> Result<(), enough::StopReason> {
     const BORDER: usize = 2;
     let w = width;
     for row in BORDER..(height - BORDER) {
-        if row & 31 == 0 && stop.check().is_err() {
-            return;
+        if row & 31 == 0 {
+            stop.check()?;
         }
         let rp = row & 1;
         for col in BORDER..(width - BORDER) {
@@ -592,6 +594,7 @@ fn malvar_interior_stop(
             }
         }
     }
+    Ok(())
 }
 
 /// Process a single pixel using the safe clamped `px()` access pattern.
@@ -819,6 +822,7 @@ pub(crate) fn demosaic_xtrans_bilinear(
 ) -> Vec<f32> {
     let rgb = vec![0.0f32; width * height * 3];
     demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb, &Unstoppable)
+        .expect("Unstoppable cannot cancel")
 }
 
 /// X-Trans bilinear demosaic honoring the per-site
@@ -846,7 +850,8 @@ pub(crate) fn demosaic_xtrans_bilinear_fallible<C: CfaColorAt + ?Sized>(
     // Full-image demosaic output sized from the (untrusted) sensor dims →
     // default fallible.
     let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
-    let rgb = demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb, stop);
+    let rgb = demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb, stop)
+        .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?;
     stop.check()
         .map_err(|r| at!(crate::error::RawError::from(r)))?;
     Ok(rgb)
@@ -861,12 +866,12 @@ fn demosaic_xtrans_bilinear_into<C: CfaColorAt + ?Sized>(
     cfa: &C,
     mut rgb: Vec<f32>,
     stop: &dyn Stop,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, enough::StopReason> {
     debug_assert_eq!(rgb.len(), width * height * 3);
 
     for row in 0..height {
-        if row & 31 == 0 && stop.check().is_err() {
-            return rgb;
+        if row & 31 == 0 {
+            stop.check()?;
         }
         for col in 0..width {
             let known = cfa.color_at(row, col);
@@ -886,7 +891,7 @@ fn demosaic_xtrans_bilinear_into<C: CfaColorAt + ?Sized>(
         }
     }
 
-    rgb
+    Ok(rgb)
 }
 
 /// Average same-color neighbors within a 5×5 window.
@@ -970,7 +975,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
         assert_eq!(rgb.len(), width * height * 3);
     }
 
@@ -984,7 +990,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
         assert_eq!(rgb.len(), width * height * 3);
     }
 
@@ -998,7 +1005,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
 
         // At R sites, the red channel should be the original value
         for row in 0..height {
@@ -1025,7 +1033,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
 
         for row in 0..height {
             for col in 0..width {
@@ -1051,7 +1060,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
         for val in &rgb {
             assert!(*val >= 0.0, "Bilinear produced negative value: {val}");
         }
@@ -1067,7 +1077,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
         for val in &rgb {
             assert!(*val >= 0.0, "Malvar produced negative value: {val}");
         }
@@ -1088,7 +1099,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
         let rgb_malvar = demosaic_malvar(
             &data,
             width,
@@ -1096,7 +1108,8 @@ mod tests {
             &cfa,
             vec![0.0; width * height * 3],
             &Unstoppable,
-        );
+        )
+        .expect("Unstoppable cannot cancel");
 
         // Interior pixels should be very close to 0.5 for all channels
         for row in 2..height - 2 {
@@ -1463,7 +1476,8 @@ mod tests {
                         &cfa,
                         vec![0.0f32; width * height * 3],
                         &Unstoppable,
-                    ),
+                    )
+                    .expect("Unstoppable cannot cancel"),
                     DemosaicMethod::MalvarHeCutler => demosaic_malvar(
                         &data,
                         width,
@@ -1471,7 +1485,8 @@ mod tests {
                         &cfa,
                         vec![0.0f32; width * height * 3],
                         &Unstoppable,
-                    ),
+                    )
+                    .expect("Unstoppable cannot cancel"),
                 };
                 for (i, (a, b)) in routed.iter().zip(&direct).enumerate() {
                     assert_eq!(

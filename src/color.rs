@@ -55,22 +55,22 @@ fn apply_color_matrix_stop(
     stop: &dyn Stop,
 ) -> Result<(), StopReason> {
     let pixel_count = rgb.len() / 3;
-    for i in 0..pixel_count {
-        if i & 0xFFFF == 0 {
-            stop.check()?;
+    for batch_start in (0..pixel_count).step_by(65536) {
+        stop.check()?;
+        for i in batch_start..(pixel_count).min(batch_start + 65536) {
+            let idx = i * 3;
+            let r = rgb[idx];
+            let g = rgb[idx + 1];
+            let b = rgb[idx + 2];
+
+            let sr = mat[0][0] * r + mat[0][1] * g + mat[0][2] * b;
+            let sg = mat[1][0] * r + mat[1][1] * g + mat[1][2] * b;
+            let sb = mat[2][0] * r + mat[2][1] * g + mat[2][2] * b;
+
+            rgb[idx] = sr.clamp(0.0, 1.0);
+            rgb[idx + 1] = sg.clamp(0.0, 1.0);
+            rgb[idx + 2] = sb.clamp(0.0, 1.0);
         }
-        let idx = i * 3;
-        let r = rgb[idx];
-        let g = rgb[idx + 1];
-        let b = rgb[idx + 2];
-
-        let sr = mat[0][0] * r + mat[0][1] * g + mat[0][2] * b;
-        let sg = mat[1][0] * r + mat[1][1] * g + mat[1][2] * b;
-        let sb = mat[2][0] * r + mat[2][1] * g + mat[2][2] * b;
-
-        rgb[idx] = sr.clamp(0.0, 1.0);
-        rgb[idx + 1] = sg.clamp(0.0, 1.0);
-        rgb[idx + 2] = sb.clamp(0.0, 1.0);
     }
     Ok(())
 }
@@ -240,11 +240,11 @@ pub fn apply_srgb_gamma(rgb: &mut [f32]) {
 /// samples. Early-exits with the error; callers must not consume the
 /// partially-encoded buffer.
 pub(crate) fn apply_srgb_gamma_stop(rgb: &mut [f32], stop: &dyn Stop) -> Result<(), StopReason> {
-    for (i, val) in rgb.iter_mut().enumerate() {
-        if i & 0x3FFFF == 0 {
-            stop.check()?;
+    for batch in rgb.chunks_mut(1 << 18) {
+        stop.check()?;
+        for val in batch {
+            *val = crate::simd::linear_to_srgb(*val);
         }
-        *val = crate::simd::linear_to_srgb(*val);
     }
     Ok(())
 }
@@ -269,12 +269,12 @@ fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
 /// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
 pub(crate) fn f32_to_u16(src: &[f32], stop: &dyn Stop) -> Result<alloc::vec::Vec<u8>, StopReason> {
     let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
-    for (i, &v) in src.iter().enumerate() {
-        if i & 0x3FFFF == 0 {
-            stop.check()?;
+    for batch in src.chunks(1 << 18) {
+        stop.check()?;
+        for &v in batch {
+            let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+            out.extend_from_slice(&val.to_ne_bytes());
         }
-        let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
-        out.extend_from_slice(&val.to_ne_bytes());
     }
     Ok(out)
 }

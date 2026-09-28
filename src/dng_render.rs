@@ -390,17 +390,17 @@ pub(crate) fn apply_matrix_rgb_stop(
     ];
 
     let npix = pixels.len() / 3;
-    for i in 0..npix {
-        if i & 0xFFFF == 0 {
-            stop.check()?;
+    for batch_start in (0..npix).step_by(65536) {
+        stop.check()?;
+        for i in batch_start..(npix).min(batch_start + 65536) {
+            let base = i * 3;
+            let r = pixels[base];
+            let g = pixels[base + 1];
+            let b = pixels[base + 2];
+            pixels[base] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
+            pixels[base + 1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
+            pixels[base + 2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
         }
-        let base = i * 3;
-        let r = pixels[base];
-        let g = pixels[base + 1];
-        let b = pixels[base + 2];
-        pixels[base] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
-        pixels[base + 1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
-        pixels[base + 2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
     }
     Ok(())
 }
@@ -473,18 +473,18 @@ pub(crate) fn linear_to_srgb_u16(
     stop: &dyn enough::Stop,
 ) -> core::result::Result<Vec<u8>, enough::StopReason> {
     let mut output = Vec::with_capacity(linear.len() * 2);
-    for (i, &v) in linear.iter().enumerate() {
-        if i & 0x3FFFF == 0 {
-            stop.check()?;
+    for batch in linear.chunks(1 << 18) {
+        stop.check()?;
+        for &v in batch {
+            let v = v.clamp(0.0, 1.0);
+            let srgb = if v <= 0.003_130_8 {
+                v * 12.92
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            };
+            let val = (srgb * 65535.0 + 0.5) as u16;
+            output.extend_from_slice(&val.to_ne_bytes());
         }
-        let v = v.clamp(0.0, 1.0);
-        let srgb = if v <= 0.003_130_8 {
-            v * 12.92
-        } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
-        };
-        let val = (srgb * 65535.0 + 0.5) as u16;
-        output.extend_from_slice(&val.to_ne_bytes());
     }
     Ok(output)
 }

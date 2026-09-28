@@ -629,10 +629,8 @@ pub(crate) fn decode(
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
         let (data, w, h) =
-            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop);
-        // The permutation early-exits on cancellation; propagate before the
-        // partially-permuted buffer is consumed downstream.
-        stop.check().map_err(|r| at!(RawError::from(r)))?;
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
         (data, w, h, 1u16)
     } else {
         (cropped_rgb, out_w, out_h, raw_orient)
@@ -759,26 +757,26 @@ fn decode_non_bayer(
             ))
         })?;
     let mut rgb = crate::alloc_util::vec_with_capacity(config.alloc_pref, true, rgb_len)?;
-    for i in 0..width * height {
-        if i & 0x3FFFF == 0 {
-            stop.check().map_err(|r| at!(RawError::from(r)))?;
+    for batch_start in (0..width * height).step_by(262144) {
+        stop.check().map_err(|r| at!(RawError::from(r)))?;
+        for i in batch_start..(width * height).min(batch_start + 262144) {
+            let base = i * cpp;
+            rgb.push(if base < normalized.len() {
+                normalized[base]
+            } else {
+                0.0
+            });
+            rgb.push(if base + 1 < normalized.len() {
+                normalized[base + 1]
+            } else {
+                0.0
+            });
+            rgb.push(if base + 2 < normalized.len() {
+                normalized[base + 2]
+            } else {
+                0.0
+            });
         }
-        let base = i * cpp;
-        rgb.push(if base < normalized.len() {
-            normalized[base]
-        } else {
-            0.0
-        });
-        rgb.push(if base + 1 < normalized.len() {
-            normalized[base + 1]
-        } else {
-            0.0
-        });
-        rgb.push(if base + 2 < normalized.len() {
-            normalized[base + 2]
-        } else {
-            0.0
-        });
     }
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
@@ -825,10 +823,8 @@ fn decode_non_bayer(
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
         let (data, w, h) =
-            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop);
-        // The permutation early-exits on cancellation; propagate before the
-        // partially-permuted buffer is consumed downstream.
-        stop.check().map_err(|r| at!(RawError::from(r)))?;
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
         (data, w, h, 1u16)
     } else {
         (cropped_rgb, out_w, out_h, raw_orient)
@@ -962,20 +958,21 @@ fn normalize_raw_data(
             }
 
             let mut out = new_buf(total)?;
-            for (i, &sample) in data.iter().enumerate().take(total) {
-                if i & 0x3FFFF == 0 {
-                    stop.check().map_err(RawError::from)?;
+            for (batch_index, batch) in data[..data.len().min(total)].chunks(1 << 18).enumerate() {
+                stop.check().map_err(RawError::from)?;
+                for (offset, &sample) in batch.iter().enumerate() {
+                    let i = batch_index * (1 << 18) + offset;
+                    let ch = if cpp == 1 {
+                        raw.cfa.color_at(i / width, i % width)
+                    } else {
+                        i % cpp
+                    };
+                    let bl = black[ch.min(3)] as f32;
+                    let wl = white[ch.min(3)] as f32;
+                    let range = (wl - bl).max(1.0);
+                    let val = (sample as f32 - bl) / range;
+                    out.push(val.clamp(0.0, 1.0));
                 }
-                let ch = if cpp == 1 {
-                    raw.cfa.color_at(i / width, i % width)
-                } else {
-                    i % cpp
-                };
-                let bl = black[ch.min(3)] as f32;
-                let wl = white[ch.min(3)] as f32;
-                let range = (wl - bl).max(1.0);
-                let val = (sample as f32 - bl) / range;
-                out.push(val.clamp(0.0, 1.0));
             }
             Ok(out)
         }
@@ -989,20 +986,21 @@ fn normalize_raw_data(
             }
 
             let mut out = new_buf(total)?;
-            for (i, &sample) in data.iter().enumerate().take(total) {
-                if i & 0x3FFFF == 0 {
-                    stop.check().map_err(RawError::from)?;
+            for (batch_index, batch) in data[..data.len().min(total)].chunks(1 << 18).enumerate() {
+                stop.check().map_err(RawError::from)?;
+                for (offset, &sample) in batch.iter().enumerate() {
+                    let i = batch_index * (1 << 18) + offset;
+                    let ch = if cpp == 1 {
+                        raw.cfa.color_at(i / width, i % width)
+                    } else {
+                        i % cpp
+                    };
+                    let bl = black[ch.min(3)] as f32;
+                    let wl = white[ch.min(3)] as f32;
+                    let range = (wl - bl).max(1.0);
+                    let val = (sample - bl) / range;
+                    out.push(val.clamp(0.0, 1.0));
                 }
-                let ch = if cpp == 1 {
-                    raw.cfa.color_at(i / width, i % width)
-                } else {
-                    i % cpp
-                };
-                let bl = black[ch.min(3)] as f32;
-                let wl = white[ch.min(3)] as f32;
-                let range = (wl - bl).max(1.0);
-                let val = (sample - bl) / range;
-                out.push(val.clamp(0.0, 1.0));
             }
             Ok(out)
         }
