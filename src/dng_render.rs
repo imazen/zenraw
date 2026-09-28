@@ -359,6 +359,18 @@ pub(crate) fn compute_camera_to_srgb(color_matrix: &Mat3, white_xy: (f64, f64)) 
 
 /// Apply a 3×3 color matrix to interleaved RGB f32 pixel data.
 pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
+    // `Unstoppable` never fires, so the Result is structurally `Ok`.
+    let _ = apply_matrix_rgb_stop(pixels, matrix, &enough::Unstoppable);
+}
+
+/// [`apply_matrix_rgb`] with cooperative cancellation — checked every 64K
+/// pixels. Early-exits with the error; callers must not consume the
+/// partially-transformed buffer.
+pub(crate) fn apply_matrix_rgb_stop(
+    pixels: &mut [f32],
+    matrix: &Mat3,
+    stop: &dyn enough::Stop,
+) -> core::result::Result<(), enough::StopReason> {
     let m = [
         [
             matrix[0][0] as f32,
@@ -378,15 +390,19 @@ pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
     ];
 
     let npix = pixels.len() / 3;
-    for i in 0..npix {
-        let base = i * 3;
-        let r = pixels[base];
-        let g = pixels[base + 1];
-        let b = pixels[base + 2];
-        pixels[base] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
-        pixels[base + 1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
-        pixels[base + 2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
+    for batch_start in (0..npix).step_by(65536) {
+        stop.check()?;
+        for i in batch_start..(npix).min(batch_start + 65536) {
+            let base = i * 3;
+            let r = pixels[base];
+            let g = pixels[base + 1];
+            let b = pixels[base + 2];
+            pixels[base] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
+            pixels[base + 1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
+            pixels[base + 2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
+        }
     }
+    Ok(())
 }
 
 /// Apply sRGB gamma encoding to linear f32 data, producing u8 output.
@@ -452,19 +468,25 @@ pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
 }
 
 /// Convert linear f32 \[0,1\] RGB data to sRGB-gamma u16 \[0,65535\] byte data.
-pub(crate) fn linear_to_srgb_u16(linear: &[f32]) -> Vec<u8> {
+pub(crate) fn linear_to_srgb_u16(
+    linear: &[f32],
+    stop: &dyn enough::Stop,
+) -> core::result::Result<Vec<u8>, enough::StopReason> {
     let mut output = Vec::with_capacity(linear.len() * 2);
-    for &v in linear {
-        let v = v.clamp(0.0, 1.0);
-        let srgb = if v <= 0.003_130_8 {
-            v * 12.92
-        } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
-        };
-        let val = (srgb * 65535.0 + 0.5) as u16;
-        output.extend_from_slice(&val.to_ne_bytes());
+    for batch in linear.chunks(1 << 18) {
+        stop.check()?;
+        for &v in batch {
+            let v = v.clamp(0.0, 1.0);
+            let srgb = if v <= 0.003_130_8 {
+                v * 12.92
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            };
+            let val = (srgb * 65535.0 + 0.5) as u16;
+            output.extend_from_slice(&val.to_ne_bytes());
+        }
     }
-    output
+    Ok(output)
 }
 
 // ── Full DNG rendering pipeline ──────────────────────────────────────

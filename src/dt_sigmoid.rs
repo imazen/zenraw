@@ -152,111 +152,121 @@ pub(crate) fn default_params() -> DtSigmoidParams {
 ///
 /// This applies the log-logistic sigmoid to each RGB channel independently,
 /// with optional hue preservation (interpolating the middle channel).
-pub(crate) fn apply_dt_sigmoid(data: &mut [f32], params: &DtSigmoidParams) {
+///
+/// Checks `stop` between 64K-pixel batches and returns cancellation directly.
+pub(crate) fn apply_dt_sigmoid(
+    data: &mut [f32],
+    params: &DtSigmoidParams,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
     let n = data.len() / 3;
-    for i in 0..n {
-        let base = i * 3;
-        let r = data[base];
-        let g = data[base + 1];
-        let b = data[base + 2];
+    for batch_start in (0..n).step_by(1 << 16) {
+        stop.check()?;
+        for i in batch_start..n.min(batch_start + (1 << 16)) {
+            let base = i * 3;
+            let r = data[base];
+            let g = data[base + 1];
+            let b = data[base + 2];
 
-        // Desaturate negative values
-        let avg = ((r + g + b) / 3.0).max(0.0);
-        let min_val = r.min(g).min(b);
-        let sat_factor = if min_val < 0.0 {
-            -avg / (min_val - avg)
-        } else {
-            1.0
-        };
-        let r = avg + sat_factor * (r - avg);
-        let g = avg + sat_factor * (g - avg);
-        let b = avg + sat_factor * (b - avg);
-
-        // Per-channel sigmoid
-        let sr = loglogistic_sigmoid(
-            r,
-            params.white_target,
-            params.paper_exp,
-            params.film_fog,
-            params.film_power,
-            params.paper_power,
-        );
-        let sg = loglogistic_sigmoid(
-            g,
-            params.white_target,
-            params.paper_exp,
-            params.film_fog,
-            params.film_power,
-            params.paper_power,
-        );
-        let sb = loglogistic_sigmoid(
-            b,
-            params.white_target,
-            params.paper_exp,
-            params.film_fog,
-            params.film_power,
-            params.paper_power,
-        );
-
-        if params.hue_preservation > 1e-6 {
-            // Hue preservation: find channel order and interpolate middle channel
-            let pix = [r, g, b];
-            let per_ch = [sr, sg, sb];
-            let (max_i, mid_i, min_i) = channel_order(&pix);
-
-            let chroma = pix[max_i] - pix[min_i];
-            let midscale = if chroma.abs() > 1e-10 {
-                (pix[mid_i] - pix[min_i]) / chroma
+            // Desaturate negative values
+            let avg = ((r + g + b) / 3.0).max(0.0);
+            let min_val = r.min(g).min(b);
+            let sat_factor = if min_val < 0.0 {
+                -avg / (min_val - avg)
             } else {
-                0.0
+                1.0
             };
+            let r = avg + sat_factor * (r - avg);
+            let g = avg + sat_factor * (g - avg);
+            let b = avg + sat_factor * (b - avg);
 
-            // Full hue correction for middle channel
-            let full_hue_mid = per_ch[min_i] + (per_ch[max_i] - per_ch[min_i]) * midscale;
-            let naive_hue_mid = (1.0 - params.hue_preservation) * per_ch[mid_i]
-                + params.hue_preservation * full_hue_mid;
+            // Per-channel sigmoid
+            let sr = loglogistic_sigmoid(
+                r,
+                params.white_target,
+                params.paper_exp,
+                params.film_fog,
+                params.film_power,
+                params.paper_power,
+            );
+            let sg = loglogistic_sigmoid(
+                g,
+                params.white_target,
+                params.paper_exp,
+                params.film_fog,
+                params.film_power,
+                params.paper_power,
+            );
+            let sb = loglogistic_sigmoid(
+                b,
+                params.white_target,
+                params.paper_exp,
+                params.film_fog,
+                params.film_power,
+                params.paper_power,
+            );
 
-            // Energy preservation
-            let per_ch_energy = per_ch[0] + per_ch[1] + per_ch[2];
-            let naive_hue_energy = per_ch[min_i] + naive_hue_mid + per_ch[max_i];
-            let pix_min_plus_mid = pix[min_i] + pix[mid_i];
-            let blend = if pix_min_plus_mid.abs() > 1e-10 {
-                2.0 * pix[min_i] / pix_min_plus_mid
+            if params.hue_preservation > 1e-6 {
+                // Hue preservation: find channel order and interpolate middle channel
+                let pix = [r, g, b];
+                let per_ch = [sr, sg, sb];
+                let (max_i, mid_i, min_i) = channel_order(&pix);
+
+                let chroma = pix[max_i] - pix[min_i];
+                let midscale = if chroma.abs() > 1e-10 {
+                    (pix[mid_i] - pix[min_i]) / chroma
+                } else {
+                    0.0
+                };
+
+                // Full hue correction for middle channel
+                let full_hue_mid = per_ch[min_i] + (per_ch[max_i] - per_ch[min_i]) * midscale;
+                let naive_hue_mid = (1.0 - params.hue_preservation) * per_ch[mid_i]
+                    + params.hue_preservation * full_hue_mid;
+
+                // Energy preservation
+                let per_ch_energy = per_ch[0] + per_ch[1] + per_ch[2];
+                let naive_hue_energy = per_ch[min_i] + naive_hue_mid + per_ch[max_i];
+                let pix_min_plus_mid = pix[min_i] + pix[mid_i];
+                let blend = if pix_min_plus_mid.abs() > 1e-10 {
+                    2.0 * pix[min_i] / pix_min_plus_mid
+                } else {
+                    0.0
+                };
+                let energy_target = blend * per_ch_energy + (1.0 - blend) * naive_hue_energy;
+
+                let mut out = [0.0f32; 3];
+                if naive_hue_mid <= per_ch[mid_i] {
+                    let hp = params.hue_preservation;
+                    let corrected_mid = ((1.0 - hp) * per_ch[mid_i]
+                        + hp * (midscale * per_ch[max_i]
+                            + (1.0 - midscale) * (energy_target - per_ch[max_i])))
+                        / (1.0 + hp * (1.0 - midscale));
+                    out[min_i] = energy_target - per_ch[max_i] - corrected_mid;
+                    out[mid_i] = corrected_mid;
+                    out[max_i] = per_ch[max_i];
+                } else {
+                    let hp = params.hue_preservation;
+                    let corrected_mid = ((1.0 - hp) * per_ch[mid_i]
+                        + hp * (per_ch[min_i] * (1.0 - midscale)
+                            + midscale * (energy_target - per_ch[min_i])))
+                        / (1.0 + hp * midscale);
+                    out[min_i] = per_ch[min_i];
+                    out[mid_i] = corrected_mid;
+                    out[max_i] = energy_target - per_ch[min_i] - corrected_mid;
+                }
+
+                data[base] = out[0];
+                data[base + 1] = out[1];
+                data[base + 2] = out[2];
             } else {
-                0.0
-            };
-            let energy_target = blend * per_ch_energy + (1.0 - blend) * naive_hue_energy;
-
-            let mut out = [0.0f32; 3];
-            if naive_hue_mid <= per_ch[mid_i] {
-                let hp = params.hue_preservation;
-                let corrected_mid = ((1.0 - hp) * per_ch[mid_i]
-                    + hp * (midscale * per_ch[max_i]
-                        + (1.0 - midscale) * (energy_target - per_ch[max_i])))
-                    / (1.0 + hp * (1.0 - midscale));
-                out[min_i] = energy_target - per_ch[max_i] - corrected_mid;
-                out[mid_i] = corrected_mid;
-                out[max_i] = per_ch[max_i];
-            } else {
-                let hp = params.hue_preservation;
-                let corrected_mid = ((1.0 - hp) * per_ch[mid_i]
-                    + hp * (per_ch[min_i] * (1.0 - midscale)
-                        + midscale * (energy_target - per_ch[min_i])))
-                    / (1.0 + hp * midscale);
-                out[min_i] = per_ch[min_i];
-                out[mid_i] = corrected_mid;
-                out[max_i] = energy_target - per_ch[min_i] - corrected_mid;
+                data[base] = sr;
+                data[base + 1] = sg;
+                data[base + 2] = sb;
             }
-
-            data[base] = out[0];
-            data[base + 1] = out[1];
-            data[base + 2] = out[2];
-        } else {
-            data[base] = sr;
-            data[base + 1] = sg;
-            data[base + 2] = sb;
         }
     }
+    Ok(())
 }
 
 /// Determine max/mid/min channel indices.

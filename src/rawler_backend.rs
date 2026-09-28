@@ -200,7 +200,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 2: Extract and normalize sensor data to f32 [0, 1]
-    let normalized = normalize_raw_data(&raw, config.alloc_pref).map_err(|e| at!(e))?;
+    let normalized = normalize_raw_data(&raw, config.alloc_pref, stop).map_err(|e| at!(e))?;
 
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
@@ -244,6 +244,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             height,
             &cfa_pattern,
             config.alloc_pref,
+            stop,
         )?
     } else {
         // Standard 2x2 Bayer. Sample rawler's own 48×48 tiled lookup for the
@@ -261,6 +262,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             &bayer,
             config.demosaic,
             config.alloc_pref,
+            stop,
         )?
     };
 
@@ -268,7 +270,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
 
     // Step 4: Crop before color (Develop mode needs dimensions for DngPipeline)
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_rawler_crop(&rgb, width, height, &raw, config.alloc_pref)?
+        apply_rawler_crop(&rgb, width, height, &raw, config.alloc_pref, stop)?
     } else {
         (rgb, width, height)
     };
@@ -279,7 +281,9 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
-        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        let (data, w, h) =
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
         (data, w, h, 1u16)
     } else {
         (cropped_rgb, out_w, out_h, raw_orient)
@@ -302,6 +306,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
                 is_dng,
                 final_orient,
                 config,
+                stop,
             )
         }
         OutputMode::Linear => {
@@ -317,13 +322,17 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
             } else {
                 raw.wb_coeffs
             };
-            color::apply_color_pipeline(&mut colored, wb, xyz_to_cam, config.target);
+            color::apply_color_pipeline_stop(&mut colored, wb, xyz_to_cam, config.target, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
 
             // Apply exposure_ev if nonzero
             if config.exposure_ev.abs() > 1e-6 {
                 let mult = 2.0f32.powf(config.exposure_ev);
-                for v in colored.iter_mut() {
-                    *v *= mult;
+                for chunk in colored.chunks_mut(1 << 20) {
+                    stop.check().map_err(|r| at!(RawError::from(r)))?;
+                    for v in chunk {
+                        *v *= mult;
+                    }
                 }
             }
 
@@ -336,6 +345,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
                 is_dng,
                 final_orient,
                 config.target.to_color_primaries(),
+                stop,
             )
         }
         OutputMode::CameraRaw => {
@@ -349,6 +359,7 @@ pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop) -> Result<
                 is_dng,
                 final_orient,
                 zenpixels::ColorPrimaries::Unknown,
+                stop,
             )
         }
     }
@@ -366,6 +377,7 @@ fn auto_develop_output(
     is_dng: bool,
     orientation: u16,
     config: &RawDecodeConfig,
+    stop: &dyn Stop,
 ) -> Result<RawDecodeOutput> {
     use crate::dng_render::DngPipeline;
 
@@ -420,46 +432,61 @@ fn auto_develop_output(
         let total_ev = pipeline.baseline_exposure as f32 + config.exposure_ev;
         let ev_mult = 2.0f32.powf(total_ev);
         if (ev_mult - 1.0).abs() > 1e-6 {
-            for v in pixels.iter_mut() {
-                *v *= ev_mult;
+            for chunk in pixels.chunks_mut(1 << 20) {
+                stop.check().map_err(|r| at!(RawError::from(r)))?;
+                for v in chunk {
+                    *v *= ev_mult;
+                }
             }
         }
 
         // 2. Camera → output color matrix (WB baked in)
-        crate::dng_render::apply_matrix_rgb(&mut pixels, &pipeline.camera_to_output);
+        crate::dng_render::apply_matrix_rgb_stop(&mut pixels, &pipeline.camera_to_output, stop)
+            .map_err(|r| at!(RawError::from(r)))?;
 
         // Clamp negatives (matrix can produce them)
-        for v in pixels.iter_mut() {
-            *v = v.max(0.0);
+        for chunk in pixels.chunks_mut(1 << 20) {
+            stop.check().map_err(|r| at!(RawError::from(r)))?;
+            for v in chunk {
+                *v = v.max(0.0);
+            }
         }
 
         // 3. Exposure boost (~1.85x, matching the zenfilters FiveK parity baseline)
         let exposure_boost = 1.85f32;
-        for v in pixels.iter_mut() {
-            *v *= exposure_boost;
+        for chunk in pixels.chunks_mut(1 << 20) {
+            stop.check().map_err(|r| at!(RawError::from(r)))?;
+            for v in chunk {
+                *v *= exposure_boost;
+            }
         }
 
         // 4. Scene-referred sigmoid tone mapping with hue preservation
         let params = crate::dt_sigmoid::default_params();
-        crate::dt_sigmoid::apply_dt_sigmoid(&mut pixels, &params);
+        crate::dt_sigmoid::apply_dt_sigmoid(&mut pixels, &params, stop)
+            .map_err(|r| at!(RawError::from(r)))?;
 
         // 5. sRGB gamma → u16
-        crate::dng_render::linear_to_srgb_u16(&pixels)
+        crate::dng_render::linear_to_srgb_u16(&pixels, stop).map_err(|r| at!(RawError::from(r)))?
     } else {
         // Fallback: basic color pipeline + gamma if DngPipeline can't be built
         let mut rgb = camera_linear;
-        color::apply_color_pipeline(&mut rgb, raw.wb_coeffs, xyz_to_cam, config.target);
+        color::apply_color_pipeline_stop(&mut rgb, raw.wb_coeffs, xyz_to_cam, config.target, stop)
+            .map_err(|r| at!(RawError::from(r)))?;
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
             let mult = 2.0f32.powf(config.exposure_ev);
-            for v in rgb.iter_mut() {
-                *v *= mult;
+            for chunk in rgb.chunks_mut(1 << 20) {
+                stop.check().map_err(|r| at!(RawError::from(r)))?;
+                for v in chunk {
+                    *v *= mult;
+                }
             }
         }
 
-        color::apply_srgb_gamma(&mut rgb);
-        color::f32_to_u16(&rgb)
+        color::apply_srgb_gamma_stop(&mut rgb, stop).map_err(|r| at!(RawError::from(r)))?;
+        color::f32_to_u16(&rgb, stop).map_err(|r| at!(RawError::from(r)))?
     };
 
     let buf = PixelBuffer::from_vec(
@@ -488,6 +515,7 @@ fn extract_cfa_pattern(raw: &rawler::RawImage) -> String {
 fn normalize_raw_data(
     raw: &rawler::RawImage,
     alloc_pref: crate::alloc_util::AllocPref,
+    stop: &dyn Stop,
 ) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;
@@ -520,21 +548,25 @@ fn normalize_raw_data(
             }
 
             let mut out = new_buf(total)?;
-            for (i, &sample) in data.iter().enumerate().take(total) {
-                let ch = if cpp == 1 {
-                    if let Some(cfa) = cfa_opt {
-                        cfa.color_at(i / width, i % width)
+            for (batch_index, batch) in data[..data.len().min(total)].chunks(1 << 18).enumerate() {
+                stop.check().map_err(RawError::from)?;
+                for (offset, &sample) in batch.iter().enumerate() {
+                    let i = batch_index * (1 << 18) + offset;
+                    let ch = if cpp == 1 {
+                        if let Some(cfa) = cfa_opt {
+                            cfa.color_at(i / width, i % width)
+                        } else {
+                            0
+                        }
                     } else {
-                        0
-                    }
-                } else {
-                    i % cpp
-                };
-                let bl = black[ch.min(3)];
-                let wl = white[ch.min(3)];
-                let range = (wl - bl).max(1.0);
-                let val = (sample as f32 - bl) / range;
-                out.push(val.clamp(0.0, 1.0));
+                        i % cpp
+                    };
+                    let bl = black[ch.min(3)];
+                    let wl = white[ch.min(3)];
+                    let range = (wl - bl).max(1.0);
+                    let val = (sample as f32 - bl) / range;
+                    out.push(val.clamp(0.0, 1.0));
+                }
             }
             Ok(out)
         }
@@ -559,25 +591,37 @@ fn normalize_raw_data(
                 let wl = white[0];
                 let range = (wl - bl).max(1.0);
                 let inv_range = 1.0 / range;
-                crate::simd::normalize_uniform_fallible(&data[..total], bl, inv_range, alloc_pref)
-                    .map_err(|e| e.decompose().0)
+                crate::simd::normalize_uniform_fallible(
+                    &data[..total],
+                    bl,
+                    inv_range,
+                    alloc_pref,
+                    stop,
+                )
+                .map_err(|e| e.decompose().0)
             } else {
                 let mut out = new_buf(total)?;
-                for (i, &sample) in data.iter().enumerate().take(total) {
-                    let ch = if cpp == 1 {
-                        if let Some(cfa) = cfa_opt {
-                            cfa.color_at(i / width, i % width)
+                for (batch_index, batch) in
+                    data[..data.len().min(total)].chunks(1 << 18).enumerate()
+                {
+                    stop.check().map_err(RawError::from)?;
+                    for (offset, &sample) in batch.iter().enumerate() {
+                        let i = batch_index * (1 << 18) + offset;
+                        let ch = if cpp == 1 {
+                            if let Some(cfa) = cfa_opt {
+                                cfa.color_at(i / width, i % width)
+                            } else {
+                                0
+                            }
                         } else {
-                            0
-                        }
-                    } else {
-                        i % cpp
-                    };
-                    let bl = black[ch.min(3)];
-                    let wl = white[ch.min(3)];
-                    let range = (wl - bl).max(1.0);
-                    let val = (sample - bl) / range;
-                    out.push(val.clamp(0.0, 1.0));
+                            i % cpp
+                        };
+                        let bl = black[ch.min(3)];
+                        let wl = white[ch.min(3)];
+                        let range = (wl - bl).max(1.0);
+                        let val = (sample - bl) / range;
+                        out.push(val.clamp(0.0, 1.0));
+                    }
                 }
                 Ok(out)
             }
@@ -628,6 +672,7 @@ fn apply_rawler_crop(
     height: usize,
     raw: &rawler::RawImage,
     alloc_pref: crate::alloc_util::AllocPref,
+    stop: &dyn Stop,
 ) -> Result<(Vec<f32>, usize, usize)> {
     let rect = rawler_crop_rect(raw);
     let (new_w, new_h) = rawler_cropped_dims(width, height, rect);
@@ -635,13 +680,16 @@ fn apply_rawler_crop(
     // Crop was rejected (invalid / absent) — return the buffer unchanged so the
     // dims still match what `rawler_cropped_dims` reported (the full sensor).
     let Some((left, top, _, _)) = rect.filter(|_| (new_w, new_h) != (width, height)) else {
-        return Ok((rgb.to_vec(), width, height));
+        return Ok((crate::alloc_util::copy_with_stop(rgb, stop)?, width, height));
     };
 
     // Cropped output is sized from the (untrusted) header dims → default
     // fallible (bounded by `rgb`, but still full-image-scale).
     let mut cropped = crate::alloc_util::vec_with_capacity(alloc_pref, true, new_w * new_h * 3)?;
     for row in top..top + new_h {
+        if row & 255 == 0 {
+            stop.check().map_err(|r| at!(RawError::from(r)))?;
+        }
         let src_start = (row * width + left) * 3;
         let src_end = src_start + new_w * 3;
         if src_end <= rgb.len() {
@@ -685,13 +733,17 @@ fn decode_non_bayer(
         } else {
             raw.wb_coeffs
         };
-        color::apply_color_pipeline(&mut rgb, wb, xyz_to_cam, config.target);
+        color::apply_color_pipeline_stop(&mut rgb, wb, xyz_to_cam, config.target, stop)
+            .map_err(|r| at!(RawError::from(r)))?;
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
             let mult = 2.0f32.powf(config.exposure_ev);
-            for v in rgb.iter_mut() {
-                *v *= mult;
+            for chunk in rgb.chunks_mut(1 << 20) {
+                stop.check().map_err(|r| at!(RawError::from(r)))?;
+                for v in chunk {
+                    *v *= mult;
+                }
             }
         }
     }
@@ -699,7 +751,7 @@ fn decode_non_bayer(
     stop.check().map_err(|r| at!(RawError::from(r)))?;
 
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_rawler_crop(&rgb, width, height, &raw, config.alloc_pref)?
+        apply_rawler_crop(&rgb, width, height, &raw, config.alloc_pref, stop)?
     } else {
         (rgb, width, height)
     };
@@ -710,7 +762,9 @@ fn decode_non_bayer(
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
-        let (data, w, h) = crate::orient::apply_orientation(cropped_rgb, out_w, out_h, raw_orient);
+        let (data, w, h) =
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop)
+                .map_err(|r| at!(RawError::from(r)))?;
         (data, w, h, 1u16)
     } else {
         (cropped_rgb, out_w, out_h, raw_orient)
@@ -730,6 +784,7 @@ fn decode_non_bayer(
                 is_dng,
                 final_orient,
                 primaries,
+                stop,
             )
         }
         OutputMode::Linear | OutputMode::CameraRaw => build_linear_output(
@@ -741,6 +796,7 @@ fn decode_non_bayer(
             is_dng,
             final_orient,
             primaries,
+            stop,
         ),
     }
 }
@@ -817,9 +873,11 @@ fn build_linear_output(
     is_dng: bool,
     orientation: u16,
     primaries: zenpixels::ColorPrimaries,
+    stop: &dyn Stop,
 ) -> Result<RawDecodeOutput> {
     let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
-    let byte_data: Vec<u8> = bytemuck::cast_slice::<f32, u8>(&rgb).to_vec();
+    let byte_data: Vec<u8> =
+        crate::alloc_util::copy_with_stop(bytemuck::cast_slice::<f32, u8>(&rgb), stop)?;
 
     let buf = PixelBuffer::from_vec(
         byte_data,
@@ -843,11 +901,12 @@ fn build_develop_output(
     is_dng: bool,
     orientation: u16,
     primaries: zenpixels::ColorPrimaries,
+    stop: &dyn Stop,
 ) -> Result<RawDecodeOutput> {
     let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
     let mut gamma_rgb = rgb;
-    color::apply_srgb_gamma(&mut gamma_rgb);
-    let u16_data = color::f32_to_u16(&gamma_rgb);
+    color::apply_srgb_gamma_stop(&mut gamma_rgb, stop).map_err(|r| at!(RawError::from(r)))?;
+    let u16_data = color::f32_to_u16(&gamma_rgb, stop).map_err(|r| at!(RawError::from(r)))?;
 
     let buf = PixelBuffer::from_vec(
         u16_data,

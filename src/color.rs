@@ -9,6 +9,7 @@
 //! This module performs steps 1-4 in a single pass over the pixel data.
 
 use archmage::prelude::*;
+use enough::{Stop, StopReason, Unstoppable};
 
 use crate::dng_render::OutputPrimaries;
 
@@ -26,30 +27,52 @@ pub fn apply_color_pipeline(
     xyz_to_cam: [[f32; 3]; 4],
     target: OutputPrimaries,
 ) {
+    // `Unstoppable` never fires, so the Result is structurally `Ok`.
+    let _ = apply_color_pipeline_stop(rgb, wb_coeffs, xyz_to_cam, target, &Unstoppable);
+}
+
+/// [`apply_color_pipeline`] with cooperative cancellation — checked every
+/// 64K pixels inside the matrix pass. Early-exits with the error; callers
+/// must not consume the partially-transformed buffer.
+pub(crate) fn apply_color_pipeline_stop(
+    rgb: &mut [f32],
+    wb_coeffs: [f32; 4],
+    xyz_to_cam: [[f32; 3]; 4],
+    target: OutputPrimaries,
+    stop: &dyn Stop,
+) -> Result<(), StopReason> {
     let cam_to_output = compute_cam_to_output_matrix(wb_coeffs, xyz_to_cam, target);
-    apply_color_matrix(rgb, cam_to_output);
+    apply_color_matrix_stop(rgb, cam_to_output, stop)
 }
 
 /// Apply a 3×3 color matrix to interleaved RGB data with clamping.
 ///
 /// Autoversioned: compiles for AVX2/NEON/scalar and dispatches at runtime.
 #[autoversion]
-fn apply_color_matrix(rgb: &mut [f32], mat: [[f32; 3]; 3]) {
+fn apply_color_matrix_stop(
+    rgb: &mut [f32],
+    mat: [[f32; 3]; 3],
+    stop: &dyn Stop,
+) -> Result<(), StopReason> {
     let pixel_count = rgb.len() / 3;
-    for i in 0..pixel_count {
-        let idx = i * 3;
-        let r = rgb[idx];
-        let g = rgb[idx + 1];
-        let b = rgb[idx + 2];
+    for batch_start in (0..pixel_count).step_by(65536) {
+        stop.check()?;
+        for i in batch_start..(pixel_count).min(batch_start + 65536) {
+            let idx = i * 3;
+            let r = rgb[idx];
+            let g = rgb[idx + 1];
+            let b = rgb[idx + 2];
 
-        let sr = mat[0][0] * r + mat[0][1] * g + mat[0][2] * b;
-        let sg = mat[1][0] * r + mat[1][1] * g + mat[1][2] * b;
-        let sb = mat[2][0] * r + mat[2][1] * g + mat[2][2] * b;
+            let sr = mat[0][0] * r + mat[0][1] * g + mat[0][2] * b;
+            let sg = mat[1][0] * r + mat[1][1] * g + mat[1][2] * b;
+            let sb = mat[2][0] * r + mat[2][1] * g + mat[2][2] * b;
 
-        rgb[idx] = sr.clamp(0.0, 1.0);
-        rgb[idx + 1] = sg.clamp(0.0, 1.0);
-        rgb[idx + 2] = sb.clamp(0.0, 1.0);
+            rgb[idx] = sr.clamp(0.0, 1.0);
+            rgb[idx + 1] = sg.clamp(0.0, 1.0);
+            rgb[idx + 2] = sb.clamp(0.0, 1.0);
+        }
     }
+    Ok(())
 }
 
 /// Compute the combined white-balance + camera-to-output matrix.
@@ -209,9 +232,21 @@ fn invert_3x3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 /// [`OutputMode::Develop`](crate::OutputMode::Develop) output, which is
 /// already sRGB-encoded — that double-encodes.
 pub fn apply_srgb_gamma(rgb: &mut [f32]) {
-    for val in rgb.iter_mut() {
-        *val = crate::simd::linear_to_srgb(*val);
+    // `Unstoppable` never fires, so the Result is structurally `Ok`.
+    let _ = apply_srgb_gamma_stop(rgb, &Unstoppable);
+}
+
+/// [`apply_srgb_gamma`] with cooperative cancellation — checked every 256K
+/// samples. Early-exits with the error; callers must not consume the
+/// partially-encoded buffer.
+pub(crate) fn apply_srgb_gamma_stop(rgb: &mut [f32], stop: &dyn Stop) -> Result<(), StopReason> {
+    for batch in rgb.chunks_mut(1 << 18) {
+        stop.check()?;
+        for val in batch {
+            *val = crate::simd::linear_to_srgb(*val);
+        }
     }
+    Ok(())
 }
 
 /// Quantise f32 \[0,1\] **already sRGB-encoded** samples to u8 \[0,255\].
@@ -232,13 +267,16 @@ fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
 }
 
 /// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
-pub(crate) fn f32_to_u16(src: &[f32]) -> alloc::vec::Vec<u8> {
+pub(crate) fn f32_to_u16(src: &[f32], stop: &dyn Stop) -> Result<alloc::vec::Vec<u8>, StopReason> {
     let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
-    for &v in src {
-        let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
-        out.extend_from_slice(&val.to_ne_bytes());
+    for batch in src.chunks(1 << 18) {
+        stop.check()?;
+        for &v in batch {
+            let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+            out.extend_from_slice(&val.to_ne_bytes());
+        }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

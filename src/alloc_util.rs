@@ -146,6 +146,24 @@ pub(crate) fn vec_with_capacity<T>(
     }
 }
 
+/// Copy `src` into a new `Vec`, checking `stop` once per ~8M elements.
+///
+/// A plain `slice::to_vec` of a full-image buffer is a single unpolled memcpy
+/// that can hide ~70 ms from the cancellation token; the chunked copy keeps
+/// the same output while bounding the inter-check span.
+pub(crate) fn copy_with_stop<T: Copy>(
+    src: &[T],
+    stop: &dyn enough::Stop,
+) -> Result<Vec<T>, At<RawError>> {
+    const CHUNK: usize = 1 << 23;
+    let mut out = Vec::with_capacity(src.len());
+    for chunk in src.chunks(CHUNK) {
+        stop.check().map_err(|r| at!(RawError::from(r)))?;
+        out.extend_from_slice(chunk);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,51 +22,67 @@ use alloc::vec::Vec;
 /// - 7: Transverse
 /// - 8: Rotate 270° CW
 pub(crate) fn apply_orientation(
-    mut rgb: Vec<f32>,
+    rgb: Vec<f32>,
     width: usize,
     height: usize,
     orientation: u16,
 ) -> (Vec<f32>, usize, usize) {
+    apply_orientation_stop(rgb, width, height, orientation, &enough::Unstoppable)
+        .expect("Unstoppable cannot cancel")
+}
+
+/// [`apply_orientation`] with cooperative cancellation — each O(pixels)
+/// permutation checks `stop` between row or pixel batches. Cancellation is
+/// returned directly so a partially-permuted buffer cannot escape as success.
+pub(crate) fn apply_orientation_stop(
+    mut rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    orientation: u16,
+    stop: &dyn enough::Stop,
+) -> Result<(Vec<f32>, usize, usize), enough::StopReason> {
+    // Entry check: bounds the gap attributed to the first in-helper check.
+    stop.check()?;
     let w = width;
     let h = height;
-    match orientation {
+    Ok(match orientation {
         0 | 1 => (rgb, w, h),
         2 => {
-            flip_horizontal(&mut rgb, w, h);
+            flip_horizontal(&mut rgb, w, h, stop)?;
             (rgb, w, h)
         }
         3 => {
-            rotate_180(&mut rgb, w, h);
+            rotate_180(&mut rgb, w, h, stop)?;
             (rgb, w, h)
         }
         4 => {
-            flip_vertical(&mut rgb, w, h);
+            flip_vertical(&mut rgb, w, h, stop)?;
             (rgb, w, h)
         }
         // Orientations 5-8 swap width and height.
         // Display image: new_width = h, new_height = w.
         5 => {
             // Transpose: display(dr,dc) ← src(dc, dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (dc, dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (dc, dr))?;
             (out, h, w)
         }
         6 => {
             // Rotate 90° CW: display(dr,dc) ← src(h-1-dc, dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (h - 1 - dc, dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (h - 1 - dc, dr))?;
             (out, h, w)
         }
         7 => {
             // Transverse: display(dr,dc) ← src(h-1-dc, w-1-dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (h - 1 - dc, w - 1 - dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (h - 1 - dc, w - 1 - dr))?;
             (out, h, w)
         }
         8 => {
             // Rotate 270° CW: display(dr,dc) ← src(dc, w-1-dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (dc, w - 1 - dr));
+            let out = remap(&rgb, w, h, w, stop, |dr, dc| (dc, w - 1 - dr))?;
             (out, h, w)
         }
         _ => (rgb, w, h),
-    }
+    })
 }
 
 /// Apply an EXIF orientation to a tightly-packed pixel buffer of arbitrary
@@ -178,8 +194,16 @@ fn remap_bytes(
 }
 
 /// Flip horizontally (mirror left↔right) in place.
-fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize) {
+fn flip_horizontal(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
     for r in 0..height {
+        if r & 63 == 0 {
+            stop.check()?;
+        }
         for c in 0..width / 2 {
             let l = (r * width + c) * 3;
             let ri = (r * width + (width - 1 - c)) * 3;
@@ -188,31 +212,50 @@ fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize) {
             }
         }
     }
+    Ok(())
 }
 
 /// Rotate 180° in place (reverse pixel order).
-fn rotate_180(rgb: &mut [f32], width: usize, height: usize) {
+fn rotate_180(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
     let n = width * height;
-    for i in 0..n / 2 {
-        let j = n - 1 - i;
-        let a = i * 3;
-        let b = j * 3;
-        for ch in 0..3 {
-            rgb.swap(a + ch, b + ch);
+    for batch_start in (0..n / 2).step_by(1 << 18) {
+        stop.check()?;
+        for i in batch_start..(n / 2).min(batch_start + (1 << 18)) {
+            let j = n - 1 - i;
+            let a = i * 3;
+            let b = j * 3;
+            for ch in 0..3 {
+                rgb.swap(a + ch, b + ch);
+            }
         }
     }
+    Ok(())
 }
 
 /// Flip vertically (mirror top↔bottom) in place.
-fn flip_vertical(rgb: &mut [f32], width: usize, height: usize) {
+fn flip_vertical(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
     let row_len = width * 3;
     for r in 0..height / 2 {
+        if r & 63 == 0 {
+            stop.check()?;
+        }
         let top = r * row_len;
         let bot = (height - 1 - r) * row_len;
         for i in 0..row_len {
             rgb.swap(top + i, bot + i);
         }
     }
+    Ok(())
 }
 
 /// Remap pixels from source to a new buffer with different dimensions.
@@ -225,10 +268,14 @@ fn remap(
     src_w: usize,
     new_w: usize,
     new_h: usize,
+    stop: &dyn enough::Stop,
     map: impl Fn(usize, usize) -> (usize, usize),
-) -> Vec<f32> {
+) -> Result<Vec<f32>, enough::StopReason> {
     let mut out = vec![0.0f32; new_w * new_h * 3];
     for dr in 0..new_h {
+        if dr & 63 == 0 {
+            stop.check()?;
+        }
         for dc in 0..new_w {
             let (sr, sc) = map(dr, dc);
             let si = (sr * src_w + sc) * 3;
@@ -238,7 +285,7 @@ fn remap(
             out[di + 2] = rgb[si + 2];
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

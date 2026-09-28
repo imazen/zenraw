@@ -28,9 +28,10 @@ use magetypes::simd::generic::f32x8 as GenericF32x8;
 pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
     let mut out = vec![0.0f32; data.len()];
     incant!(
-        normalize_uniform_into(data, black, inv_range, &mut out),
+        normalize_uniform_into(data, black, inv_range, &mut out, &enough::Unstoppable),
         [v3, neon, wasm128, scalar]
-    );
+    )
+    .expect("Unstoppable cannot cancel");
     out
 }
 
@@ -43,20 +44,29 @@ pub(crate) fn normalize_uniform_fallible(
     black: f32,
     inv_range: f32,
     alloc_pref: crate::alloc_util::AllocPref,
+    stop: &dyn enough::Stop,
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
     // Full normalized sensor buffer sized from the (untrusted) sensor dims →
     // default fallible.
     let mut out = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, data.len())?;
     incant!(
-        normalize_uniform_into(data, black, inv_range, &mut out),
+        normalize_uniform_into(data, black, inv_range, &mut out, stop),
         [v3, neon, wasm128, scalar]
-    );
+    )
+    .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?;
     Ok(out)
 }
 
 /// Normalize `data` into the pre-allocated `out` (same length as `data`).
 #[magetypes(v3, neon, wasm128, -scalar)]
-fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32, out: &mut [f32]) {
+fn normalize_uniform_into(
+    token: Token,
+    data: &[f32],
+    black: f32,
+    inv_range: f32,
+    out: &mut [f32],
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
     #[allow(non_camel_case_types)]
     type f32x8 = GenericF32x8<Token>;
 
@@ -69,19 +79,25 @@ fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32
     let (src_chunks, src_tail) = f32x8::partition_slice(token, data);
     let (dst_chunks, dst_tail) = f32x8::partition_slice_mut(token, out);
 
-    for (src, dst) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
-        let v = f32x8::load(token, src);
-        let normalized = (v - black_v) * inv_range_v;
-        // Ordered comparisons preserve signed zero and NaN payloads like
-        // scalar f32::clamp; ISA min/max instructions have different rules.
-        let lower = f32x8::blend(normalized.simd_lt(zero), zero, normalized);
-        let clamped = f32x8::blend(lower.simd_gt(one), one, lower);
-        clamped.store(dst);
+    for (src, dst) in src_chunks
+        .chunks(1 << 15)
+        .zip(dst_chunks.chunks_mut(1 << 15))
+    {
+        stop.check()?;
+        for (src, dst) in src.iter().zip(dst) {
+            let v = f32x8::load(token, src);
+            let normalized = (v - black_v) * inv_range_v;
+            // Ordered comparisons preserve signed zero and NaN payloads like
+            // scalar f32::clamp; ISA min/max instructions have different rules.
+            let lower = f32x8::blend(normalized.simd_lt(zero), zero, normalized);
+            let clamped = f32x8::blend(lower.simd_gt(one), one, lower);
+            clamped.store(dst);
+        }
     }
-
     for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
         *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
     }
+    Ok(())
 }
 
 fn normalize_uniform_into_scalar(
@@ -90,11 +106,16 @@ fn normalize_uniform_into_scalar(
     black: f32,
     inv_range: f32,
     out: &mut [f32],
-) {
+    stop: &dyn enough::Stop,
+) -> Result<(), enough::StopReason> {
     debug_assert_eq!(out.len(), data.len());
-    for (src, dst) in data.iter().zip(out.iter_mut()) {
-        *dst = ((*src - black) * inv_range).clamp(0.0, 1.0);
+    for (src, dst) in data.chunks(1 << 18).zip(out.chunks_mut(1 << 18)) {
+        stop.check()?;
+        for (src, dst) in src.iter().zip(dst) {
+            *dst = ((*src - black) * inv_range).clamp(0.0, 1.0);
+        }
     }
+    Ok(())
 }
 
 // ── Non-Bayer channel extraction ─────────────────────────────────────────
