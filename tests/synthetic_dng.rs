@@ -635,9 +635,8 @@ fn decode_cancelled_mid_pipeline_returns_stopped() {
 
     for budget in [0u64, 2, 6, 20] {
         let stop = CountdownStop::new(budget);
-        let err = zenraw::decode(&data, &config, &stop)
-            .err()
-            .expect("decode should report cancellation");
+        let err =
+            zenraw::decode(&data, &config, &stop).expect_err("decode should report cancellation");
         assert!(
             matches!(
                 err.error(),
@@ -678,8 +677,7 @@ fn single_poll_cancellation_is_never_lost() {
             fire_at,
         };
         let err = zenraw::decode(&data, &config, &stop)
-            .err()
-            .expect("each observed cancellation must terminate decoding");
+            .expect_err("each observed cancellation must terminate decoding");
         assert!(
             matches!(err.error(), zenraw::RawError::Stopped(_)),
             "poll {fire_at}: {err}"

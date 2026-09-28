@@ -509,7 +509,7 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
     }
 
     // ── Interior pixels: direct indexing, no boundary checks ──
-    malvar_interior_stop(data, &mut rgb, width, height, cfa_tile, gh, stop)?;
+    malvar_interior_stop(data, &mut rgb, (width, height), cfa_tile, gh, stop)?;
 
     Ok(rgb)
 }
@@ -522,12 +522,12 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
 fn malvar_interior_stop(
     data: &[f32],
     rgb: &mut [f32],
-    width: usize,
-    height: usize,
+    dimensions: (usize, usize),
     cfa_tile: [[usize; 2]; 2],
     gh: [[usize; 2]; 2],
     stop: &dyn Stop,
 ) -> Result<(), enough::StopReason> {
+    let (width, height) = dimensions;
     const BORDER: usize = 2;
     let w = width;
     for row in BORDER..(height - BORDER) {
