@@ -61,6 +61,8 @@ const RAF_RAW_SUB_IFD: u16 = 0xF000;
 const RAF_OFFSETS: u16 = 0xF007;
 const RAF_BYTE_COUNTS: u16 = 0xF008;
 const KODAK_IFD: u16 = 0x8290;
+/// IccProfile: one of GenericTiffReader's sub-IFD tags under rawler.
+const ICC_PROFILE: u16 = 34675;
 const KDC_IFD: u16 = 0xFE00;
 const DNG_PRIVATE_DATA: u16 = 0xC634;
 const SONY_OFFSET: u16 = 0x7200;
@@ -151,28 +153,30 @@ fn entry_index(w: &Walk<'_>, ifd: &Ifd, e: &Entry) -> usize {
 
 impl RawRules<'_> {
     /// Whether rawler's `IFD::new` of the TIFF this rules set reads puts
-    /// `tag` into its sub-IFD offset map (the `sub_tags` of each reader).
+    /// `tag` into its sub-IFD offset map (the `sub_tags` of each reader;
+    /// GenericTiffReader's are `wellknown_sub_ifd_tags`, reader.rs:26-32).
     fn rawler_sub_tag(&self, tag: u16) -> bool {
         match (self.role, tag) {
             (Role::RafCfa, tag) => tag == RAF_RAW_SUB_IFD,
             (Role::RafJpegExif, tag) => matches!(tag, 330 | 34665),
-            (_, 330 | 34665 | GPS_IFD) => true,
+            (_, 330 | 34665 | GPS_IFD | ICC_PROFILE) => true,
             (Role::Main, KODAK_IFD) => self.make_is(&["Canon"]),
             _ => false,
         }
     }
 
-    /// The key rawler's sub-IFD offset map files entry `e` under, if it
-    /// files it at all (formats/tiff/ifd.rs:150-165): a LONG or UNDEFINED
-    /// value under its tag, a type rawler does not know (`Value::Unknown`)
-    /// under its type code; other types are ignored.
-    fn rawler_key(&self, e: &Entry) -> Option<(bool, u16)> {
+    /// The key rawler's sub-IFD offset map (one `HashMap<u16, _>`) files
+    /// entry `e` under, if it files it at all (formats/tiff/ifd.rs:150-165):
+    /// a LONG or UNDEFINED value under its tag, a type rawler does not know
+    /// (`Value::Unknown`) under its type code, so a type code can meet a
+    /// tag; other types are ignored.
+    fn rawler_key(&self, e: &Entry) -> Option<u16> {
         if !self.rawler_sub_tag(e.tag) {
             return None;
         }
         match e.typ {
-            4 | 7 => Some((false, e.tag)),
-            0 | 13.. => Some((true, e.typ)),
+            4 | 7 => Some(e.tag),
+            0 | 13.. => Some(e.typ),
             _ => None,
         }
     }
@@ -229,7 +233,7 @@ impl RawRules<'_> {
                 Kind::Page(_) => "past the backend's IFD chain limit",
                 Kind::MakerNote => "maker note this backend does not parse for this make",
                 _ if RAWLER => {
-                    "rawler follows only the last LONG or unknown-type SubIFDs, EXIF and GPS pointer of each map key in the first 4096 entries of main-chain IFDs (formats/tiff/ifd.rs:105-165)"
+                    "rawler follows only the last LONG, UNDEFINED or unknown-type SubIFDs, EXIF, GPS or IccProfile pointer of each map key in the first 4096 entries of main-chain IFDs (formats/tiff/ifd.rs:105-165)"
                 }
                 _ => "not walked by rawloader",
             };
@@ -523,6 +527,11 @@ impl Rules for RawRules<'_> {
             (34665, _) => Some((Kind::Exif, "EXIF IFD")),
             (GPS_IFD, Kind::Page(_) | Kind::Sub) => Some((Kind::Gps, "GPS IFD")),
             (40965, Kind::Exif) => Some((Kind::Interop, "Interop IFD")),
+            // rawler's GenericTiffReader files IccProfile as a sub-IFD
+            // pointer (reader.rs:26-32): it parses an IFD at the profile.
+            (ICC_PROFILE, Kind::Page(_)) if RAWLER && self.rawler_sub_tag(ICC_PROFILE) => {
+                Some((Kind::Sub, "IccProfile sub-IFD"))
+            }
             // Sony stores a pointer to its SR2Private IFD in DNGPrivateData
             // (a single LONG, or BYTE[4]); DNGs store maker data bytes there.
             (DNG_PRIVATE_DATA, Kind::Page(_) | Kind::Sub)
@@ -549,6 +558,16 @@ impl Rules for RawRules<'_> {
         // rawler reads a type it does not know as one byte per count (inline
         // up to 4) and files one IFD, at the value of the first byte
         // (formats/tiff/entry.rs `compat_typ`, ifd.rs `Value::Unknown`).
+        // An UNDEFINED value is one IFD at the value's own offset (the field
+        // itself up to 4 bytes; ifd.rs:159-161, `entry.offset()`).
+        if RAWLER && e.typ == 7 {
+            let at = if e.count <= 4 {
+                e.field.checked_sub(w.base)
+            } else {
+                w.lay.offset(w.d, e.field)
+            };
+            return at.into_iter().take(max).collect();
+        }
         if RAWLER && (e.typ == 0 || e.typ > 12) {
             let at = if e.count <= 4 {
                 Some(e.field)
@@ -579,14 +598,15 @@ impl Rules for RawRules<'_> {
             // the CR2 decoder; the RAF decoder's `new_root` follows SubIFDs
             // and ExifIFD in the JPEG's TIFF, and only FujiIFD in the CFA's.
             // rawler's `IFD::new` (formats/tiff/ifd.rs:105-165) files the
-            // offsets of the first 4096 entries in a HashMap: a LONG value
-            // under its tag (every pointer), a type it does not know
-            // (`Value::Unknown`) under its type code (one IFD, at the value's
-            // first byte, `pointer_offsets`); a later entry with the same key
-            // replaces an earlier one. An UNDEFINED value takes the value's
-            // own offset (not modelled). Other types are not followed.
+            // offsets of the first 4096 entries in one `HashMap<u16, _>`: a
+            // LONG value under its tag (every pointer), an UNDEFINED value
+            // under its tag (one IFD at the value's own offset), a type it
+            // does not know (`Value::Unknown`) under its type code (one IFD,
+            // at the value's first byte); see `pointer_offsets`. A later
+            // entry with the same key replaces an earlier one. Other types
+            // are not followed.
             let idx = entry_index(w, parent, e);
-            let usable = e.typ == 4 || ((e.typ == 0 || e.typ > 12) && e.count >= 1);
+            let usable = matches!(e.typ, 4 | 7) || ((e.typ == 0 || e.typ > 12) && e.count >= 1);
             return matches!(kind, Kind::Page(_))
                 && idx < RAWLER_MAX_ENTRIES
                 && usable

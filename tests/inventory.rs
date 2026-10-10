@@ -2762,3 +2762,126 @@ fn rawler_count0_unknown_type_pointer_fails_the_decode() {
     let consumed = strip_consumed("count-0 IFD-typed ExifIFD", &data, s0);
     assert_eq!(consumed, !RAWLER);
 }
+
+// ── Review round 4 (zenraw) ────────────────────────────────────────────
+
+/// rawler follows an UNDEFINED SubIFDs value as one IFD at the value's own
+/// offset and decodes the raw IFD it finds there, ahead of IFD1.
+#[test]
+fn rawler_follows_an_undefined_subifds_value() {
+    let mut w = W::new();
+    let make = w.put(b"ZenRaw\0");
+    w.pad();
+    let model = w.put(b"SyntheticDng\0");
+    w.pad();
+    let s_y = w.put(&raw16(0));
+    let s_z = w.put(&raw16(7));
+    let y = w.ifd(&raw_entries(s_y), 0);
+    let y_len = w.pos() - y;
+    let z = w.ifd(&raw_entries(s_z), 0);
+    let mut e = vec![
+        long(254, 1),
+        short(256, 2),
+        short(257, 2),
+        short(259, 1),
+        at(271, 2, 7, make),
+        at(272, 2, 13, model),
+        at(330, 7, y_len, y),
+        inline(50706, 1, 4, &[1, 4, 0, 0]),
+    ];
+    e.sort_by_key(|e| e.tag);
+    let ifd0 = w.ifd(&e, z);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let data = w.b;
+    // rawloader reads every byte of the UNDEFINED value as an IFD offset and
+    // panics on one past the data (review R4-E); only the backend's own
+    // container parse can say so, which this change does not run.
+    if !RAWLER {
+        inventory(&data).validate().unwrap();
+        return;
+    }
+    assert!(strip_consumed("strip of Y", &data, s_y));
+    assert!(!strip_consumed("strip of Z", &data, s_z));
+}
+
+/// rawler's map is one `HashMap<u16, _>` and IccProfile is one of its
+/// sub-IFD tags: an IFD-typed IccProfile collides with an IFD-typed
+/// SubIFDs (key 13), and an ExifIFD of type 330 with a LONG SubIFDs (key
+/// 330); the later entry wins and the decode fails. rawloader decodes both.
+#[test]
+fn rawler_sub_ifd_map_keys_collide_across_tags_and_types() {
+    let mut w = W::new();
+    let raw = w.ifd(&raw_entries(0), 0);
+    let thumb = w.ifd(&[long(254, 1), short(256, 2)], 0);
+    let s0 = w.put(&raw16(0));
+    let so = (raw + 2 + 6 * 12 + 8) as usize;
+    w.b[so..so + 4].copy_from_slice(&s0.to_le_bytes());
+    let data = preview_ifd0(
+        w,
+        &[
+            inline(330, 13, 1, &[raw as u8, 0, 0, 0]),
+            inline(34675, 13, 1, &[thumb as u8, 0, 0, 0]),
+        ],
+    );
+    assert_eq!(strip_consumed("IFD-typed ICC", &data, s0), !RAWLER);
+
+    let mut w = W::new();
+    let thumb = w.ifd(&[long(254, 1), short(256, 2)], 0);
+    let s0 = w.put(&raw16(0));
+    let raw = w.ifd(&raw_entries(s0), 0);
+    let data = preview_ifd0(
+        w,
+        &[
+            long(330, raw),
+            E {
+                tag: 34665,
+                typ: 330,
+                count: 1,
+                field: [thumb as u8, 0, 0, 0],
+            },
+        ],
+    );
+    assert_eq!(strip_consumed("ExifIFD of type 330", &data, s0), !RAWLER);
+}
+
+/// rawler files an IccProfile value as a sub-IFD pointer and parses an
+/// "IFD" at the profile's first bytes; a failure there is only a warning
+/// (ifd.rs:202-210), so a DNG with an embedded profile still decodes and
+/// its raw strip stays consumed under both backends.
+#[test]
+fn an_icc_profile_walked_as_a_sub_ifd_keeps_the_dng_decodable() {
+    let mut d = Dng::new();
+    // A 3144-byte profile: big-endian size, so the u16 a little-endian
+    // reader takes as an entry count is 0.
+    let mut icc = vec![0u8; 3144];
+    icc[..4].copy_from_slice(&3144u32.to_be_bytes());
+    icc[36..40].copy_from_slice(b"acsp");
+    let icc_at = d.w.put(&icc);
+    let s0 = d.w.put(&raw16(0));
+    let raw = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let mut e0 = vec![
+        long(254, 1),
+        at(271, 2, 7, d.make),
+        at(272, 2, 13, d.model),
+        long(330, raw),
+        at(34675, 7, 3144, icc_at),
+        inline(50706, 1, 4, &[1, 4, 0, 0]),
+    ];
+    e0.sort_by_key(|e| e.tag);
+    let ifd0 = d.w.ifd(&e0, 0);
+    d.w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let data = d.w.b;
+    assert!(decode_summary(&data).is_ok());
+    assert!(strip_consumed("DNG with an ICC profile", &data, s0));
+    if RAWLER {
+        let inv = inventory(&data);
+        let walked = inv.parts().iter().any(|p| {
+            p.kind == PartKind::Ifd
+                && p.range.start == u64::from(icc_at)
+                && p.detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains("IccProfile sub-IFD"))
+        });
+        assert!(walked, "{inv}");
+    }
+}
