@@ -114,3 +114,15 @@ arm-decode-audit fixture features="_dev":
 arm-sample-decode fixture output features="rawloader":
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n19 cargo build --release --example heaptrack_decode --features {{features}}
     RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" python3 -c 'import subprocess; f=open("{{output}}.run.log","w"); p=subprocess.Popen(["nice","-n19","./target/release/examples/heaptrack_decode","{{fixture}}","200"],stdout=f,stderr=f); subprocess.run(["sample",str(p.pid),"5","1","-file","{{output}}.sample.txt"],check=True); raise SystemExit(p.wait())'
+
+# Structural inventory tests: fixtures, codec-corpus raw-conformance, decode-mutation check
+inventory-test RAW=(env_var('HOME') + "/work/codec-corpus/raw-conformance"):
+    ZENRAW_RAW_CONFORMANCE_DIR="{{RAW}}" cargo test --features zencodec,xmp --test inventory -- --nocapture
+
+# Cross-check the structural inventory against exiftool -v3 on raw-conformance
+inventory-oracle RAW=(env_var('HOME') + "/work/codec-corpus/raw-conformance"):
+    INVENTORY_ORACLE_EXIFTOOL="$(command -v exiftool)" ZENRAW_RAW_CONFORMANCE_DIR="{{RAW}}" cargo test --features zencodec --test inventory exiftool_oracle -- --nocapture
+
+# Fuzz the structural inventory walker
+fuzz-inventory SECONDS="600":
+    cargo +nightly fuzz run inventory -- -max_total_time={{SECONDS}} -dict=fuzz/dict/raw.dict

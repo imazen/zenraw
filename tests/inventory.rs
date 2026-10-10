@@ -107,7 +107,8 @@ impl W {
     fn ifd(&mut self, entries: &[E], next: u32) -> u32 {
         self.pad();
         let at = self.pos();
-        self.b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        self.b
+            .extend_from_slice(&(entries.len() as u16).to_le_bytes());
         for e in entries {
             self.b.extend_from_slice(&e.tag.to_le_bytes());
             self.b.extend_from_slice(&e.typ.to_le_bytes());
@@ -216,7 +217,10 @@ fn raf_fixture() -> Vec<u8> {
     tiff.pad();
     let model = tiff.put(b"X-Test\0");
     tiff.pad();
-    let ifd0 = tiff.ifd(&[at(271, 2, 9, make), at(272, 2, 7, model), short(274, 1)], 0);
+    let ifd0 = tiff.ifd(
+        &[at(271, 2, 9, make), at(272, 2, 7, model), short(274, 1)],
+        0,
+    );
     tiff.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
     let app1_len = (2 + 6 + tiff.b.len()) as u16;
     let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
@@ -274,7 +278,8 @@ fn cr3_fixture() -> Vec<u8> {
         v
     }
     let canon_uuid: [u8; 16] = [
-        0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48,
+        0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a,
+        0x48,
     ];
     let mut uuid_payload = canon_uuid.to_vec();
     uuid_payload.extend(bx(b"CNCV", b"CanonCR3_001/00.09.00/00.00.00"));
@@ -290,10 +295,25 @@ fn cr3_fixture() -> Vec<u8> {
 }
 
 /// One expected part: kind, tag, range, disposition, label, depth.
-type Row = (PartKind, PartTag, u64, u64, Disposition, Option<String>, usize);
+#[cfg(not(feature = "rawler"))]
+type Row = (
+    PartKind,
+    PartTag,
+    u64,
+    u64,
+    Disposition,
+    Option<String>,
+    usize,
+);
 
+#[cfg(not(feature = "rawler"))]
 fn rows(inv: &Inventory) -> Vec<Row> {
-    fn walk(inv: &Inventory, parent: Option<zencodec::inventory::PartId>, depth: usize, out: &mut Vec<Row>) {
+    fn walk(
+        inv: &Inventory,
+        parent: Option<zencodec::inventory::PartId>,
+        depth: usize,
+        out: &mut Vec<Row>,
+    ) {
         for id in inv.children(parent) {
             let p = inv.get(id).unwrap();
             out.push((
@@ -321,7 +341,8 @@ fn check_inventory_without_image_data(data: &[u8]) -> Result<(), String> {
         if inv.input_len() != d.len() as u64 {
             return Err(format!("covers {} of {} bytes", inv.input_len(), d.len()));
         }
-        inv.validate().map_err(|e| format!("{} bytes: {e}\n{inv}", d.len()))?;
+        inv.validate()
+            .map_err(|e| format!("{} bytes: {e}\n{inv}", d.len()))?;
         Ok(inv)
     };
     run(data)?;
@@ -336,7 +357,10 @@ fn check_inventory_without_image_data(data: &[u8]) -> Result<(), String> {
     }
     for (i, p) in inv.parts().iter().enumerate() {
         if !has_child[i] && p.range.end > data.len() as u64 && p.disposition.is_consumed() {
-            return Err(format!("appended junk reported as {}\n{inv}", p.disposition));
+            return Err(format!(
+                "appended junk reported as {}\n{inv}",
+                p.disposition
+            ));
         }
     }
     let n = data.len();
@@ -351,8 +375,12 @@ fn check_inventory_without_image_data(data: &[u8]) -> Result<(), String> {
 #[test]
 fn dng_fixture_decodes_and_passes_check_inventory() {
     let data = dng_fixture();
-    let out = zenraw::decode(&data, &zenraw::RawDecodeConfig::default(), &enough::Unstoppable)
-        .expect("fixture decodes");
+    let out = zenraw::decode(
+        &data,
+        &zenraw::RawDecodeConfig::default(),
+        &enough::Unstoppable,
+    )
+    .expect("fixture decodes");
     assert_eq!((out.info.sensor_width, out.info.sensor_height), (4, 4));
     zencodec_testkit::check_inventory(RawDecoderConfig::new(), &data).unwrap();
 }
@@ -390,19 +418,35 @@ fn cr3_fixture_inventory_is_valid() {
         .filter(|p| p.kind == PartKind::Box)
         .map(|p| p.tag.to_string())
         .collect();
-    assert_eq!(boxes, ["ftyp", "moov", "uuid", "CNCV", "CMT1", "mvhd", "free", "mdat"], "{inv}");
+    assert_eq!(
+        boxes,
+        [
+            "ftyp", "moov", "uuid", "CNCV", "CMT1", "mvhd", "free", "mdat"
+        ],
+        "{inv}"
+    );
     if cfg!(feature = "rawler") {
         zencodec_testkit::check_inventory(RawDecoderConfig::new(), &data).unwrap();
     } else {
         // rawloader cannot decode CR3, so nothing is image data.
         check_inventory_without_image_data(&data).unwrap();
-        assert!(!inv.parts().iter().any(|p| p.disposition == Disposition::ImageData));
+        assert!(
+            !inv.parts()
+                .iter()
+                .any(|p| p.disposition == Disposition::ImageData)
+        );
     }
 }
 
+/// Pinned for the rawloader backend; rawler builds mark every walked entry
+/// `Structure` (see `rawler_build_marks_walked_entries_structure`).
+#[cfg(not(feature = "rawler"))]
 #[test]
 fn dng_fixture_part_list_is_pinned() {
-    use Disposition::{Dropped, ImageData, Metadata as M, Padding, Skipped, Structure, Trailing, Unknown, Unreferenced};
+    use Disposition::{
+        Dropped, ImageData, Metadata as M, Padding, Skipped, Structure, Trailing, Unknown,
+        Unreferenced,
+    };
     use MetadataKind::{Orientation, Xmp};
     use PartKind::{Extent, Field, Gap, Header, Ifd};
     let c = |t: u32| PartTag::Code(t);
@@ -412,7 +456,15 @@ fn dng_fixture_part_list_is_pinned() {
     inv.validate().unwrap();
     let xmp_value = if cfg!(feature = "xmp") {
         // The packet fills the whole value, so the value is listed as the packet.
-        (Field, PartTag::Name("XMP packet".into()), 48, 154, M(Xmp), None, 0)
+        (
+            Field,
+            PartTag::Name("XMP packet".into()),
+            48,
+            154,
+            M(Xmp),
+            None,
+            0,
+        )
     } else {
         (Field, c(700), 48, 154, Skipped, None, 0)
     };
@@ -519,7 +571,8 @@ fn conformance_inventories_pass_check_inventory() {
         let data = std::fs::read(path).unwrap();
         let cr3_without_rawler = data.get(4..12) == Some(b"ftypcrx ") && !cfg!(feature = "rawler");
         let result = if *valid && !cr3_without_rawler {
-            zencodec_testkit::check_inventory(RawDecoderConfig::new(), &data).map_err(|e| e.to_string())
+            zencodec_testkit::check_inventory(RawDecoderConfig::new(), &data)
+                .map_err(|e| e.to_string())
         } else {
             check_inventory_without_image_data(&data)
         };
@@ -527,7 +580,12 @@ fn conformance_inventories_pass_check_inventory() {
             failures.push(format!("{}: {e}", path.display()));
         }
     }
-    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 // ── Dispositions against the decoder itself ───────────────────────────
@@ -555,8 +613,8 @@ fn unread(p: &Part) -> bool {
 
 /// Byte ranges to XOR for each part the inventory marks never read: whole
 /// parts with nothing consumed inside them; the uncovered bytes of an unread
-/// part that holds consumed parts; an IFD entry minus its tag, which the
-/// directory parser reads to decide to skip the entry.
+/// part that holds consumed parts; an IFD entry's count and value field (the
+/// directory parser reads its tag and type to decide to skip it).
 fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
     let parts = inv.parts();
     let mut consumed_below = vec![false; parts.len()];
@@ -589,7 +647,11 @@ fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
         if consumed_below[i] {
             // Only the bytes no child covers.
             let mut cursor = p.range.start;
-            let mut kids: Vec<_> = parts.iter().filter(|c| c.parent.is_some_and(|id| id.index() == i)).map(|c| c.range.clone()).collect();
+            let mut kids: Vec<_> = parts
+                .iter()
+                .filter(|c| c.parent.is_some_and(|id| id.index() == i))
+                .map(|c| c.range.clone())
+                .collect();
             kids.sort_by_key(|r| r.start);
             for r in kids {
                 if r.start > cursor {
@@ -602,8 +664,14 @@ fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
             }
             continue;
         }
-        let entry = p.kind == PartKind::Field && p.parent.is_some_and(|id| parts[id.index()].kind == PartKind::Ifd);
-        let r = if entry { p.range.start + 2..p.range.end } else { p.range.clone() };
+        let entry = p.kind == PartKind::Field
+            && p.parent
+                .is_some_and(|id| parts[id.index()].kind == PartKind::Ifd);
+        let r = if entry {
+            p.range.start + 4..p.range.end
+        } else {
+            p.range.clone()
+        };
         out.push((r, what));
     }
     out
@@ -611,10 +679,9 @@ fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
 
 /// XOR the bytes of every part marked never read (see [`mutation_targets`]),
 /// the largest `per_file` first; the decode must not change.
-fn mutate_unread(name: &str, data: &[u8], per_file: usize) -> (usize, Vec<String>) {
-    let Ok(baseline) = decode_summary(data) else {
-        return (0, Vec::new());
-    };
+/// `None` when the file does not decode (nothing to compare against).
+fn mutate_unread(name: &str, data: &[u8], per_file: usize) -> Option<(usize, Vec<String>)> {
+    let baseline = decode_summary(data).ok()?;
     let inv = inventory(data);
     let mut targets = mutation_targets(&inv);
     targets.sort_by_key(|(r, _)| std::cmp::Reverse(r.end - r.start));
@@ -630,18 +697,22 @@ fn mutate_unread(name: &str, data: &[u8], per_file: usize) -> (usize, Vec<String
             failures.push(format!("{name}: {what} changed the decode"));
         }
     }
-    (n, failures)
+    Some((n, failures))
 }
 
 #[test]
 fn unread_parts_do_not_influence_decode_fixture() {
     let data = dng_fixture();
-    let (n, failures) = mutate_unread("dng_fixture", &data, usize::MAX);
+    let (n, failures) = mutate_unread("dng_fixture", &data, usize::MAX).expect("fixture decodes");
     assert!(n >= 8, "only {n} parts mutated");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     // Sanity: the raw strip does drive the decode.
     let inv = inventory(&data);
-    let raw = inv.parts().iter().find(|p| p.disposition == Disposition::ImageData).unwrap();
+    let raw = inv
+        .parts()
+        .iter()
+        .find(|p| p.disposition == Disposition::ImageData)
+        .unwrap();
     let mut mutated = data.clone();
     for b in &mut mutated[raw.range.start as usize..raw.range.end as usize] {
         *b ^= 0x5A;
@@ -661,13 +732,393 @@ fn unread_parts_do_not_influence_decode_corpus() {
     for (path, valid) in files.iter().filter(|(_, v)| *v) {
         let _ = valid;
         let data = std::fs::read(path).unwrap();
-        let (n, f) = mutate_unread(&path.display().to_string(), &data, 16);
-        if n > 0 {
-            decodable += 1;
-        }
+        let Some((n, f)) = mutate_unread(&path.display().to_string(), &data, 16) else {
+            continue;
+        };
+        decodable += 1;
         mutated += n;
         failures.extend(f);
     }
     println!("{decodable} decodable files, {mutated} mutated parts");
-    assert!(failures.is_empty(), "{} parts influence the decode:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} parts influence the decode:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+// ── Independent oracle: exiftool -v3 ───────────────────────────────────
+
+/// One unit `exiftool -v3` lists inside a TIFF directory.
+#[derive(Debug)]
+enum OracleUnit {
+    /// A directory: name, declared entry count, (index, dumped offset) of
+    /// its first inline value, and whether it belongs to a TIFF embedded in
+    /// another TIFF's value.
+    Dir(String, u64, Option<(u64, u64)>, bool),
+    /// A tag value: directory, tag, byte count, dumped offset, embedded.
+    Value(String, u16, u64, u64, bool),
+}
+
+/// Directories exiftool names for TIFF IFDs whose dumped offsets are
+/// relative to a TIFF header (not MakerNotes, ICC, XMP, decrypted SR2SubIFD).
+fn is_tiff_dir(name: &str) -> bool {
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    name.strip_prefix("IFD")
+        .is_some_and(|r| !r.is_empty() && digits(r))
+        || name.strip_prefix("SubIFD").is_some_and(digits)
+        || matches!(name, "ExifIFD" | "GPS" | "InteropIFD" | "FujiIFD" | "SR2")
+}
+
+/// Parse `exiftool -v3` output into the units of TIFF directories.
+fn parse_exiftool_v3(text: &str) -> Vec<OracleUnit> {
+    let mut out = Vec::new();
+    // (depth, unit index or usize::MAX for non-TIFF dirs, embedded)
+    let mut stack: Vec<(usize, usize, bool)> = Vec::new();
+    let mut entry_index: Option<u64> = None;
+    let mut pending: Option<(u16, u64)> = None;
+    // A second IFD0 starts another TIFF (one stored in a value, such as an
+    // RW2's JPEG-from-raw); it and every directory after it belong to it.
+    let mut ifd0_seen = false;
+    let mut second_tiff = false;
+    for line in text.lines() {
+        let mut rest = line.strip_prefix("  ").unwrap_or(line);
+        let mut depth = 0;
+        while let Some(r) = rest.strip_prefix("| ") {
+            rest = r;
+            depth += 1;
+        }
+        let body = rest.trim_start();
+        if let Some(dir) = body.strip_prefix("+ [") {
+            let name = dir.split_whitespace().next().unwrap_or("").to_string();
+            let n = dir
+                .split(" with ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            stack.retain(|(d, _, _)| *d < depth);
+            let inside_tiff = stack.iter().any(|&(_, i, _)| i != usize::MAX);
+            let parent_embedded = stack.last().is_some_and(|&(_, _, e)| e);
+            // A new IFD0 under another TIFF's directory is a TIFF stored in a
+            // value (a JPEG preview's EXIF, for example).
+            if name == "IFD0" {
+                second_tiff |= ifd0_seen;
+                ifd0_seen = true;
+            }
+            let embedded =
+                second_tiff || parent_embedded || (inside_tiff && name.starts_with("IFD"));
+            if is_tiff_dir(&name) {
+                out.push(OracleUnit::Dir(name, n, None, embedded));
+                stack.push((depth, out.len() - 1, embedded));
+            } else {
+                stack.push((depth, usize::MAX, embedded));
+            }
+            pending = None;
+            continue;
+        }
+        let Some(&(dir_depth, dir_idx, embedded)) = stack.iter().rev().find(|(d, _, _)| *d < depth)
+        else {
+            continue;
+        };
+        if dir_depth + 1 != depth || dir_idx == usize::MAX {
+            continue;
+        }
+        if let Some((idx, _)) = body.split_once(')')
+            && let Ok(i) = idx.parse::<u64>()
+        {
+            entry_index = Some(i);
+            pending = None;
+            continue;
+        }
+        if let Some(t) = body.strip_prefix("- Tag 0x") {
+            let tag = t
+                .get(..4)
+                .and_then(|h| u16::from_str_radix(h, 16).ok())
+                .unwrap_or(0);
+            let size = t
+                .split('(')
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            pending = Some((tag, size));
+            continue;
+        }
+        if let Some((tag, size)) = pending.take()
+            && let Some((hex, _)) = body.split_once(':')
+            && let Ok(off) = u64::from_str_radix(hex.trim(), 16)
+        {
+            let OracleUnit::Dir(name, _, first, _) = &mut out[dir_idx] else {
+                unreachable!()
+            };
+            let name = name.clone();
+            if first.is_none()
+                && size <= 4
+                && let Some(i) = entry_index
+            {
+                *first = Some((i, off));
+            }
+            out.push(OracleUnit::Value(name, tag, size, off, embedded));
+        }
+    }
+    out
+}
+
+/// How one file's units compare: matched, explained (with why), unexplained.
+#[derive(Default)]
+struct OracleTally {
+    matched: usize,
+    explained: Vec<String>,
+    unexplained: Vec<String>,
+}
+
+/// Compare an inventory with exiftool's units. exiftool dumps offsets
+/// relative to the TIFF header that owns the directory, so each unit is
+/// tried against every TIFF header part the inventory lists.
+fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
+    let parts = inv.parts();
+    // exiftool dumps offsets relative to the TIFF header, or to the start
+    // of the stream holding it (a RAF's JPEG preview): try the file start,
+    // every TIFF header and every part enclosing one.
+    let mut headers: Vec<(u64, bool)> = vec![(0, false)];
+    for p in parts.iter().filter(|p| p.kind == PartKind::Header) {
+        let big = match p.detail.as_deref() {
+            Some(d) if d.starts_with("TIFF header") => false,
+            Some(d) if d.starts_with("BigTIFF header") => true,
+            _ => continue,
+        };
+        headers.push((p.range.start, big));
+        let mut up = p.parent;
+        while let Some(id) = up {
+            headers.push((parts[id.index()].range.start, big));
+            up = parts[id.index()].parent;
+        }
+    }
+    if parts.first().is_some_and(|p| {
+        p.detail
+            .as_deref()
+            .is_some_and(|d| d.starts_with("BigTIFF"))
+    }) {
+        headers[0].1 = true;
+    }
+    headers.sort_unstable();
+    headers.dedup();
+    let mut child_count = vec![0u64; parts.len()];
+    for p in parts {
+        if let Some(id) = p.parent {
+            child_count[id.index()] += 1;
+        }
+    }
+    let ifd_at = |at: Option<u64>, n: u64| {
+        parts.iter().enumerate().any(|(i, p)| {
+            p.kind == PartKind::Ifd && at.is_none_or(|a| a == p.range.start) && child_count[i] == n
+        })
+    };
+    let mut t = OracleTally::default();
+    for u in units {
+        let ok = headers.iter().any(|&(base, big)| {
+            let (field_off, count_len, entry_len, inline_cap) =
+                if big { (12, 8, 20, 8) } else { (8, 2, 12, 4) };
+            match u {
+                OracleUnit::Dir(_, n, Some((i, off)), _) => {
+                    match (base + off).checked_sub(field_off + count_len + i * entry_len) {
+                        Some(at) => ifd_at(Some(at), *n),
+                        None => false,
+                    }
+                }
+                OracleUnit::Dir(_, n, None, _) => ifd_at(None, *n),
+                OracleUnit::Value(_, tag, size, off, _) => {
+                    let code = PartTag::Code(u32::from(*tag));
+                    let at = base + off;
+                    if *size <= inline_cap {
+                        parts.iter().any(|p| {
+                            p.parent.is_some() && p.tag == code && p.range.start + field_off == at
+                        })
+                    } else {
+                        parts
+                            .iter()
+                            .any(|p| p.tag == code && p.range.start == at && p.len() == *size)
+                    }
+                }
+            }
+        });
+        if ok {
+            t.matched += 1;
+            continue;
+        }
+        let (what, embedded, off) = match u {
+            OracleUnit::Dir(name, n, first, e) => {
+                (format!("{name} ({n} entries)"), *e, first.map(|(_, o)| o))
+            }
+            OracleUnit::Value(dir, tag, size, off, e) => (
+                format!("{dir} tag {tag:#06x} ({size} bytes at {off})"),
+                *e,
+                Some(*off),
+            ),
+        };
+        if embedded {
+            t.explained.push(format!(
+                "{what}: TIFF stored inside an opaque value the decoder does not parse"
+            ));
+            continue;
+        }
+        let split = off.is_some_and(|off| {
+            headers.iter().any(|&(base, _)| {
+                parts.iter().any(|p| {
+                    p.range.start <= base + off
+                        && base + off < p.range.end
+                        && p.detail.as_deref().is_some_and(|d| d.contains("overlaps"))
+                })
+            })
+        });
+        if split {
+            t.explained
+                .push(format!("{what}: overlaps another part; listed split"));
+        } else {
+            t.unexplained.push(what);
+        }
+    }
+    t
+}
+
+/// Run exiftool on each file and compare; returns the markdown table rows
+/// and every unexplained mismatch.
+fn run_oracle(
+    tool: &std::ffi::OsStr,
+    files: &[(String, Vec<u8>)],
+) -> (Vec<String>, Vec<String>, usize, usize) {
+    let mut rows = Vec::new();
+    let mut failures = Vec::new();
+    let (mut checked, mut units_total) = (0, 0);
+    for (name, data) in files {
+        let path = PathBuf::from(name);
+        let out = std::process::Command::new(tool)
+            .arg("-v3")
+            .arg(&path)
+            .output()
+            .unwrap_or_else(|e| panic!("run {}: {e}", tool.to_string_lossy()));
+        let units = parse_exiftool_v3(&String::from_utf8_lossy(&out.stdout));
+        if units.is_empty() {
+            continue;
+        }
+        checked += 1;
+        units_total += units.len();
+        let t = oracle_compare(&inventory(data), &units);
+        let short = path.file_name().unwrap().to_string_lossy().into_owned();
+        rows.push(format!(
+            "| {short} | {} | {} | {} | {} |",
+            units.len(),
+            t.matched,
+            t.explained.len(),
+            t.unexplained.len()
+        ));
+        for e in t.explained.iter().take(3) {
+            println!("explained {short}: {e}");
+        }
+        for u in t.unexplained {
+            failures.push(format!("{short}: {u}"));
+        }
+    }
+    (rows, failures, checked, units_total)
+}
+
+/// Every directory and tag value `exiftool -v3` lists for the TIFF-based
+/// `raw-conformance` files appears in the inventory at the same offset and
+/// length, or the mismatch is explained. Runs when both
+/// `INVENTORY_ORACLE_EXIFTOOL` and `ZENRAW_RAW_CONFORMANCE_DIR` are set
+/// (`just inventory-oracle`).
+#[test]
+fn exiftool_oracle_agrees() {
+    let (Some(tool), Some(files)) = (
+        std::env::var_os("INVENTORY_ORACLE_EXIFTOOL"),
+        conformance_files(),
+    ) else {
+        eprintln!(
+            "INVENTORY_ORACLE_EXIFTOOL / ZENRAW_RAW_CONFORMANCE_DIR not set; oracle cross-check not requested"
+        );
+        return;
+    };
+    let files: Vec<(String, Vec<u8>)> = files
+        .into_iter()
+        .filter(|(_, valid)| *valid)
+        .map(|(p, _)| (p.display().to_string(), std::fs::read(&p).unwrap()))
+        // exiftool dumps CR3's CMT TIFFs relative to their boxes; the CR3
+        // walk lists boxes, not those TIFFs.
+        .filter(|(_, d)| d.get(4..8) != Some(b"ftyp"))
+        .collect();
+    let (rows, failures, checked, units) = run_oracle(&tool, &files);
+    println!("| file | units | matched | explained | unexplained |");
+    println!("|---|---|---|---|---|");
+    for r in &rows {
+        println!("{r}");
+    }
+    println!("{checked} files, {units} units compared");
+    assert_eq!(
+        checked, 7,
+        "every TIFF-based conformance RAW has TIFF directories"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} unexplained mismatches:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+// ── Findings the inventory encodes ─────────────────────────────────────
+
+/// zenraw advertises `with_exif(true)` but no EXIF reaches `ImageInfo`, so
+/// the inventory never reports EXIF as surfaced. With the `xmp` feature it
+/// attaches XMP without declaring `with_xmp`. If either changes, update
+/// `RawRules` and this test together.
+#[test]
+fn exif_is_advertised_but_never_surfaced() {
+    let caps = <RawDecoderConfig as DecoderConfig>::capabilities();
+    assert!(caps.exif());
+    assert!(!caps.xmp());
+    let data = dng_fixture();
+    let out = RawDecoderConfig::new()
+        .job()
+        .decoder(Cow::Borrowed(&data), &[])
+        .and_then(|d| d.decode())
+        .unwrap();
+    assert!(out.info().embedded_metadata.exif.is_none());
+    assert_eq!(
+        out.info().embedded_metadata.xmp.is_some(),
+        cfg!(feature = "xmp")
+    );
+    let inv = inventory(&data);
+    assert!(
+        !inv.parts()
+            .iter()
+            .any(|p| p.disposition == Disposition::Metadata(MetadataKind::Exif))
+    );
+}
+
+/// rawler keeps every tag of the IFDs it walks, so a rawler build reports
+/// each entry of the walked IFDs as consumed, while GPS and Interop IFDs stay
+/// unread.
+#[cfg(feature = "rawler")]
+#[test]
+fn rawler_build_marks_walked_entries_structure() {
+    let data = dng_fixture();
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    for p in inv.parts().iter().filter(|p| p.kind == PartKind::Ifd) {
+        let walked = p.disposition == Disposition::Structure;
+        let gps_or_interop = p
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.starts_with("GPS") || d.starts_with("Interop"));
+        assert_eq!(walked, !gps_or_interop, "{inv}");
+        for c in inv
+            .parts()
+            .iter()
+            .filter(|c| c.parent.is_some_and(|id| inv.get(id) == Some(p)))
+        {
+            assert_eq!(c.disposition.is_consumed(), walked, "{inv}");
+        }
+    }
 }

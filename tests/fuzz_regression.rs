@@ -57,7 +57,7 @@ fn assert_corpus_present() {
 #[test]
 fn fuzz_regression() {
     assert_corpus_present();
-    RegressionSuite::new("fuzz/regression")
+    let suite = RegressionSuite::new("fuzz/regression")
         .target("classify", |input| {
             let _ = classify(input);
         })
@@ -73,6 +73,14 @@ fn fuzz_regression() {
             }
             let config = RawDecodeConfig::default();
             let _ = zenraw::decode(input, &config, &Unstoppable);
-        })
-        .run();
+        });
+    // Mirrors fuzz_targets/inventory.rs.
+    #[cfg(feature = "zencodec")]
+    let suite = suite.target("inventory", |input| {
+        use zencodec::decode::{DecodeJob, DecoderConfig};
+        let job = zenraw::RawDecoderConfig::new().job();
+        let inv = job.inventory(input).unwrap().unwrap();
+        inv.validate().unwrap();
+    });
+    suite.run();
 }
