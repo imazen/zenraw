@@ -915,6 +915,9 @@ mod xmp_tests {
         assert!(with_xmp > 0, "no DNG files had XMP");
     }
 
+    // Compares the `exif` module's reading with XMP; without `exif` there
+    // is nothing to compare.
+    #[cfg(feature = "exif")]
     #[test]
     fn xmp_consistency_with_exif() {
         // For DNG files that have both XMP and EXIF, verify they agree on make/model
@@ -939,23 +942,20 @@ mod xmp_tests {
                 continue;
             };
 
-            #[cfg(feature = "exif")]
-            {
-                let exif = zenraw::exif::read_metadata(&data);
-                let xmp = zenraw::xmp::read_xmp_metadata(&data);
+            let exif = zenraw::exif::read_metadata(&data);
+            let xmp = zenraw::xmp::read_xmp_metadata(&data);
 
-                if let (Some(exif), Some(xmp)) = (exif, xmp) {
-                    // If both have make, they should agree
-                    if let (Some(exif_make), Some(xmp_make)) = (&exif.make, &xmp.tiff_make) {
-                        assert_eq!(
-                            exif_make,
-                            xmp_make,
-                            "EXIF/XMP make mismatch in {}",
-                            path.file_name().unwrap().to_str().unwrap()
-                        );
-                    }
-                    compared += 1;
+            if let (Some(exif), Some(xmp)) = (exif, xmp) {
+                // If both have make, they should agree
+                if let (Some(exif_make), Some(xmp_make)) = (&exif.make, &xmp.tiff_make) {
+                    assert_eq!(
+                        exif_make,
+                        xmp_make,
+                        "EXIF/XMP make mismatch in {}",
+                        path.file_name().unwrap().to_str().unwrap()
+                    );
                 }
+                compared += 1;
             }
         }
 

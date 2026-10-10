@@ -61,16 +61,16 @@ fn normalize_uniform_into(token: Token, data: &[f32], black: f32, inv_range: f32
     type f32x8 = GenericF32x8<Token>;
 
     debug_assert_eq!(out.len(), data.len());
-    let black_v = f32x8::splat(token, black);
-    let inv_range_v = f32x8::splat(token, inv_range);
-    let zero = f32x8::zero(token);
-    let one = f32x8::splat(token, 1.0);
+    let black_v = f32x8::splat_t(token, black);
+    let inv_range_v = f32x8::splat_t(token, inv_range);
+    let zero = f32x8::zero_t(token);
+    let one = f32x8::splat_t(token, 1.0);
 
-    let (src_chunks, src_tail) = f32x8::partition_slice(token, data);
-    let (dst_chunks, dst_tail) = f32x8::partition_slice_mut(token, out);
+    let (src_chunks, src_tail) = f32x8::partition_slice_t(token, data);
+    let (dst_chunks, dst_tail) = f32x8::partition_slice_mut_t(token, out);
 
     for (src, dst) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
-        let v = f32x8::load(token, src);
+        let v = f32x8::load_t(token, src);
         let normalized = (v - black_v) * inv_range_v;
         // Ordered comparisons preserve signed zero and NaN payloads like
         // scalar f32::clamp; ISA min/max instructions have different rules.
