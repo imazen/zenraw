@@ -32,8 +32,10 @@ use super::tags::tag_name;
 /// IFDs walked per TIFF. Real files carry a handful; multi-page scans a few
 /// thousand.
 const MAX_IFDS: usize = 4096;
-/// Sub-IFD pointers read from one pointer entry.
-const MAX_SUB_POINTERS: usize = 1024;
+/// Detail for bytes a walk could not account for because a budget or cap
+/// stopped it.
+pub(super) const BUDGET_GAP: &str =
+    "the walk stopped at a budget; the decoder may read these bytes";
 /// Notes appended to one part's detail before the rest are only counted.
 const MAX_NOTES: usize = 4;
 /// Pieces one overlapping part may be split into.
@@ -309,6 +311,9 @@ pub(super) struct Walk<'a> {
     by_at: BTreeMap<u64, usize>,
     /// Whether [`Rules::cancelled`] stopped the walk.
     pub(super) cancelled: bool,
+    /// Whether a budget or cap stopped part of the walk: its gaps may hold
+    /// bytes the decoder reads.
+    pub(super) budget_hit: bool,
     /// Bytes count-only chunk readers may still scan. Overlapping chunks
     /// would otherwise rescan the same bytes once per chunk.
     scan_left: Cell<u64>,
@@ -680,7 +685,8 @@ pub(super) trait Rules {
 
     /// The TIFF-relative offsets a pointer entry holds.
     fn pointer_offsets(&self, w: &Walk<'_>, e: &Entry) -> Vec<u64> {
-        w.uints(e, MAX_SUB_POINTERS)
+        // Every pointer: `MAX_IFDS` and the visited-offset map bound the work.
+        w.uints(e, usize::try_from(w.limit() / 4 + 1).unwrap_or(usize::MAX))
     }
 
     /// Whether the decode path reads the directory the pointer entry `e` of
@@ -711,6 +717,13 @@ pub(super) trait Rules {
     /// Whether the caller's stop token asks the walk to end early.
     fn cancelled(&self) -> bool {
         false
+    }
+
+    /// Why the decoder rejects the directory at absolute offset `at`,
+    /// reached as `kind`, before reading its entries (an entry-count cap),
+    /// if it does. Such a directory is walked as not followed.
+    fn rejects(&self, _w: &Walk<'_>, _at: u64, _kind: Kind) -> Option<&'static str> {
+        None
     }
 
     /// Extents `ifd` locates. The default covers strips, tiles, free space
@@ -1051,6 +1064,7 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         tables: BTreeMap::new(),
         by_at: BTreeMap::new(),
         cancelled: false,
+        budget_hit: false,
     };
     let rest = limit.saturating_sub(base);
     let lay = match get(d, base, 2) {
@@ -1151,6 +1165,7 @@ pub(super) fn walk_ifd<'a>(
         tables: BTreeMap::new(),
         by_at: BTreeMap::new(),
         cancelled: false,
+        budget_hit: false,
     };
     run_queue(&mut w, Some(at), kind, name, depth, rules);
     w
@@ -1246,6 +1261,7 @@ fn run_queue(
             continue;
         }
         if w.ifds.len() >= MAX_IFDS {
+            w.budget_hit = true;
             note(w, format!("not walked: more than {MAX_IFDS} IFDs"));
             continue;
         }
@@ -1273,9 +1289,19 @@ fn run_queue(
                 ),
             );
         }
+        // A directory the decoder rejects outright (too many entries) is
+        // walked as not followed.
+        let mut followed = p.followed;
+        if followed && let Some(why) = rules.rejects(w, at, p.kind) {
+            followed = false;
+            note(w, format!("{} at {at}: {why}", p.name));
+        }
         let mut budget = w.entries_left;
-        let parsed = parse_ifd(d, lay, at, p.kind, p.name.clone(), p.followed, &mut budget);
+        let parsed = parse_ifd(d, lay, at, p.kind, p.name.clone(), followed, &mut budget);
         w.entries_left = budget;
+        if budget == 0 {
+            w.budget_hit = true;
+        }
         let Some(mut ifd) = parsed else {
             note(
                 w,
@@ -1329,6 +1355,7 @@ fn enqueue(
         let numbered = ptrs.len() > 1 || child_kind == Kind::Sub;
         for (k, off) in ptrs.into_iter().enumerate() {
             if queue.len() + w.ifds.len() >= MAX_IFDS {
+                w.budget_hit = true;
                 add_note(
                     &mut w.ifds[idx].entries[ei].notes,
                     format!("further {label} pointers not walked: more than {MAX_IFDS} IFDs"),
@@ -1387,6 +1414,9 @@ pub(super) struct Cand {
     /// For a container whose children account for its contents: the range
     /// they tile; uncovered bytes become `Unreferenced` gaps on emission.
     pub(super) body: Option<Range<u64>>,
+    /// The fate and detail of the body's gaps instead of `Unreferenced`
+    /// (a walk inside stopped at a budget).
+    pub(super) gap: Option<(Disposition, String)>,
     notes: usize,
 }
 
@@ -1407,6 +1437,7 @@ impl Cand {
             detail,
             children: Vec::new(),
             body: None,
+            gap: None,
             notes: 0,
         }
     }
@@ -1436,6 +1467,39 @@ fn describe(c: &Cand) -> String {
         c.range.start,
         c.range.end
     )
+}
+
+/// `c` cut to `r`, with its body and children cut the same way; `None`
+/// when they do not meet.
+fn clip(c: &Cand, r: &Range<u64>) -> Option<Cand> {
+    let range = c.range.start.max(r.start)..c.range.end.min(r.end);
+    if range.start >= range.end {
+        return None;
+    }
+    let mut out = Cand::new(
+        range.clone(),
+        c.kind,
+        c.tag.clone(),
+        c.disp,
+        c.detail.clone(),
+    );
+    out.label = c.label.clone();
+    out.notes = c.notes;
+    out.gap = c.gap.clone();
+    out.body = c
+        .body
+        .as_ref()
+        .map(|b| b.start.max(range.start)..b.end.min(range.end))
+        .filter(|b| b.start < b.end);
+    out.children = c
+        .children
+        .iter()
+        .filter_map(|ch| clip(ch, &range))
+        .collect();
+    if range != c.range {
+        out.note("split by an overlapping part");
+    }
+    Some(out)
 }
 
 /// Non-overlapping sibling parts. Each insertion is split around the parts
@@ -1510,18 +1574,20 @@ impl Placed {
         if let Some(from) = unlisted.filter(|&f| f < c.range.end) {
             self.zones.push((from..c.range.end, desc.clone()));
         }
-        let mut children = core::mem::take(&mut c.children);
+        let children = core::mem::take(&mut c.children);
         for (k, r) in pieces.into_iter().enumerate().take(MAX_PIECES) {
             let mut piece = Cand::new(r.clone(), c.kind, c.tag.clone(), c.disp, c.detail.clone());
             piece.label = c.label.clone();
             piece.notes = c.notes;
-            // A split container no longer holds its whole body.
-            piece.body = None;
-            let (inside, rest): (Vec<Cand>, Vec<Cand>) = children
-                .into_iter()
-                .partition(|ch| ch.range.start >= r.start && ch.range.end <= r.end);
-            piece.children = inside;
-            children = rest;
+            // A split container keeps the part of its body inside the piece,
+            // and children straddling the piece's edge are clipped to it.
+            piece.body = c
+                .body
+                .as_ref()
+                .map(|b| b.start.max(r.start)..b.end.min(r.end))
+                .filter(|b| b.start < b.end);
+            piece.gap = c.gap.clone();
+            piece.children = children.iter().filter_map(|ch| clip(ch, &r)).collect();
             piece.note(&format!(
                 "overlaps {}{} other part(s); piece {} of {listed}{}",
                 hits.len(),
@@ -1537,12 +1603,21 @@ impl Placed {
             self.by_start.insert(r.start, (r.end, i));
             self.parts.push(piece);
         }
-        if !children.is_empty()
+        // Children lying wholly in bytes other parts cover are not listed.
+        let lost = children
+            .iter()
+            .filter(|ch| {
+                self.by_start
+                    .range(..ch.range.end)
+                    .next_back()
+                    .is_some_and(|(&s, &(e, _))| s <= ch.range.start && e >= ch.range.end)
+            })
+            .count();
+        if lost > 0
             && let Some(&(_, _, i)) = hits.first()
         {
             self.parts[i].note(&format!(
-                "{} parts of {desc} lie inside it and are not listed",
-                children.len()
+                "{lost} parts of {desc} lie inside it and are not listed"
             ));
         }
     }
@@ -1618,6 +1693,9 @@ pub(super) struct Placement {
     pub(super) logical_end: u64,
     /// Whether IFD0 was read whole.
     pub(super) ifd0_ok: bool,
+    /// Whether a budget or cap stopped part of the walk (gaps are then
+    /// `Unknown`, [`BUDGET_GAP`]).
+    pub(super) budget_hit: bool,
 }
 
 /// Turn a walk into non-overlapping parts. `first` are placed right after
@@ -1740,6 +1818,7 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 continue;
             };
             if extents_left == 0 {
+                w.budget_hit = true;
                 notes.push((
                     ifd.entries
                         .iter()
@@ -1835,6 +1914,7 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                     continue;
                 }
                 if extents_left == 0 {
+                    w.budget_hit = true;
                     break;
                 }
                 extents_left -= 1;
@@ -2006,6 +2086,7 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
         parts: placed.into_sorted(),
         logical_end,
         ifd0_ok,
+        budget_hit: w.budget_hit,
     }
 }
 
@@ -2021,6 +2102,7 @@ pub(super) fn emit(
         .body
         .clone()
         .filter(|b| b.start >= c.range.start && b.end <= c.range.end);
+    let gap = c.gap.clone();
     let mut p = Part::new(c.kind, c.tag, c.range, c.disp);
     if let Some(l) = c.label {
         p = p.with_label(l);
@@ -2038,7 +2120,18 @@ pub(super) fn emit(
         emit(inv, Some(id), ch)?;
     }
     if body.is_some() {
-        inv.fill_gaps(Some(id), Disposition::Unreferenced)?;
+        match gap {
+            Some((d, detail)) => {
+                let before = inv.parts().len();
+                inv.fill_gaps(Some(id), d)?;
+                for gap in inv.children(Some(id)) {
+                    if gap.index() >= before {
+                        inv.set_detail(gap, detail.clone());
+                    }
+                }
+            }
+            None => inv.fill_gaps(Some(id), Disposition::Unreferenced)?,
+        }
     }
     Ok(())
 }

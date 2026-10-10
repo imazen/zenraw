@@ -22,13 +22,15 @@
   EXIF TIFF in its APP1, CFA header records, the CFA section's TIFF. CR3:
   every ISOBMFF box. Dispositions follow the zencodec path: rawloader keeps
   only its own tag set, so other tags are `Skipped`/`Unknown`; rawler builds
-  mark every walked entry `Structure`; only orientation and (with `xmp`) the
+  keep main-chain and SubIFD entries `Structure` and drop EXIF/GPS entries
+  (`Dropped`, never surfaced); only orientation and (with `xmp`) the
   first XMP packet zenraw's byte scan finds are metadata. Tests (ce2dd42, 457ad59):
   pinned synthetic DNG, RAF and CR3 fixtures; `check_inventory` over
   codec-corpus `raw-conformance` (`just inventory-test`); XOR-ing every byte
   marked never-read leaves the decode unchanged under both backends;
-  `just inventory-oracle` cross-checks `exiftool -v3` (7 files, 642 units,
-  0 unexplained). Fuzz target `inventory` (6a1f737). `Cargo.toml` patches
+  `just inventory-oracle` cross-checks `exiftool -v3` (35 files: raw-conformance
+  plus 3 imazen-26 and 25 FiveK DNGs through `INVENTORY_ORACLE_FILES`; 3,591
+  units, 0 unexplained). Fuzz target `inventory` (6a1f737). `Cargo.toml` patches
   zencodec/zencodec-testkit to the PR branch; swap for the release before
   merge.
 

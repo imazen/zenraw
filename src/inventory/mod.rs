@@ -163,7 +163,7 @@ impl RawRules<'_> {
                 Kind::Page(_) => "past the backend's IFD chain limit",
                 Kind::MakerNote => "maker note this backend does not parse for this make",
                 _ if RAWLER => {
-                    "rawler follows only SubIFDs, EXIF and GPS pointers of main-chain IFDs"
+                    "rawler follows only LONG (or small unknown-type) SubIFDs, EXIF and GPS pointers of main-chain IFDs (formats/tiff/ifd.rs)"
                 }
                 _ => "not walked by rawloader",
             };
@@ -477,10 +477,12 @@ impl Rules for RawRules<'_> {
                 .map(|v| alloc::vec![u64::from(v)])
                 .unwrap_or_default();
         }
-        w.uints(e, 1024)
+        // Every pointer: both backends follow them all, and `MAX_IFDS` and
+        // the visited-offset map bound the walk.
+        w.uints(e, usize::try_from(w.limit() / 4 + 1).unwrap_or(usize::MAX))
     }
 
-    fn follows(&self, _w: &Walk<'_>, parent: &Ifd, kind: Kind, e: &Entry) -> bool {
+    fn follows(&self, w: &Walk<'_>, parent: &Ifd, kind: Kind, e: &Entry) -> bool {
         if e.tag == DNG_PRIVATE_DATA {
             return self.sony_arw;
         }
@@ -490,7 +492,18 @@ impl Rules for RawRules<'_> {
             // ExifIFD and GPSInfo (wellknown_sub_ifd_tags), plus KodakIFD for
             // the CR2 decoder; the RAF decoder's `new_root` follows SubIFDs
             // and ExifIFD in the JPEG's TIFF, and only FujiIFD in the CFA's.
-            if !matches!(kind, Kind::Page(_)) {
+            // rawler follows a sub-IFD tag for a LONG value, and for a type
+            // it does not know (IFD, LONG8, IFD8: `Value::Unknown`) at the
+            // value's first byte only (formats/tiff/ifd.rs `IFD::new`,
+            // entry.rs); an UNDEFINED one takes the value's own offset (not
+            // modelled). Other types are not followed.
+            let first_byte = || {
+                let v = w.uints(e, 1).first().copied();
+                let b = w.bytes(e).and_then(|b| b.first().copied()).map(u64::from);
+                v.is_some() && v == b
+            };
+            let usable = e.typ == 4 || (e.typ >= 13 && e.count >= 1 && first_byte());
+            if !matches!(kind, Kind::Page(_)) || !usable {
                 return false;
             }
             return match (self.role, e.tag) {
@@ -526,6 +539,14 @@ impl Rules for RawRules<'_> {
 
     fn cancelled(&self) -> bool {
         self.stop.should_stop()
+    }
+
+    fn rejects(&self, w: &Walk<'_>, at: u64, _kind: Kind) -> Option<&'static str> {
+        // rawloader `TiffIFD::new` fails for more than 4000 entries
+        // (decoders/tiff.rs:197); its caller keeps only the pointer entry.
+        let count = w.lay.u16(w.d, at)?;
+        (!RAWLER && count > 4000)
+            .then_some("rawloader rejects an IFD of more than 4000 entries (decoders/tiff.rs:197)")
     }
 
     fn ifd(&self, _w: &Walk<'_>, ifd: &Ifd) -> Fate {
@@ -954,6 +975,11 @@ fn place_tiff(
         ifd0_ok: p.ifd0_ok,
         fatal: w.fatal.clone(),
         cancelled: w.cancelled,
+        budget_hit: p.budget_hit,
+        chain_rejected: !RAWLER
+            && w.ifds.iter().any(|i| {
+                i.page().is_some_and(|n| n < 100) && w.lay.u16(w.d, i.at).is_some_and(|c| c > 4000)
+            }),
     }
 }
 
@@ -964,6 +990,11 @@ struct TiffPlacement {
     ifd0_ok: bool,
     fatal: Option<String>,
     cancelled: bool,
+    /// A budget or cap stopped part of the walk.
+    budget_hit: bool,
+    /// rawloader rejects a main-chain IFD (more than 4000 entries), so its
+    /// `new_root` fails and nothing decodes.
+    chain_rejected: bool,
 }
 
 /// What one CR3 `CMTn` TIFF's entries mean on the zencodec path: rawler
@@ -1016,6 +1047,8 @@ struct MakerNote {
     /// Each walked maker-note IFD in the backend's search order: offset and
     /// whether it holds an Orientation entry.
     ifds: Vec<(u64, bool)>,
+    /// A budget or cap stopped the maker-note walk.
+    budget_hit: bool,
 }
 
 /// Maker notes in `w` that rawloader parses (decoders/tiff.rs
@@ -1178,7 +1211,9 @@ fn maker_note(
         depth,
         rules,
     );
-    let mut parts = place(&mut mw, rules, Vec::new()).parts;
+    let mp = place(&mut mw, rules, Vec::new());
+    let mut budget_hit = mp.budget_hit;
+    let mut parts = mp.parts;
     let mut ifds: Vec<(u64, bool)> = mw
         .ifds
         .iter()
@@ -1205,7 +1240,9 @@ fn maker_note(
                 depth.saturating_add(1),
                 rules,
             );
-            parts.extend(place(&mut iw, rules, Vec::new()).parts);
+            let ip = place(&mut iw, rules, Vec::new());
+            budget_hit |= ip.budget_hit;
+            parts.extend(ip.parts);
             ifds.extend(
                 iw.ifds
                     .iter()
@@ -1220,6 +1257,7 @@ fn maker_note(
         parts,
         host,
         ifds,
+        budget_hit,
     })
 }
 
@@ -1251,6 +1289,9 @@ fn attach_maker_notes(parts: Vec<Cand>, notes: Vec<MakerNote>) -> Vec<Cand> {
         }
         host.children = inner.into_sorted();
         host.body = Some(host.range.clone());
+        if note.budget_hit {
+            host.gap = Some((Disposition::Unknown, tiff_walk::BUDGET_GAP.into()));
+        }
         host.disp = Disposition::Structure;
         host.detail = String::from(
             "MakerNote value, walked as an IFD below; bytes nothing references are Unreferenced",
@@ -1298,15 +1339,18 @@ impl From<InventoryError> for Failed {
 const NOT_RAW: &str = "zenraw does not take this file (is_raw_file is false), so the decode fails";
 
 /// Mark every consumed part of `c` `Skipped`: nothing reads it.
-fn not_decoded(c: &mut Cand) {
+fn not_decoded(c: &mut Cand, why: &str) {
     if c.disp.is_consumed() {
         c.disp = Disposition::Skipped;
-        tiff_walk::push_note(&mut c.detail, NOT_RAW);
+        tiff_walk::push_note(&mut c.detail, why);
     }
     for ch in &mut c.children {
-        not_decoded(ch);
+        not_decoded(ch, why);
     }
 }
+
+/// Detail when rawloader rejects a main-chain IFD.
+const CHAIN_REJECTED: &str = "rawloader rejects a main-chain IFD of more than 4000 entries (decoders/tiff.rs:197), so the decode fails";
 
 /// Inventory `data` the way zenraw's zencodec decode job reads it.
 pub(crate) fn inventory(
@@ -1318,6 +1362,7 @@ pub(crate) fn inventory(
     let xmp = cfg!(feature = "xmp");
     let mut inv = Inventory::new(format, len);
     let mut cancelled = false;
+    let mut chain_rejected = false;
     let (mut parts, logical_end, gap) = if data.starts_with(b"FUJIFILM") {
         raf(data, xmp, stop, &mut cancelled)
     } else if data.get(4..8) == Some(b"ftyp") {
@@ -1326,7 +1371,13 @@ pub(crate) fn inventory(
         let first: Vec<Cand> = xmp_cand(data).into_iter().collect();
         let t = place_tiff(data, 0, len, Role::Main, xmp, stop, first);
         cancelled |= t.cancelled;
-        let gap = if t.ifd0_ok {
+        chain_rejected = t.chain_rejected;
+        let gap = if t.ifd0_ok && t.budget_hit {
+            (
+                Disposition::Unknown,
+                Some(String::from(tiff_walk::BUDGET_GAP)),
+            )
+        } else if t.ifd0_ok {
             (Disposition::Unreferenced, None)
         } else {
             (Disposition::Malformed, t.fatal)
@@ -1349,7 +1400,11 @@ pub(crate) fn inventory(
     // (zencodec_impl `decoder` → `decode::is_raw_file`).
     if !crate::is_raw_file(data) {
         for c in &mut parts {
-            not_decoded(c);
+            not_decoded(c, NOT_RAW);
+        }
+    } else if chain_rejected {
+        for c in &mut parts {
+            not_decoded(c, CHAIN_REJECTED);
         }
     }
     emit_top(&mut inv, data, parts, logical_end, gap)?;
@@ -1519,6 +1574,9 @@ fn raf(data: &[u8], xmp: bool, stop: &dyn enough::Stop, cancelled: &mut bool) ->
                 ),
             );
             tiff.body = Some(tiff.range.clone());
+            if t.budget_hit {
+                tiff.gap = Some((Disposition::Unknown, tiff_walk::BUDGET_GAP.into()));
+            }
             tiff.children = t.parts;
             c.children.push(tiff);
         }
@@ -1543,6 +1601,9 @@ fn raf(data: &[u8], xmp: bool, stop: &dyn enough::Stop, cancelled: &mut bool) ->
             *cancelled |= t.cancelled;
             note_tags(&t.parts);
             c.children = t.parts;
+            if t.budget_hit {
+                c.gap = Some((Disposition::Unknown, tiff_walk::BUDGET_GAP.into()));
+            }
             if !cut {
                 c.body = Some(r.clone());
                 c.detail =
@@ -1738,6 +1799,8 @@ struct Cr3<'a> {
     xmp_placed: bool,
     stop: &'a dyn enough::Stop,
     cancelled: bool,
+    /// The box budget or depth cap stopped part of the walk.
+    stopped: bool,
 }
 
 /// Samples mapped per file, so a crafted sample table cannot explode.
@@ -1845,6 +1908,7 @@ fn cr3(data: &[u8], stop: &dyn enough::Stop, cancelled: &mut bool) -> Placement 
         xmp_placed: false,
         stop,
         cancelled: false,
+        stopped: false,
     };
     let mut boxes = Vec::new();
     let mut at = 0u64;
@@ -1886,11 +1950,15 @@ fn cr3(data: &[u8], stop: &dyn enough::Stop, cancelled: &mut bool) -> Placement 
     for c in boxes.into_iter().chain(tail) {
         placed.insert(c);
     }
-    (
-        placed.into_sorted(),
-        logical_end,
-        (Disposition::Unreferenced, None),
-    )
+    let gap = if walk.stopped || walk.budget == 0 {
+        (
+            Disposition::Unknown,
+            Some(String::from(tiff_walk::BUDGET_GAP)),
+        )
+    } else {
+        (Disposition::Unreferenced, None)
+    };
+    (placed.into_sorted(), logical_end, gap)
 }
 
 impl Cr3<'_> {
@@ -2136,9 +2204,15 @@ impl Cr3<'_> {
                             Disposition::Malformed,
                             "box header runs past the end of its parent".into(),
                         ));
+                        child_at = box_end;
                         break;
                     }
                 }
+            }
+            // The box budget or depth cap left children unlisted.
+            if child_at < box_end && !self.cancelled {
+                self.stopped = true;
+                c.gap = Some((Disposition::Unknown, tiff_walk::BUDGET_GAP.into()));
             }
         }
         Some(c)

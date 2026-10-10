@@ -2202,3 +2202,223 @@ fn cr3_cmt_exif_is_never_surfaced() {
     };
     assert_eq!(p.disposition, expected, "{inv}");
 }
+
+// ── Review round 2 (zenraw) / round 3 (shared walker) ─────────────────
+
+/// A container split around an overlapping part keeps its body in each
+/// piece, so its slack stays `Unreferenced` (review R2-A): the CFA header
+/// section's length runs 4 bytes into the CFA section.
+#[test]
+fn split_container_keeps_its_body() {
+    let (mut data, hdr_slack, _, _) = raf_with_slack();
+    let hdr_len = u32::from_be_bytes(data[96..100].try_into().unwrap()) + 4;
+    data[96..100].copy_from_slice(&hdr_len.to_be_bytes());
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    assert_eq!(
+        leaf_at(&inv, hdr_slack).disposition,
+        Disposition::Unreferenced,
+        "{inv}"
+    );
+}
+
+/// The real fuji_xt1.raf with a 23-byte XMP packet written into its CFA
+/// section slack (review R2-A): the packet is placed first and splits the
+/// CFA section; the rest of the slack stays `Unreferenced`.
+#[cfg(feature = "xmp")]
+#[test]
+fn split_real_raf_keeps_its_slack_unreferenced() {
+    let Some(dir) = std::env::var_os("ZENRAW_RAW_CONFORMANCE_DIR") else {
+        eprintln!("ZENRAW_RAW_CONFORMANCE_DIR not set; corpus check not requested");
+        return;
+    };
+    let mut data = std::fs::read(PathBuf::from(dir).join("valid/xtrans/fuji_xt1.raf")).unwrap();
+    let packet = b"<x:xmpmeta></x:xmpmeta>";
+    data[898200..898200 + packet.len()].copy_from_slice(packet);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    assert_eq!(
+        leaf_at(&inv, 898210).disposition,
+        Disposition::Metadata(MetadataKind::Xmp),
+        "{inv}"
+    );
+    for at in [898080, 898600] {
+        assert_eq!(
+            leaf_at(&inv, at).disposition,
+            Disposition::Unreferenced,
+            "{at}: {inv}"
+        );
+    }
+}
+
+/// rawler follows SubIFDs only through a LONG pointer (formats/tiff/ifd.rs);
+/// rawloader follows any integer pointer (review R2-B).
+#[test]
+fn rawler_ignores_a_short_subifd_pointer() {
+    let mut w = W::new();
+    let make = w.put(b"ZenRaw\0");
+    w.pad();
+    let model = w.put(b"SyntheticDng\0");
+    w.pad();
+    let s0 = w.put(&raw16(0));
+    let secret = w.put(b"SUBIFD-SECRET-0042\0");
+    w.pad();
+    let sub = w.ifd(&[long(254, 1), at(270, 2, 19, secret)], 0);
+    let mut e = vec![
+        long(254, 0),
+        short(256, 4),
+        short(257, 4),
+        short(258, 16),
+        short(259, 1),
+        short(262, 32803),
+        at(271, 2, 7, make),
+        at(272, 2, 13, model),
+        long(273, s0),
+        short(277, 1),
+        long(279, 32),
+        short(330, sub as u16),
+        inline(33422, 1, 4, &[0, 1, 1, 2]),
+        inline(50706, 1, 4, &[1, 4, 0, 0]),
+        short(50717, u16::MAX),
+    ];
+    e.sort_by_key(|e| e.tag);
+    let ifd0 = w.ifd(&e, 0);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let data = w.b;
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let v = leaf_at(&inv, u64::from(secret));
+    if cfg!(feature = "rawler") {
+        assert!(!v.disposition.is_consumed(), "{inv}");
+    }
+    let base = decode_summary(&data).expect("decodes");
+    let m = xor(&data, u64::from(secret)..u64::from(secret) + 19, 0x5A);
+    assert_eq!(decode_summary(&m).unwrap(), base);
+}
+
+/// rawloader rejects an IFD of more than 4000 entries (decoders/tiff.rs:197):
+/// a nested one is not followed, and a main-chain one fails the decode
+/// (review R2-C).
+#[test]
+fn rawloader_rejects_ifds_over_4000_entries() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let mut e = vec![short(274, 6)];
+    for k in 0..4000u16 {
+        e.push(inline(40000 + k, 1, 1, &[0]));
+    }
+    let nested = d.w.ifd(&e, 0);
+    let exif = d.w.ifd(&[long(330, nested)], 0);
+    let data = d.finish(ifd, &[long(34665, exif)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let o = leaf_at(&inv, u64::from(nested) + 2 + 8);
+    assert!(!o.disposition.is_consumed(), "{inv}");
+    let base = decode_summary(&data).expect("decodes");
+    assert!(!base.1.contains("Rotate90"), "{}", base.1);
+
+    // IFD0 itself over the cap.
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let extra: Vec<E> = (0..4001u16)
+        .map(|k| inline(40000 + k, 1, 1, &[0]))
+        .collect();
+    let data = d.finish(ifd, &extra);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    if !cfg!(feature = "rawler") {
+        assert!(decode_summary(&data).is_err());
+        assert!(
+            !inv.parts().iter().any(|p| p.disposition.is_consumed()),
+            "{inv}"
+        );
+    }
+}
+
+/// Both backends follow every SubIFD pointer (review R2-D): 1029 pointers
+/// to a thumbnail IFD, then the raw IFD as pointer 1030.
+#[test]
+fn every_subifd_pointer_is_followed() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let mut e = vec![
+        long(254, 0),
+        short(256, 4),
+        short(257, 4),
+        short(258, 16),
+        short(259, 1),
+        short(262, 32803),
+        long(273, s0),
+        short(274, 6),
+        short(277, 1),
+        long(279, 32),
+        inline(33422, 1, 4, &[0, 1, 1, 2]),
+        short(50717, u16::MAX),
+    ];
+    e.sort_by_key(|e| e.tag);
+    let raw = d.w.ifd(&e, 0);
+    let thumb = d.w.ifd(
+        &[long(254, 1), short(256, 2), short(257, 2), short(259, 1)],
+        0,
+    );
+    let mut ptrs = Vec::new();
+    for _ in 0..1029 {
+        ptrs.extend_from_slice(&thumb.to_le_bytes());
+    }
+    ptrs.extend_from_slice(&raw.to_le_bytes());
+    let arr = d.w.put(&ptrs);
+    let mut e0 = vec![
+        long(254, 1),
+        at(271, 2, 7, d.make),
+        at(272, 2, 13, d.model),
+        at(330, 4, 1030, arr),
+        inline(50706, 1, 4, &[1, 4, 0, 0]),
+    ];
+    e0.sort_by_key(|e| e.tag);
+    let ifd0 = d.w.ifd(&e0, 0);
+    d.w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let data = d.w.b;
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    assert_eq!(
+        leaf_at(&inv, u64::from(s0)).disposition,
+        Disposition::ImageData,
+        "{inv}"
+    );
+}
+
+/// When a budget or cap stops a walk (here more than 4096 IFDs), its gaps
+/// are `Unknown` with a "may read" detail, not bare `Unreferenced`.
+#[test]
+fn budget_stopped_walk_leaves_unknown_gaps() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let mut ptrs = Vec::new();
+    for k in 0..5000u16 {
+        let at = d.w.ifd(&[short(40000, k)], 0);
+        ptrs.extend_from_slice(&at.to_le_bytes());
+    }
+    let arr = d.w.put(&ptrs);
+    let exif = d.w.ifd(&[at(330, 4, 5000, arr)], 0);
+    let data = d.finish(ifd, &[long(34665, exif)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let gaps: Vec<&Part> = inv
+        .parts()
+        .iter()
+        .filter(|p| {
+            p.parent.is_none() && p.kind == PartKind::Gap && p.disposition != Disposition::Trailing
+        })
+        .collect();
+    assert!(!gaps.is_empty(), "{inv}");
+    for g in gaps {
+        if g.disposition == Disposition::Padding {
+            continue;
+        }
+        assert_eq!(g.disposition, Disposition::Unknown, "{inv}");
+        assert!(g.detail.as_deref().unwrap().contains("may read"), "{inv}");
+    }
+}
