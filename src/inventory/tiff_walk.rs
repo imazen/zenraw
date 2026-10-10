@@ -772,6 +772,9 @@ pub(super) struct ChunkUse {
     pub(super) covered: bool,
     /// The decoder never reads this chunk: listed alone as `Skipped`, why.
     pub(super) unread: Option<&'static str>,
+    /// What the decoder reads of this chunk was not worked out (a budget ran
+    /// out): listed alone as `Unknown`, why.
+    pub(super) unknown: Option<&'static str>,
 }
 
 /// The decoded layout of one strip or tile.
@@ -937,8 +940,13 @@ pub(super) fn default_chunk_use(
                 // scan budget (overlapping chunks would rescan the same bytes).
                 let start = offs.get(k).and_then(|&o| w.abs(o));
                 let avail = start.map_or(0, |s| n.min(w.limit().saturating_sub(s)));
-                if let (Some(s), Some(need)) = (start, g.read())
-                    && w.take_scan(avail)
+                let budget = start.is_some() && g.read().is_some() && w.take_scan(avail);
+                if !budget {
+                    u.unknown = Some(
+                        "the count-only scan budget is spent; the decoder may read some or all of these bytes",
+                    );
+                }
+                if let (true, Some(s), Some(need)) = (budget, start, g.read())
                     && let Some(d) = get(w.d, s, avail)
                 {
                     match packbits_end(d, need) {
@@ -1437,6 +1445,9 @@ pub(super) struct Placed {
     parts: Vec<Cand>,
     /// start → (end, index into `parts`)
     by_start: BTreeMap<u64, (u64, usize)>,
+    /// Ranges of parts left unlisted past the overlap cap, with the part
+    /// they belong to: their uncovered bytes become `Unknown`.
+    zones: Vec<(Range<u64>, String)>,
 }
 
 impl Placed {
@@ -1489,6 +1500,16 @@ impl Placed {
         }
         let total = pieces.len();
         let listed = total.min(MAX_PIECES);
+        // The rest of `c` past the examined overlaps or the listed pieces may
+        // still be read: its bytes no other part covers become `Unknown`.
+        let unlisted = match (pieces.get(listed), truncated) {
+            (Some(r), _) => Some(r.start),
+            (None, true) => Some(cursor),
+            (None, false) => None,
+        };
+        if let Some(from) = unlisted.filter(|&f| f < c.range.end) {
+            self.zones.push((from..c.range.end, desc.clone()));
+        }
         let mut children = core::mem::take(&mut c.children);
         for (k, r) in pieces.into_iter().enumerate().take(MAX_PIECES) {
             let mut piece = Cand::new(r.clone(), c.kind, c.tag.clone(), c.disp, c.detail.clone());
@@ -1526,9 +1547,64 @@ impl Placed {
         }
     }
 
-    /// The placed parts in file order.
+    /// The placed parts in file order, plus an `Unknown` part for each
+    /// stretch of an unlisted remainder no placed part covers.
     pub(super) fn into_sorted(self) -> Vec<Cand> {
         let mut parts = self.parts;
+        let mut zones = self.zones;
+        zones.sort_by_key(|(r, _)| r.start);
+        // Merge overlapping zones; keep the first part's description.
+        let mut merged: Vec<(Range<u64>, String, usize)> = Vec::new();
+        for (r, d) in zones {
+            match merged.last_mut() {
+                Some((m, _, n)) if r.start <= m.end => {
+                    m.end = m.end.max(r.end);
+                    *n += 1;
+                }
+                _ => merged.push((r, d, 0)),
+            }
+        }
+        for (zone, desc, others) in merged {
+            let detail = if others == 0 {
+                format!(
+                    "part of {desc}; not listed past {MAX_PIECES} overlaps; the decoder may read it"
+                )
+            } else {
+                format!(
+                    "part of {desc} and {others} other part(s); not listed past {MAX_PIECES} overlaps; the decoder may read it"
+                )
+            };
+            let mut cursor = zone.start;
+            let from = self
+                .by_start
+                .range(..=zone.start)
+                .next_back()
+                .map_or(zone.start, |(&s, _)| s);
+            for (&s, &(e, _)) in self.by_start.range(from..zone.end) {
+                if e <= cursor {
+                    continue;
+                }
+                if s > cursor {
+                    parts.push(Cand::new(
+                        cursor..s,
+                        PartKind::Gap,
+                        PartTag::None,
+                        Disposition::Unknown,
+                        detail.clone(),
+                    ));
+                }
+                cursor = cursor.max(e);
+            }
+            if cursor < zone.end {
+                parts.push(Cand::new(
+                    cursor..zone.end,
+                    PartKind::Gap,
+                    PartTag::None,
+                    Disposition::Unknown,
+                    detail,
+                ));
+            }
+        }
         parts.sort_by_key(|c| c.range.start);
         parts
     }
@@ -1723,8 +1799,9 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 }
                 if pixels
                     && (first..=last).any(|k| {
-                        uses.get(k)
-                            .is_none_or(|u| u.used.is_none() && u.unread.is_none())
+                        uses.get(k).is_none_or(|u| {
+                            u.used.is_none() && u.unread.is_none() && u.unknown.is_none()
+                        })
                     })
                 {
                     push_note(
@@ -1762,7 +1839,12 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 }
                 extents_left -= 1;
                 // A chunk the decoder never reads is listed alone.
-                if let Some(why) = uses.get(k).and_then(|u| u.unread) {
+                let alone = uses.get(k).and_then(|u| {
+                    u.unread
+                        .map(|why| (Disposition::Skipped, why))
+                        .or(u.unknown.map(|why| (Disposition::Unknown, why)))
+                });
+                if let Some((fate, why)) = alone {
                     if let Some((r, first, last)) = run.take() {
                         emit(r, first, last, &mut values, &mut notes);
                     }
@@ -1774,7 +1856,7 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                         && let Some(c) = values.last_mut()
                     {
                         if c.disp != Disposition::Malformed {
-                            c.disp = Disposition::Skipped;
+                            c.disp = fate;
                         }
                         push_note(&mut c.detail, why);
                     }
@@ -1914,6 +1996,9 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
         }
         placed.insert(c);
     }
+    // Overlapping bytes take the strongest fate: consumed values and
+    // extents are placed first (a stable sort keeps file order otherwise).
+    values.sort_by_key(|v| core::cmp::Reverse(rank(v.disp)));
     for v in values {
         placed.insert(v);
     }
