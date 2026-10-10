@@ -6,7 +6,29 @@
 <!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
 - `RawError`'s variant set was reshaped for the zencodec `ErrorCategory` taxonomy (see the
-  `### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
+  `### Added
+
+- **Structural inventory: `DecodeJob::inventory` and
+  `DecodeCapabilities::with_inventory(true)`** (zencodec PR #133, f2e63ba, 42e36ef).
+  Maps every byte of a RAW file without decoding pixels. TIFF-based RAWs
+  (DNG, CR2, NEF, ARW, ORF, RW2): header (ORF/RW2 version numbers, the CR2
+  header extension), IFD chain, SubIFD/EXIF/GPS/Interop, Fuji/Kodak sub-IFDs
+  and Sony's SR2Private IFD, entries, values, strips/tiles, RW2 raw data,
+  the encrypted SR2SubIFD. RAF: header fields, the JPEG preview with the
+  EXIF TIFF in its APP1, CFA header records, the CFA section's TIFF. CR3:
+  every ISOBMFF box. Dispositions follow the zencodec path: rawloader keeps
+  only its own tag set, so other tags are `Skipped`/`Unknown`; rawler builds
+  mark every walked entry `Structure`; only orientation and (with `xmp`) the
+  first XMP packet zenraw's byte scan finds are metadata. Tests (ce2dd42, 457ad59):
+  pinned synthetic DNG, RAF and CR3 fixtures; `check_inventory` over
+  codec-corpus `raw-conformance` (`just inventory-test`); XOR-ing every byte
+  marked never-read leaves the decode unchanged under both backends;
+  `just inventory-oracle` cross-checks `exiftool -v3` (7 files, 642 units,
+  0 unexplained). Fuzz target `inventory` (6a1f737). `Cargo.toml` patches
+  zencodec/zencodec-testkit to the PR branch; swap for the release before
+  merge.
+
+### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
   single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
   new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
 
