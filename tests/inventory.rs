@@ -268,8 +268,10 @@ fn raf_fixture() -> Vec<u8> {
     b
 }
 
-/// A CR3-shaped ISOBMFF file: ftyp, moov with Canon's metadata uuid, a free
-/// box, mdat, and trailing junk.
+/// A CR3-shaped ISOBMFF file: ftyp; moov with Canon's metadata uuid (CNCV,
+/// a CCTP naming track 1 as the raw image, CMT1), mvhd and one trak whose
+/// sample tables locate a CRAW sample in mdat; a free box; mdat; trailing
+/// junk.
 fn cr3_fixture() -> Vec<u8> {
     fn bx(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
@@ -281,17 +283,56 @@ fn cr3_fixture() -> Vec<u8> {
         0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a,
         0x48,
     ];
-    let mut uuid_payload = canon_uuid.to_vec();
-    uuid_payload.extend(bx(b"CNCV", b"CanonCR3_001/00.09.00/00.00.00"));
-    uuid_payload.extend(bx(b"CMT1", b"II*\0\x08\0\0\0\0\0\0\0\0\0"));
-    let mut moov = bx(b"uuid", &uuid_payload);
-    moov.extend(bx(b"mvhd", &[0; 20]));
-    let mut f = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
-    f.extend(bx(b"moov", &moov));
-    f.extend(bx(b"free", &[0; 8]));
-    f.extend(bx(b"mdat", &[0x5A; 64]));
-    f.extend_from_slice(b"junk");
-    f
+    let build = |sample_at: u64| -> Vec<u8> {
+        let mut uuid_payload = canon_uuid.to_vec();
+        uuid_payload.extend(bx(b"CNCV", b"CanonCR3_001/00.09.00/00.00.00"));
+        // CCTP: version/flags, two u32s, then one CCDT: image type 0 (the
+        // full raw image), dual pixel 0, track 1.
+        let mut cctp = vec![0u8; 12];
+        let mut ccdt = 0u64.to_be_bytes().to_vec();
+        ccdt.extend_from_slice(&0u32.to_be_bytes());
+        ccdt.extend_from_slice(&1u32.to_be_bytes());
+        cctp.extend(bx(b"CCDT", &ccdt));
+        uuid_payload.extend(bx(b"CCTP", &cctp));
+        uuid_payload.extend(bx(b"CMT1", b"II*\0\x08\0\0\0\0\0\0\0\0\0"));
+        // stsd with one CRAW entry; one 64-byte sample in one chunk.
+        let mut stsd = vec![0, 0, 0, 0, 0, 0, 0, 1];
+        stsd.extend(bx(b"CRAW", &[0; 8]));
+        let mut stsc = vec![0, 0, 0, 0, 0, 0, 0, 1];
+        for v in [1u32, 1, 1] {
+            stsc.extend_from_slice(&v.to_be_bytes());
+        }
+        let mut stsz = vec![0, 0, 0, 0];
+        stsz.extend_from_slice(&64u32.to_be_bytes());
+        stsz.extend_from_slice(&1u32.to_be_bytes());
+        let mut co64 = vec![0, 0, 0, 0, 0, 0, 0, 1];
+        co64.extend_from_slice(&sample_at.to_be_bytes());
+        let mut stbl = bx(b"stsd", &stsd);
+        stbl.extend(bx(b"stts", &[0; 8]));
+        stbl.extend(bx(b"stsc", &stsc));
+        stbl.extend(bx(b"stsz", &stsz));
+        stbl.extend(bx(b"co64", &co64));
+        let mut minf = bx(b"vmhd", &[0; 12]);
+        minf.extend(bx(b"dinf", &bx(b"dref", &[0; 8])));
+        minf.extend(bx(b"stbl", &stbl));
+        let mut mdia = bx(b"mdhd", &[0; 24]);
+        mdia.extend(bx(b"hdlr", &[0; 24]));
+        mdia.extend(bx(b"minf", &minf));
+        let mut trak = bx(b"tkhd", &[0; 84]);
+        trak.extend(bx(b"mdia", &mdia));
+        let mut moov = bx(b"uuid", &uuid_payload);
+        moov.extend(bx(b"mvhd", &[0; 20]));
+        moov.extend(bx(b"trak", &trak));
+        let mut f = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+        f.extend(bx(b"moov", &moov));
+        f.extend(bx(b"free", &[0; 8]));
+        f.extend(bx(b"mdat", &[0x5A; 64]));
+        f.extend_from_slice(b"junk");
+        f
+    };
+    let probe = build(0);
+    let mdat_payload = probe.len() as u64 - 4 - 64;
+    build(mdat_payload)
 }
 
 /// One expected part: kind, tag, range, disposition, label, depth.
@@ -398,13 +439,18 @@ fn raf_fixture_passes_check_inventory() {
         "{inv}"
     );
     // The EXIF TIFF inside the JPEG preview is walked: its orientation is
-    // what rawloader reports.
-    assert!(
-        inv.parts()
-            .iter()
-            .any(|p| p.disposition == Disposition::Metadata(MetadataKind::Orientation)),
-        "{inv}"
-    );
+    // what rawloader reports; rawler reports Normal for RAF (zenraw#22).
+    let orientation = inv
+        .parts()
+        .iter()
+        .find(|p| p.tag == PartTag::Code(274))
+        .unwrap_or_else(|| panic!("{inv}"));
+    let expected = if cfg!(feature = "rawler") {
+        Disposition::Dropped
+    } else {
+        Disposition::Metadata(MetadataKind::Orientation)
+    };
+    assert_eq!(orientation.disposition, expected, "{inv}");
 }
 
 #[test]
@@ -418,13 +464,16 @@ fn cr3_fixture_inventory_is_valid() {
         .filter(|p| p.kind == PartKind::Box)
         .map(|p| p.tag.to_string())
         .collect();
-    assert_eq!(
-        boxes,
-        [
-            "ftyp", "moov", "uuid", "CNCV", "CMT1", "mvhd", "free", "mdat"
-        ],
-        "{inv}"
-    );
+    // rawler seeks past dinf; rawloader builds enumerate its dref.
+    let mut expected = vec![
+        "ftyp", "moov", "uuid", "CNCV", "CCTP", "CMT1", "mvhd", "trak", "tkhd", "mdia", "mdhd",
+        "hdlr", "minf", "vmhd", "dinf", "stbl", "stsd", "stts", "stsc", "stsz", "co64", "free",
+        "mdat",
+    ];
+    if !cfg!(feature = "rawler") {
+        expected.insert(15, "dref");
+    }
+    assert_eq!(boxes, expected, "{inv}");
     if cfg!(feature = "rawler") {
         zencodec_testkit::check_inventory(RawDecoderConfig::new(), &data).unwrap();
     } else {
@@ -476,12 +525,14 @@ fn dng_fixture_part_list_is_pinned() {
         (Gap, n.clone(), 33, 34, Padding, None, 0),
         (Field, c(272), 34, 47, Structure, None, 0),
         (Gap, n.clone(), 47, 48, Padding, None, 0),
-        xmp_value,
+        xmp_value.clone(),
         (Field, c(65000), 154, 162, Unknown, None, 0),
         (Gap, n.clone(), 162, 170, Unreferenced, None, 0),
         (Extent, c(273), 170, 202, ImageData, None, 0),
         (Field, c(33434), 202, 210, Skipped, None, 0),
         (Field, c(37500), 210, 220, Structure, None, 0),
+        (Ifd, n.clone(), 210, 216, Structure, None, 1),
+        (Gap, n.clone(), 216, 220, Unreferenced, None, 1),
         (Field, c(42033), 220, 228, Skipped, None, 0),
         (Field, c(2), 228, 252, Skipped, None, 0),
         (Ifd, n.clone(), 252, 390, Structure, None, 0),
@@ -529,7 +580,23 @@ fn dng_fixture_part_list_is_pinned() {
     ];
     let actual = rows(&inv);
     if actual != expected {
-        panic!("pinned part list changed:\n{inv}\nactual rows:\n{actual:#?}");
+        // Printed in the form above, to re-pin after checking each change.
+        let listing: String = actual
+            .iter()
+            .map(|(k, t, s, e, d, l, depth)| {
+                let tag = match t {
+                    PartTag::Code(c) => format!("c({c})"),
+                    PartTag::None => "n.clone()".into(),
+                    t => format!("{t:?}"),
+                };
+                let disp = match d {
+                    M(m) => format!("M({m:?})"),
+                    d => format!("{d:?}"),
+                };
+                format!("        ({k:?}, {tag}, {s}, {e}, {disp}, {l:?}, {depth}),\n")
+            })
+            .collect();
+        panic!("pinned part list changed:\n{inv}\nactual rows:\n{listing}");
     }
 }
 
@@ -590,14 +657,24 @@ fn conformance_inventories_pass_check_inventory() {
 
 // ── Dispositions against the decoder itself ───────────────────────────
 
-fn decode_summary(data: &[u8]) -> Result<(Vec<u8>, String), String> {
+/// What a zencodec decode returns: pixels, the reported `ImageInfo`, and the
+/// XMP bytes in full.
+type Summary = (Vec<u8>, String, Option<Vec<u8>>);
+
+fn decode_summary(data: &[u8]) -> Result<Summary, String> {
     let out = RawDecoderConfig::new()
         .job()
         .decoder(Cow::Borrowed(data), &[])
         .and_then(|d| d.decode())
         .map_err(|e| e.to_string())?;
     let pixels = out.pixels().contiguous_bytes().into_owned();
-    Ok((pixels, format!("{:?}", out.info())))
+    let xmp = out
+        .info()
+        .embedded_metadata
+        .xmp
+        .as_ref()
+        .map(|x| x.to_vec());
+    Ok((pixels, format!("{:?}", out.info()), xmp))
 }
 
 fn unread(p: &Part) -> bool {
@@ -611,11 +688,21 @@ fn unread(p: &Part) -> bool {
     )
 }
 
+/// `unread`, or `Dropped` too: for the DNG fixture, whose dropped parts
+/// (EXIF and GPS values in rawler builds, the XMP entry) cannot turn valid
+/// under a mutation.
+fn unread_or_dropped(p: &Part) -> bool {
+    unread(p) || p.disposition == Disposition::Dropped
+}
+
 /// Byte ranges to XOR for each part the inventory marks never read: whole
 /// parts with nothing consumed inside them; the uncovered bytes of an unread
 /// part that holds consumed parts; an IFD entry's count and value field (the
 /// directory parser reads its tag and type to decide to skip it).
-fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
+fn mutation_targets(
+    inv: &Inventory,
+    unread: fn(&Part) -> bool,
+) -> Vec<(std::ops::Range<u64>, String)> {
     let parts = inv.parts();
     let mut consumed_below = vec![false; parts.len()];
     for i in (0..parts.len()).rev() {
@@ -667,6 +754,12 @@ fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
         let entry = p.kind == PartKind::Field
             && p.parent
                 .is_some_and(|id| parts[id.index()].kind == PartKind::Ifd);
+        // A dropped entry is parsed: both backends slice its value from the
+        // count and offset, so corrupting them can fail the parse. Only
+        // dropped values are mutated.
+        if entry && p.disposition == Disposition::Dropped {
+            continue;
+        }
         let r = if entry {
             p.range.start + 4..p.range.end
         } else {
@@ -680,10 +773,15 @@ fn mutation_targets(inv: &Inventory) -> Vec<(std::ops::Range<u64>, String)> {
 /// XOR the bytes of every part marked never read (see [`mutation_targets`]),
 /// the largest `per_file` first; the decode must not change.
 /// `None` when the file does not decode (nothing to compare against).
-fn mutate_unread(name: &str, data: &[u8], per_file: usize) -> Option<(usize, Vec<String>)> {
+fn mutate_unread(
+    name: &str,
+    data: &[u8],
+    per_file: usize,
+    unread: fn(&Part) -> bool,
+) -> Option<(usize, Vec<String>)> {
     let baseline = decode_summary(data).ok()?;
     let inv = inventory(data);
-    let mut targets = mutation_targets(&inv);
+    let mut targets = mutation_targets(&inv, unread);
     targets.sort_by_key(|(r, _)| std::cmp::Reverse(r.end - r.start));
     let mut failures = Vec::new();
     let mut n = 0;
@@ -703,7 +801,8 @@ fn mutate_unread(name: &str, data: &[u8], per_file: usize) -> Option<(usize, Vec
 #[test]
 fn unread_parts_do_not_influence_decode_fixture() {
     let data = dng_fixture();
-    let (n, failures) = mutate_unread("dng_fixture", &data, usize::MAX).expect("fixture decodes");
+    let (n, failures) = mutate_unread("dng_fixture", &data, usize::MAX, unread_or_dropped)
+        .expect("fixture decodes");
     assert!(n >= 8, "only {n} parts mutated");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     // Sanity: the raw strip does drive the decode.
@@ -732,7 +831,7 @@ fn unread_parts_do_not_influence_decode_corpus() {
     for (path, valid) in files.iter().filter(|(_, v)| *v) {
         let _ = valid;
         let data = std::fs::read(path).unwrap();
-        let Some((n, f)) = mutate_unread(&path.display().to_string(), &data, 16) else {
+        let Some((n, f)) = mutate_unread(&path.display().to_string(), &data, 16, unread) else {
             continue;
         };
         decodable += 1;
@@ -748,15 +847,148 @@ fn unread_parts_do_not_influence_decode_corpus() {
     );
 }
 
+/// Details that name why a read part leaves this decode unchanged.
+const EXPLAINED: &[&str] = &[
+    // Known tags both backends parse; which ones a camera decoder reads is
+    // per make and not modelled.
+    "its decoders may read only part",
+    "its decoders read what they need",
+    "camera decoders read",
+];
+
+/// Leaf parts reported as read (`Structure`, `Metadata`, `ImageData`), and
+/// whether changing each changes the decode (masks, then decrements),
+/// unless its detail says why not. Entries are mutated in their value field.
+fn mutate_read(name: &str, data: &[u8], per_file: usize) -> Option<(usize, usize, Vec<String>)> {
+    let base = decode_summary(data).ok()?;
+    let inv = inventory(data);
+    let parts = inv.parts();
+    let mut has_child = vec![false; parts.len()];
+    for p in parts {
+        if let Some(id) = p.parent {
+            has_child[id.index()] = true;
+        }
+    }
+    let leaves: Vec<&Part> = parts
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| p.disposition.is_consumed() && !has_child[i])
+        .map(|(_, p)| p)
+        .collect();
+    let explained = |p: &Part| {
+        let d = p.detail.as_deref().unwrap_or("");
+        EXPLAINED.iter().any(|x| d.contains(x))
+    };
+    let exempt = leaves.iter().filter(|p| explained(p)).count();
+    let targets: Vec<&Part> = leaves.into_iter().filter(|p| !explained(p)).collect();
+    let step = targets.len().div_ceil(per_file).max(1);
+    let mut failures = Vec::new();
+    let mut n = 0;
+    for p in targets.into_iter().step_by(step) {
+        // IFD entries (12 bytes) in their value field; RAF records whole.
+        let entry = p.kind == PartKind::Field
+            && p.len() == 12
+            && p.parent.is_some_and(|id| {
+                parts[id.index()].kind == PartKind::Ifd
+                    && !parts[id.index()]
+                        .detail
+                        .as_deref()
+                        .is_some_and(|d| d.starts_with("RAF CFA header"))
+            });
+        let (s, e) = if entry {
+            (p.range.start + 8, p.range.end)
+        } else {
+            (p.range.start, p.range.end)
+        };
+        n += 1;
+        // Whole-range masks, then single bytes (both ends, and the second
+        // byte, where a big-endian SHORT keeps its low byte).
+        let mut singles = vec![(s..s + 1, 0x01), (s..s + 1, 0x07), (e - 1..e, 0x01)];
+        if e - s >= 2 {
+            singles.extend([(s + 1..s + 2, 0x01), (s + 1..s + 2, 0x07)]);
+        }
+        let mut variants: Vec<Vec<u8>> = [(s..e, 0x5Au8), (s..e, 0x01)]
+            .into_iter()
+            .chain(singles)
+            .map(|(r, m)| xor(data, r, m))
+            .collect();
+        for le in [true, false] {
+            let mut m = data.to_vec();
+            let bytes = &mut m[s as usize..e as usize];
+            let order: Vec<usize> = if le {
+                (0..bytes.len()).collect()
+            } else {
+                (0..bytes.len()).rev().collect()
+            };
+            for i in order {
+                let (v, borrow) = bytes[i].overflowing_sub(1);
+                bytes[i] = v;
+                if !borrow {
+                    break;
+                }
+            }
+            variants.push(m);
+        }
+        if !variants
+            .iter()
+            .any(|m| decode_summary(m).as_ref() != Ok(&base))
+        {
+            failures.push(format!(
+                "{name}: {} {s}..{e} {} ({}) left the decode unchanged",
+                p.kind.name(),
+                p.disposition,
+                p.detail.as_deref().unwrap_or("")
+            ));
+        }
+    }
+    Some((n, exempt, failures))
+}
+
+/// The reverse of the unread-parts checks: a part reported as read changes
+/// the decode when changed, or its detail says why it does not. The DNG
+/// fixture and every decodable raw-conformance file (16 parts each).
+#[test]
+fn read_parts_influence_decode() {
+    let mut inputs: Vec<(String, Vec<u8>)> = vec![("dng_fixture".into(), dng_fixture())];
+    if let Some(files) = conformance_files() {
+        inputs.extend(
+            files
+                .into_iter()
+                .filter(|(_, v)| *v)
+                .map(|(p, _)| (p.display().to_string(), std::fs::read(&p).unwrap())),
+        );
+    }
+    let (mut files, mut mutated, mut exempt) = (0, 0, 0);
+    let mut failures = Vec::new();
+    for (name, data) in &inputs {
+        let Some((n, x, f)) = mutate_read(name, data, 16) else {
+            continue;
+        };
+        files += 1;
+        mutated += n;
+        exempt += x;
+        failures.extend(f);
+    }
+    println!(
+        "{files} decodable files, {mutated} read parts mutated, {exempt} explained and not mutated"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} read parts do not influence the decode:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 // ── Independent oracle: exiftool -v3 ───────────────────────────────────
 
 /// One unit `exiftool -v3` lists inside a TIFF directory.
 #[derive(Debug)]
 enum OracleUnit {
     /// A directory: name, declared entry count, (index, dumped offset) of
-    /// its first inline value, and whether it belongs to a TIFF embedded in
-    /// another TIFF's value.
-    Dir(String, u64, Option<(u64, u64)>, bool),
+    /// its first inline value, whether it belongs to a TIFF embedded in
+    /// another TIFF's value, and its entries' tags in order.
+    Dir(String, u64, Option<(u64, u64)>, bool, Vec<u16>),
     /// A tag value: directory, tag, byte count, dumped offset, embedded.
     Value(String, u16, u64, u64, bool),
 }
@@ -810,7 +1042,7 @@ fn parse_exiftool_v3(text: &str) -> Vec<OracleUnit> {
             let embedded =
                 second_tiff || parent_embedded || (inside_tiff && name.starts_with("IFD"));
             if is_tiff_dir(&name) {
-                out.push(OracleUnit::Dir(name, n, None, embedded));
+                out.push(OracleUnit::Dir(name, n, None, embedded, Vec::new()));
                 stack.push((depth, out.len() - 1, embedded));
             } else {
                 stack.push((depth, usize::MAX, embedded));
@@ -844,13 +1076,16 @@ fn parse_exiftool_v3(text: &str) -> Vec<OracleUnit> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             pending = Some((tag, size));
+            if let OracleUnit::Dir(_, _, _, _, tags) = &mut out[dir_idx] {
+                tags.push(tag);
+            }
             continue;
         }
         if let Some((tag, size)) = pending.take()
             && let Some((hex, _)) = body.split_once(':')
             && let Ok(off) = u64::from_str_radix(hex.trim(), 16)
         {
-            let OracleUnit::Dir(name, _, first, _) = &mut out[dir_idx] else {
+            let OracleUnit::Dir(name, _, first, _, _) = &mut out[dir_idx] else {
                 unreachable!()
             };
             let name = name.clone();
@@ -905,15 +1140,32 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
     }
     headers.sort_unstable();
     headers.dedup();
-    let mut child_count = vec![0u64; parts.len()];
+    // Each IFD's entry tags, in file order.
+    let mut entry_tags: Vec<Vec<(u64, u16)>> = vec![Vec::new(); parts.len()];
     for p in parts {
-        if let Some(id) = p.parent {
-            child_count[id.index()] += 1;
+        if let Some(id) = p.parent
+            && parts[id.index()].kind == PartKind::Ifd
+            && p.kind == PartKind::Field
+            && let PartTag::Code(c) = p.tag
+        {
+            entry_tags[id.index()].push((p.range.start, c as u16));
         }
     }
-    let ifd_at = |at: Option<u64>, n: u64| {
+    for t in &mut entry_tags {
+        t.sort_unstable();
+    }
+    // A directory matches on its entry count and, where exiftool listed
+    // every entry, on its tag sequence.
+    let ifd_at = |at: Option<u64>, n: u64, tags: &[u16]| {
         parts.iter().enumerate().any(|(i, p)| {
-            p.kind == PartKind::Ifd && at.is_none_or(|a| a == p.range.start) && child_count[i] == n
+            p.kind == PartKind::Ifd
+                && at.is_none_or(|a| a == p.range.start)
+                && entry_tags[i].len() as u64 == n
+                && (tags.len() as u64 != n
+                    || entry_tags[i]
+                        .iter()
+                        .map(|&(_, t)| t)
+                        .eq(tags.iter().copied()))
         })
     };
     let mut t = OracleTally::default();
@@ -922,13 +1174,13 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
             let (field_off, count_len, entry_len, inline_cap) =
                 if big { (12, 8, 20, 8) } else { (8, 2, 12, 4) };
             match u {
-                OracleUnit::Dir(_, n, Some((i, off)), _) => {
+                OracleUnit::Dir(_, n, Some((i, off)), _, tags) => {
                     match (base + off).checked_sub(field_off + count_len + i * entry_len) {
-                        Some(at) => ifd_at(Some(at), *n),
+                        Some(at) => ifd_at(Some(at), *n, tags),
                         None => false,
                     }
                 }
-                OracleUnit::Dir(_, n, None, _) => ifd_at(None, *n),
+                OracleUnit::Dir(_, n, None, _, tags) => ifd_at(None, *n, tags),
                 OracleUnit::Value(_, tag, size, off, _) => {
                     let code = PartTag::Code(u32::from(*tag));
                     let at = base + off;
@@ -949,7 +1201,7 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
             continue;
         }
         let (what, embedded, off) = match u {
-            OracleUnit::Dir(name, n, first, e) => {
+            OracleUnit::Dir(name, n, first, e, _) => {
                 (format!("{name} ({n} entries)"), *e, first.map(|(_, o)| o))
             }
             OracleUnit::Value(dir, tag, size, off, e) => (
@@ -1031,34 +1283,60 @@ fn run_oracle(
 /// (`just inventory-oracle`).
 #[test]
 fn exiftool_oracle_agrees() {
-    let (Some(tool), Some(files)) = (
-        std::env::var_os("INVENTORY_ORACLE_EXIFTOOL"),
-        conformance_files(),
-    ) else {
-        eprintln!(
-            "INVENTORY_ORACLE_EXIFTOOL / ZENRAW_RAW_CONFORMANCE_DIR not set; oracle cross-check not requested"
-        );
+    let Some(tool) = std::env::var_os("INVENTORY_ORACLE_EXIFTOOL") else {
+        eprintln!("INVENTORY_ORACLE_EXIFTOOL not set; oracle cross-check not requested");
         return;
     };
-    let files: Vec<(String, Vec<u8>)> = files
+    // The raw-conformance set, and files listed one per line in the file
+    // INVENTORY_ORACLE_FILES names (real DNGs, for example).
+    let conformance: Vec<PathBuf> = conformance_files()
+        .unwrap_or_default()
         .into_iter()
         .filter(|(_, valid)| *valid)
-        .map(|(p, _)| (p.display().to_string(), std::fs::read(&p).unwrap()))
+        .map(|(p, _)| p)
+        .collect();
+    let listed: Vec<PathBuf> = std::env::var_os("INVENTORY_ORACLE_FILES")
+        .map(|l| {
+            std::fs::read_to_string(&l)
+                .unwrap_or_else(|e| panic!("read {}: {e}", l.to_string_lossy()))
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !conformance.is_empty() || !listed.is_empty(),
+        "set ZENRAW_RAW_CONFORMANCE_DIR or INVENTORY_ORACLE_FILES"
+    );
+    let read = |p: &PathBuf| (p.display().to_string(), std::fs::read(p).unwrap());
+    let conformance: Vec<(String, Vec<u8>)> = conformance
+        .iter()
+        .map(read)
         // exiftool dumps CR3's CMT TIFFs relative to their boxes; the CR3
         // walk lists boxes, not those TIFFs.
         .filter(|(_, d)| d.get(4..8) != Some(b"ftyp"))
         .collect();
-    let (rows, failures, checked, units) = run_oracle(&tool, &files);
+    let listed: Vec<(String, Vec<u8>)> = listed.iter().map(read).collect();
+    let (mut rows, mut failures, checked, mut units) = run_oracle(&tool, &conformance);
+    if !conformance.is_empty() {
+        assert_eq!(
+            checked, 7,
+            "every TIFF-based conformance RAW has TIFF directories"
+        );
+    }
+    let (r, f, c, u) = run_oracle(&tool, &listed);
+    assert_eq!(c, listed.len(), "every listed file has TIFF directories");
+    rows.extend(r);
+    failures.extend(f);
+    units += u;
+    let checked = checked + c;
     println!("| file | units | matched | explained | unexplained |");
     println!("|---|---|---|---|---|");
     for r in &rows {
         println!("{r}");
     }
     println!("{checked} files, {units} units compared");
-    assert_eq!(
-        checked, 7,
-        "every TIFF-based conformance RAW has TIFF directories"
-    );
     assert!(
         failures.is_empty(),
         "{} unexplained mismatches:\n{}",
@@ -1097,28 +1375,830 @@ fn exif_is_advertised_but_never_surfaced() {
     );
 }
 
-/// rawler keeps every tag of the IFDs it walks, so a rawler build reports
-/// each entry of the walked IFDs as consumed, while GPS and Interop IFDs stay
-/// unread.
+/// rawler reads every entry of the IFDs it walks: the main chain and the
+/// SubIFD, EXIF and GPS IFDs those point at. Main-chain and SubIFD entries
+/// feed its decoders (`Structure`); EXIF and GPS entries go into rawler's
+/// EXIF, which zenraw never reports (`Dropped`). The Interop IFD is not
+/// walked.
 #[cfg(feature = "rawler")]
 #[test]
-fn rawler_build_marks_walked_entries_structure() {
+fn rawler_build_walks_and_drops_exif_entries() {
     let data = dng_fixture();
     let inv = inventory(&data);
     inv.validate().unwrap();
-    for p in inv.parts().iter().filter(|p| p.kind == PartKind::Ifd) {
-        let walked = p.disposition == Disposition::Structure;
-        let gps_or_interop = p
-            .detail
-            .as_deref()
-            .is_some_and(|d| d.starts_with("GPS") || d.starts_with("Interop"));
-        assert_eq!(walked, !gps_or_interop, "{inv}");
-        for c in inv
+    let mut seen = 0;
+    for (i, p) in inv.parts().iter().enumerate() {
+        if p.kind != PartKind::Ifd {
+            continue;
+        }
+        let d = p.detail.as_deref().unwrap_or("");
+        let entries: Vec<&Part> = inv
             .parts()
             .iter()
-            .filter(|c| c.parent.is_some_and(|id| inv.get(id) == Some(p)))
-        {
-            assert_eq!(c.disposition.is_consumed(), walked, "{inv}");
+            .filter(|c| c.parent.is_some_and(|id| id.index() == i))
+            .collect();
+        if d.starts_with("Interop") {
+            assert_eq!(p.disposition, Disposition::Skipped, "{inv}");
+            assert!(
+                entries.iter().all(|c| !c.disposition.is_consumed()),
+                "{inv}"
+            );
+        } else if d.starts_with("EXIF") || d.starts_with("GPS") {
+            seen += 1;
+            assert_eq!(p.disposition, Disposition::Structure, "{inv}");
+            assert!(
+                entries
+                    .iter()
+                    .all(|c| c.disposition == Disposition::Dropped),
+                "{inv}"
+            );
+        } else {
+            assert_eq!(p.disposition, Disposition::Structure, "{inv}");
+            assert!(
+                entries
+                    .iter()
+                    .all(|c| c.disposition.is_consumed() || c.disposition == Disposition::Dropped),
+                "{inv}"
+            );
         }
     }
+    assert_eq!(seen, 2, "{inv}");
+}
+
+// ── Review round 1 ─────────────────────────────────────────────────────
+
+fn xor(data: &[u8], r: std::ops::Range<u64>, mask: u8) -> Vec<u8> {
+    let mut m = data.to_vec();
+    for b in &mut m[r.start as usize..r.end as usize] {
+        *b ^= mask;
+    }
+    m
+}
+
+/// The deepest part holding byte `at`.
+fn leaf_at(inv: &Inventory, at: u64) -> &Part {
+    let parts = inv.parts();
+    let depth = |i: usize| {
+        let (mut d, mut cur) = (0, parts[i].parent);
+        while let Some(id) = cur {
+            d += 1;
+            cur = parts[id.index()].parent;
+        }
+        d
+    };
+    parts
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.range.start <= at && at < p.range.end)
+        .max_by_key(|&(i, _)| depth(i))
+        .map(|(_, p)| p)
+        .unwrap_or_else(|| panic!("no part at {at}:\n{inv}"))
+}
+
+fn raw16(seed: u16) -> Vec<u8> {
+    (0..16u16)
+        .flat_map(|i| (i * 3000 + seed).to_le_bytes())
+        .collect()
+}
+
+/// A decodable 4x4 16-bit DNG, built around a raw SubIFD.
+struct Dng {
+    w: W,
+    make: u32,
+    model: u32,
+}
+
+impl Dng {
+    fn new() -> Self {
+        let mut w = W::new();
+        let make = w.put(b"ZenRaw\0");
+        w.pad();
+        let model = w.put(b"SyntheticDng\0");
+        w.pad();
+        Self { w, make, model }
+    }
+
+    fn raw_ifd(&mut self, strips: &[E]) -> u32 {
+        let mut e = vec![
+            long(254, 0),
+            short(256, 4),
+            short(257, 4),
+            short(258, 16),
+            short(259, 1),
+            short(262, 32803),
+        ];
+        e.extend_from_slice(strips);
+        e.extend_from_slice(&[
+            short(277, 1),
+            inline(33422, 1, 4, &[0, 1, 1, 2]),
+            short(50717, u16::MAX),
+        ]);
+        e.sort_by_key(|e| e.tag);
+        self.w.ifd(&e, 0)
+    }
+
+    /// IFD0 with `extra` entries (an extra duplicate sorts ahead of the base
+    /// entry with its tag).
+    fn finish(mut self, raw_ifd: u32, extra: &[E]) -> Vec<u8> {
+        let mut e = extra.to_vec();
+        e.extend_from_slice(&[
+            long(254, 1),
+            at(271, 2, 7, self.make),
+            at(272, 2, 13, self.model),
+            long(330, raw_ifd),
+            inline(50706, 1, 4, &[1, 4, 0, 0]),
+        ]);
+        e.sort_by_key(|e| e.tag);
+        let ifd0 = self.w.ifd(&e, 0);
+        self.w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+        self.w.b
+    }
+}
+
+/// 10,000 one-byte strips and 450 values each covering all of them: before
+/// round 1 the overlap budget ran out and the inventory failed `validate()`.
+fn overlap_budget() -> Vec<u8> {
+    let mut w = W::new();
+    let n = 10_000u32;
+    let region = w.put(&vec![0u8; (2 * n) as usize]);
+    let offs: Vec<u8> = (0..n)
+        .flat_map(|k| (region + 2 * k).to_le_bytes())
+        .collect();
+    let offs_at = w.put(&offs);
+    let cnts: Vec<u8> = (0..n).flat_map(|_| 1u16.to_le_bytes()).collect();
+    let cnts_at = w.put(&cnts);
+    let big: Vec<E> = (0..450u16)
+        .map(|i| at(60000 + i, 7, 2 * n, region))
+        .collect();
+    let ifd1 = w.ifd(&big, 0);
+    let ifd0 = w.ifd(
+        &[
+            short(256, 4),
+            short(257, 4),
+            at(273, 4, n, offs_at),
+            at(279, 3, n, cnts_at),
+        ],
+        ifd1,
+    );
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    w.b
+}
+
+/// 4 SubIFDs entries x 1024 pointers to 4096 IFDs two bytes apart in a
+/// 0xFF-filled region: before round 1 every IFD parsed ~len/12 junk entries
+/// (2.08 GB at 128 KiB).
+fn blowup(len: usize) -> Vec<u8> {
+    let mut w = W::new();
+    let arrays_at = (8 + 2 + 4 * 12 + 4) as u32;
+    let region = arrays_at as usize + 4 * 4096;
+    let entries: Vec<E> = (0..4u32)
+        .map(|k| at(330, 4, 1024, arrays_at + k * 4096))
+        .collect();
+    let ifd0 = w.ifd(&entries, 0);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    for k in 0..4096u32 {
+        w.b.extend_from_slice(&(region as u32 + 2 * k).to_le_bytes());
+    }
+    w.b.resize(len, 0xFF);
+    w.b
+}
+
+#[test]
+fn overlap_and_blowup_inputs_stay_valid_and_bounded() {
+    let inv = inventory(&overlap_budget());
+    inv.validate().unwrap();
+    let data = blowup(32_768);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    // Overlapping IFD tables are refused: one is walked, not 4096.
+    let ifds = inv
+        .parts()
+        .iter()
+        .filter(|p| p.kind == PartKind::Ifd)
+        .count();
+    assert!(ifds < 64, "{ifds} IFDs walked");
+}
+
+/// rawloader reads every row of an uncompressed DNG from StripOffsets[0]
+/// (dng.rs `decode_uncompressed`); rawler reads each strip at its declared
+/// length, or the strips as one buffer when they touch (`decode_strips`).
+#[test]
+fn multistrip_uncompressed_dng_follows_the_backend() {
+    // Junk between two strips.
+    let mut d = Dng::new();
+    let raw = raw16(0);
+    let s0 = d.w.put(&raw[..16]);
+    let junk = d.w.put(b"JUNK-SECRET-0042");
+    let s1 = d.w.put(&raw[16..]);
+    let offs = d.w.put(&[s0.to_le_bytes(), s1.to_le_bytes()].concat());
+    let cnts =
+        d.w.put(&[16u32.to_le_bytes(), 16u32.to_le_bytes()].concat());
+    let ifd = d.raw_ifd(&[at(273, 4, 2, offs), short(278, 2), at(279, 4, 2, cnts)]);
+    let data = d.finish(ifd, &[]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let base = decode_summary(&data).expect("decodes");
+    let junk_part = leaf_at(&inv, u64::from(junk));
+    let s1_part = leaf_at(&inv, u64::from(s1));
+    let junk_changes =
+        decode_summary(&xor(&data, u64::from(junk)..u64::from(junk) + 16, 0x5A)).unwrap() != base;
+    let s1_changes =
+        decode_summary(&xor(&data, u64::from(s1)..u64::from(s1) + 16, 0x5A)).unwrap() != base;
+    assert_eq!(junk_part.disposition.is_consumed(), junk_changes, "{inv}");
+    assert_eq!(s1_part.disposition.is_consumed(), s1_changes, "{inv}");
+    if cfg!(feature = "rawler") {
+        assert_eq!(s1_part.disposition, Disposition::ImageData, "{inv}");
+        assert!(!junk_part.disposition.is_consumed(), "{inv}");
+    } else {
+        assert_eq!(junk_part.disposition, Disposition::ImageData, "{inv}");
+        assert_eq!(s1_part.disposition, Disposition::Skipped, "{inv}");
+    }
+
+    // Strip 0 declared over all four rows, strip 1 right after it.
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(7));
+    let s1 = d.w.put(&raw16(9)[16..]);
+    let offs = d.w.put(&[s0.to_le_bytes(), s1.to_le_bytes()].concat());
+    let cnts =
+        d.w.put(&[32u32.to_le_bytes(), 16u32.to_le_bytes()].concat());
+    let ifd = d.raw_ifd(&[at(273, 4, 2, offs), short(278, 2), at(279, 4, 2, cnts)]);
+    let data = d.finish(ifd, &[]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let base = decode_summary(&data).expect("decodes");
+    let rows23 = u64::from(s0) + 16..u64::from(s0) + 32;
+    assert_eq!(
+        leaf_at(&inv, rows23.start).disposition,
+        Disposition::ImageData,
+        "{inv}"
+    );
+    assert_ne!(decode_summary(&xor(&data, rows23, 0x5A)).unwrap(), base);
+    let s1r = u64::from(s1)..u64::from(s1) + 16;
+    assert_eq!(
+        leaf_at(&inv, s1r.start).disposition,
+        Disposition::Skipped,
+        "{inv}"
+    );
+    assert_eq!(decode_summary(&xor(&data, s1r, 0x5A)).unwrap(), base);
+}
+
+/// Both backends keep the last of duplicate tags.
+#[test]
+fn duplicate_tags_keep_the_last() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let secret = d.w.put(b"SN-SECRET-0042\0");
+    d.w.pad();
+    let data = d.finish(ifd, &[short(274, 3), short(274, 6), at(271, 2, 15, secret)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let orient: Vec<&Part> = inv
+        .parts()
+        .iter()
+        .filter(|p| p.tag == PartTag::Code(274) && p.kind == PartKind::Field)
+        .collect();
+    assert_eq!(orient.len(), 2);
+    assert_eq!(orient[0].disposition, Disposition::Dropped, "{inv}");
+    assert_eq!(
+        orient[1].disposition,
+        Disposition::Metadata(MetadataKind::Orientation),
+        "{inv}"
+    );
+    let base = decode_summary(&data).expect("decodes");
+    assert!(base.1.contains("Rotate90"), "{}", base.1);
+    let first = orient[0].range.start + 8..orient[0].range.start + 10;
+    assert_eq!(decode_summary(&xor(&data, first, 0x5A)).unwrap(), base);
+    assert_eq!(
+        leaf_at(&inv, u64::from(secret)).disposition,
+        Disposition::Dropped,
+        "{inv}"
+    );
+}
+
+/// The SR2Private pointer, its IFD and the encrypted block are Sony ARW
+/// structure only: in a DNG they are never read.
+#[test]
+fn sr2_rules_need_a_sony_arw() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let blob = d.w.put(b"SR2-SECRET-00042");
+    let sr2 = d.w.ifd(&[long(0x7200, blob), long(0x7201, 16)], 0);
+    let data = d.finish(ifd, &[long(0xC634, sr2)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let b = leaf_at(&inv, u64::from(blob));
+    assert!(!b.disposition.is_consumed(), "{inv}");
+    assert!(
+        !leaf_at(&inv, u64::from(sr2) + 2).disposition.is_consumed(),
+        "{inv}"
+    );
+    let base = decode_summary(&data).expect("decodes");
+    let m = xor(&data, u64::from(blob)..u64::from(blob) + 16, 0x5A);
+    let m = xor(&m, u64::from(sr2)..u64::from(sr2) + 30, 0x5A);
+    assert_eq!(decode_summary(&m).unwrap(), base);
+}
+
+fn raf_with_slack() -> (Vec<u8>, u64, u64, u64) {
+    let mut b = vec![0u8; 148];
+    b[..16].copy_from_slice(b"FUJIFILMCCD-RAW ");
+    b[16..20].copy_from_slice(b"0201");
+    let mut tiff = W::new();
+    let ifd0 = tiff.ifd(&[short(274, 1)], 0);
+    tiff.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let app1_len = (2 + 6 + tiff.b.len()) as u16;
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    jpeg.extend_from_slice(&app1_len.to_be_bytes());
+    jpeg.extend_from_slice(b"Exif\0\0");
+    jpeg.extend_from_slice(&tiff.b);
+    jpeg.extend_from_slice(&[0xFF, 0xD9]);
+    let jpeg_off = b.len() as u32;
+    b.extend_from_slice(&jpeg);
+    let hdr_off = b.len() as u32;
+    b.extend_from_slice(&1u32.to_be_bytes());
+    b.extend_from_slice(&[0x01, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x04]);
+    let hdr_slack = b.len() as u64;
+    b.extend_from_slice(b"HDR-SLACK-SECRET");
+    let hdr_len = b.len() as u32 - hdr_off;
+    let cfa_off = b.len() as u32;
+    let mut cfa = W::new();
+    let mid_slack = u64::from(cfa.put(b"CFA-MIDDLE-SLACK"));
+    let raw = cfa.put(&[7u8; 32]);
+    let sub = cfa.ifd(
+        &[
+            short(0xF001, 4),
+            short(0xF002, 4),
+            short(0xF003, 16),
+            long(0xF007, raw),
+            long(0xF008, 32),
+        ],
+        0,
+    );
+    let top = cfa.ifd(&[long(0xF000, sub)], 0);
+    cfa.b[4..8].copy_from_slice(&top.to_le_bytes());
+    let end_slack = u64::from(cfa.put(b"CFA-TAIL-SECRET!"));
+    b.extend_from_slice(&cfa.b);
+    let cfa_len = b.len() as u32 - cfa_off;
+    for (at, v) in [
+        (84, jpeg_off),
+        (88, jpeg.len() as u32),
+        (92, hdr_off),
+        (96, hdr_len),
+        (100, cfa_off),
+        (104, cfa_len),
+    ] {
+        b[at..at + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    (
+        b,
+        hdr_slack,
+        u64::from(cfa_off) + mid_slack,
+        u64::from(cfa_off) + end_slack,
+    )
+}
+
+/// RAF sections are containers: bytes no record or TIFF part covers are
+/// `Unreferenced`; the section lengths in the header are never read.
+#[test]
+fn raf_slack_is_unreferenced_and_lengths_unread() {
+    let (data, hdr_slack, mid, tail) = raf_with_slack();
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    for at in [hdr_slack, mid, tail] {
+        assert_eq!(
+            leaf_at(&inv, at).disposition,
+            Disposition::Unreferenced,
+            "{at}: {inv}"
+        );
+    }
+    for at in [88, 96, 104] {
+        assert_eq!(
+            leaf_at(&inv, at).disposition,
+            Disposition::Skipped,
+            "{at}: {inv}"
+        );
+    }
+    for at in [84, 92, 100] {
+        assert_eq!(
+            leaf_at(&inv, at).disposition,
+            Disposition::Structure,
+            "{at}: {inv}"
+        );
+    }
+}
+
+/// rawloader sizes RAF raw data from RafImageWidth/Length/BitsPerSample;
+/// RafByteCounts (0xF008) is what rawler uses.
+#[test]
+fn raf_raw_length_follows_the_backend() {
+    let (mut data, _, _, _) = raf_with_slack();
+    let inv = inventory(&data);
+    let raw = inv
+        .parts()
+        .iter()
+        .find(|p| p.tag == PartTag::Code(0xF007) && p.disposition == Disposition::ImageData)
+        .unwrap_or_else(|| panic!("{inv}"))
+        .range
+        .clone();
+    let f008 = data
+        .windows(4)
+        .position(|w| w == [0x08, 0xF0, 0x04, 0x00])
+        .unwrap();
+    // rawloader: 48 declared, 32 read (4x4 16-bit). rawler: a view of the
+    // declared count, 16 here.
+    let (declared, expected): (u32, u64) = if cfg!(feature = "rawler") {
+        (16, 16)
+    } else {
+        (48, 32)
+    };
+    data[f008 + 8..f008 + 12].copy_from_slice(&declared.to_le_bytes());
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let r = inv
+        .parts()
+        .iter()
+        .find(|p| p.tag == PartTag::Code(0xF007) && p.disposition == Disposition::ImageData)
+        .unwrap_or_else(|| panic!("{inv}"))
+        .range
+        .clone();
+    assert_eq!((r.start, r.end - r.start), (raw.start, expected), "{inv}");
+}
+
+/// A child box whose header runs past its parent becomes a `Malformed` gap
+/// to the parent's end.
+#[test]
+fn cr3_bad_child_box_is_malformed() {
+    fn bx(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(fourcc);
+        v.extend_from_slice(payload);
+        v
+    }
+    let mut moov = bx(b"mvhd", &[0; 20]);
+    moov.extend_from_slice(b"\0\0\0\x03junkSECRET-AFTER-BAD-BOX");
+    let mut f = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+    f.extend(bx(b"moov", &moov));
+    f.extend(bx(b"mdat", &[0x5A; 64]));
+    let inv = inventory(&f);
+    inv.validate().unwrap();
+    let p = leaf_at(&inv, 24 + 8 + 28 + 10);
+    assert_eq!(p.disposition, Disposition::Malformed, "{inv}");
+}
+
+/// zenraw's decode rejects BigTIFF (`is_raw_file`), so nothing is consumed.
+#[test]
+fn bigtiff_is_not_decoded() {
+    let mut b = b"II\x2b\x00\x08\x00\x00\x00".to_vec();
+    b.extend_from_slice(&16u64.to_le_bytes());
+    let entry = |b: &mut Vec<u8>, tag: u16, typ: u16, count: u64, v: u64| {
+        b.extend_from_slice(&tag.to_le_bytes());
+        b.extend_from_slice(&typ.to_le_bytes());
+        b.extend_from_slice(&count.to_le_bytes());
+        b.extend_from_slice(&v.to_le_bytes());
+    };
+    b.extend_from_slice(&4u64.to_le_bytes());
+    let strip = 16 + 8 + 4 * 20 + 8;
+    entry(&mut b, 256, 3, 1, 4);
+    entry(&mut b, 257, 3, 1, 4);
+    entry(&mut b, 273, 16, 1, strip as u64);
+    entry(&mut b, 279, 16, 1, 16);
+    b.extend_from_slice(&0u64.to_le_bytes());
+    b.extend_from_slice(&[0x11; 16]);
+    let inv = inventory(&b);
+    inv.validate().unwrap();
+    assert!(!zenraw::is_raw_file(&b));
+    assert!(decode_summary(&b).is_err());
+    assert!(
+        !inv.parts().iter().any(|p| p.disposition.is_consumed()),
+        "{inv}"
+    );
+}
+
+/// `inventory` checks the job's stop token and `max_input_bytes` like
+/// `decoder` does.
+#[test]
+fn inventory_honours_stop_and_input_limit() {
+    let data = dng_fixture();
+    let limited = RawDecoderConfig::new()
+        .job()
+        .with_limits(zencodec::ResourceLimits::none().with_max_input_bytes(16))
+        .inventory(&data);
+    assert!(limited.is_err());
+    struct Cancelled;
+    impl enough::Stop for Cancelled {
+        fn check(&self) -> Result<(), enough::StopReason> {
+            Err(enough::StopReason::Cancelled)
+        }
+    }
+    let stopped = RawDecoderConfig::new()
+        .job()
+        .with_stop(zencodec::StopToken::new(Cancelled))
+        .inventory(&data);
+    assert!(stopped.is_err());
+}
+
+// ── rawloader backend ──────────────────────────────────────────────────
+
+/// rawloader follows SubIFDs from the EXIF IFD too (tiff.rs `TiffIFD::new`,
+/// any IFD to depth 10): an Orientation found that way is what it reports.
+#[cfg(not(feature = "rawler"))]
+#[test]
+fn orientation_reached_through_the_exif_ifd() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let nested = d.w.ifd(&[short(274, 6)], 0);
+    let exif = d.w.ifd(&[long(330, nested)], 0);
+    let data = d.finish(ifd, &[long(34665, exif)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let p = leaf_at(&inv, u64::from(nested) + 2 + 8);
+    assert_eq!(
+        p.disposition,
+        Disposition::Metadata(MetadataKind::Orientation),
+        "{inv}"
+    );
+    let base = decode_summary(&data).expect("decodes");
+    assert!(base.1.contains("Rotate90"), "{}", base.1);
+}
+
+/// rawloader's `get_str` stops at the first NUL.
+#[cfg(not(feature = "rawler"))]
+#[test]
+fn ascii_after_nul_is_dropped() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    let soft = d.w.put(b"ZenRaw\0SERIAL-42\0");
+    d.w.pad();
+    let data = d.finish(ifd, &[at(0x0131, 2, 17, soft)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let tail = leaf_at(&inv, u64::from(soft) + 7);
+    assert_eq!(tail.disposition, Disposition::Dropped, "{inv}");
+    assert_eq!(
+        leaf_at(&inv, u64::from(soft)).disposition,
+        Disposition::Structure,
+        "{inv}"
+    );
+}
+
+/// rawloader picks the raw IFD per Make (`get_decoder`): an ARW decodes the
+/// first IFD with strips, a NEF the first with a CFA pattern.
+#[cfg(not(feature = "rawler"))]
+#[test]
+fn raw_ifd_follows_the_make() {
+    for (make, first_strip_is_raw) in [(&b"SONY\0"[..], true), (&b"NIKON CORPORATION\0"[..], false)]
+    {
+        let mut w = W::new();
+        let mk = w.put(make);
+        w.pad();
+        let thumb = w.put(&[1u8; 12]);
+        let raw = w.put(&raw16(0));
+        let sub = w.ifd(
+            &[
+                short(256, 4),
+                short(257, 4),
+                short(258, 16),
+                short(259, 1),
+                long(273, raw),
+                long(279, 32),
+                inline(33422, 1, 4, &[0, 1, 1, 2]),
+            ],
+            0,
+        );
+        let ifd0 = w.ifd(
+            &[
+                short(256, 2),
+                short(257, 2),
+                at(271, 2, make.len() as u32, mk),
+                long(273, thumb),
+                long(279, 12),
+                long(330, sub),
+            ],
+            0,
+        );
+        w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+        let inv = inventory(&w.b);
+        inv.validate().unwrap();
+        let t = leaf_at(&inv, u64::from(thumb)).disposition;
+        let r = leaf_at(&inv, u64::from(raw)).disposition;
+        if first_strip_is_raw {
+            assert_eq!(
+                (t, r),
+                (Disposition::ImageData, Disposition::Skipped),
+                "{inv}"
+            );
+        } else {
+            assert_eq!(
+                (t, r),
+                (Disposition::Skipped, Disposition::ImageData),
+                "{inv}"
+            );
+        }
+    }
+}
+
+// ── rawler backend ─────────────────────────────────────────────────────
+
+/// rawler sets orientation only for DNG, from IFD0 (dng.rs:41); elsewhere
+/// it reports Normal (zenraw#22).
+#[cfg(feature = "rawler")]
+#[test]
+fn rawler_orientation_only_for_dng_ifd0() {
+    let data = dng_fixture();
+    let inv = inventory(&data);
+    assert!(
+        inv.parts()
+            .iter()
+            .any(|p| p.disposition == Disposition::Metadata(MetadataKind::Orientation)),
+        "{inv}"
+    );
+    let mut w = W::new();
+    let mk = w.put(b"NIKON CORPORATION\0");
+    w.pad();
+    let ifd0 = w.ifd(&[at(271, 2, 18, mk), short(274, 6)], 0);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let inv = inventory(&w.b);
+    let o = inv
+        .parts()
+        .iter()
+        .find(|p| p.tag == PartTag::Code(274))
+        .unwrap();
+    assert_eq!(o.disposition, Disposition::Dropped, "{inv}");
+    assert!(o.detail.as_deref().unwrap().contains("zenraw#22"));
+}
+
+/// rawler reads only the boxes its BMFF reader knows; the payload of any
+/// other box is seeked past.
+#[cfg(feature = "rawler")]
+#[test]
+fn rawler_skips_cr3_boxes_it_does_not_parse() {
+    fn bx(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(fourcc);
+        v.extend_from_slice(payload);
+        v
+    }
+    let mut moov = bx(b"mvhd", &[0; 20]);
+    moov.extend(bx(b"zzzz", b"PRIVATE-SERIAL-0"));
+    let mut f = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+    f.extend(bx(b"moov", &moov));
+    let top = f.len() as u64;
+    f.extend(bx(b"PRVW", b"PREVIEW-PAYLOAD!"));
+    f.extend(bx(b"mdat", &[0x5A; 64]));
+    let inv = inventory(&f);
+    inv.validate().unwrap();
+    let inner = (24 + 8 + 28 + 8) as u64;
+    assert_eq!(
+        leaf_at(&inv, inner).disposition,
+        Disposition::Skipped,
+        "{inv}"
+    );
+    assert_eq!(
+        leaf_at(&inv, top + 8).disposition,
+        Disposition::Skipped,
+        "{inv}"
+    );
+    assert_eq!(
+        leaf_at(&inv, top).disposition,
+        Disposition::Structure,
+        "{inv}"
+    );
+}
+
+/// With the `xmp` feature a rawler decode surfaces the packet in the XMP
+/// uuid; the inventory marks it there.
+#[cfg(all(feature = "rawler", feature = "xmp"))]
+#[test]
+fn rawler_cr3_xmp_uuid_packet_is_metadata() {
+    fn bx(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(fourcc);
+        v.extend_from_slice(payload);
+        v
+    }
+    let xmp_uuid: [u8; 16] = [
+        0xbe, 0x7a, 0xcf, 0xcb, 0x97, 0xa9, 0x42, 0xe8, 0x9c, 0x71, 0x99, 0x94, 0x91, 0xe3, 0xaf,
+        0xac,
+    ];
+    let mut payload = xmp_uuid.to_vec();
+    payload.extend_from_slice(XMP_PACKET);
+    payload.extend_from_slice(b"\n   ");
+    let mut f = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+    f.extend(bx(b"moov", &bx(b"mvhd", &[0; 20])));
+    let at = f.len() as u64 + 8 + 16;
+    f.extend(bx(b"uuid", &payload));
+    f.extend(bx(b"mdat", &[0x5A; 64]));
+    let inv = inventory(&f);
+    inv.validate().unwrap();
+    let p = leaf_at(&inv, at);
+    assert_eq!(
+        p.disposition,
+        Disposition::Metadata(MetadataKind::Xmp),
+        "{inv}"
+    );
+    assert_eq!(
+        p.range.end - p.range.start,
+        XMP_PACKET.len() as u64,
+        "{inv}"
+    );
+}
+
+// ── Maker notes and CR3 CMT TIFFs ──────────────────────────────────────
+
+/// A Nikon type-2 maker note (signature, embedded TIFF header, IFD with
+/// offsets relative to that header) is walked the way rawloader's
+/// `new_makernote` reads it: tags rawloader knows are parsed, others
+/// skipped, and bytes nothing references inside the value are
+/// `Unreferenced`.
+#[cfg(not(feature = "rawler"))]
+#[test]
+fn nikon_maker_note_is_walked() {
+    let mut d = Dng::new();
+    let s0 = d.w.put(&raw16(0));
+    let ifd = d.raw_ifd(&[long(273, s0), long(279, 32)]);
+    // Maker note: "Nikon\0\x02\x10\0\0" + "II*\0" + IFD offset 8, then an
+    // IFD with WB levels (0x000C, known) and an owner name (0x00A9, not
+    // known to rawloader), then the owner string and slack.
+    let mut mn = b"Nikon\0\x02\x10\0\0II*\0\x08\0\0\0".to_vec();
+    mn.extend_from_slice(&2u16.to_le_bytes());
+    let owner_rel: u32 = 8 + 2 + 2 * 12 + 4;
+    for (tag, typ, count, field) in [
+        (0x000Cu16, 1u16, 4u32, [1u8, 2, 3, 4]),
+        (0x00A9, 2, 11, owner_rel.to_le_bytes()),
+    ] {
+        mn.extend_from_slice(&tag.to_le_bytes());
+        mn.extend_from_slice(&typ.to_le_bytes());
+        mn.extend_from_slice(&count.to_le_bytes());
+        mn.extend_from_slice(&field);
+    }
+    mn.extend_from_slice(&0u32.to_le_bytes());
+    mn.extend_from_slice(b"OWNER-NAME\0");
+    mn.extend_from_slice(b"SLACK!");
+    let mn_at = d.w.put(&mn);
+    d.w.pad();
+    let exif = d.w.ifd(&[at(37500, 7, mn.len() as u32, mn_at)], 0);
+    let data = d.finish(ifd, &[long(34665, exif)]);
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let base = u64::from(mn_at) + 10;
+    let ifd_at = base + 8;
+    let wb = leaf_at(&inv, ifd_at + 2 + 8);
+    assert_eq!(wb.disposition, Disposition::Structure, "{inv}");
+    // Not a tag rawloader knows, nor one the tag table names: Unknown.
+    let owner = leaf_at(&inv, base + u64::from(owner_rel));
+    assert_eq!(owner.disposition, Disposition::Unknown, "{inv}");
+    let slack = leaf_at(&inv, base + u64::from(owner_rel) + 11);
+    assert_eq!(slack.disposition, Disposition::Unreferenced, "{inv}");
+    // The decode does not change when the skipped owner name or the slack
+    // changes.
+    let summary = decode_summary(&data).expect("decodes");
+    let m = xor(&data, owner.range.clone(), 0x5A);
+    let m = xor(&m, slack.range.clone(), 0x5A);
+    assert_eq!(decode_summary(&m).unwrap(), summary);
+}
+
+/// CR3 CMT boxes are TIFFs: CMT2 holds the EXIF IFD (serial numbers live
+/// there). rawler parses it into its own EXIF, which zenraw never reports;
+/// rawloader builds do not decode CR3 at all.
+#[test]
+fn cr3_cmt_exif_is_never_surfaced() {
+    fn bx(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(fourcc);
+        v.extend_from_slice(payload);
+        v
+    }
+    let canon_uuid: [u8; 16] = [
+        0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a,
+        0x48,
+    ];
+    // CMT2: a TIFF whose IFD0 holds BodySerialNumber (0xA431).
+    let mut t = W::new();
+    let serial = t.put(b"SN-CMT2-0042\0");
+    t.pad();
+    let ifd = t.ifd(&[at(0xA431, 2, 13, serial)], 0);
+    t.b[4..8].copy_from_slice(&ifd.to_le_bytes());
+    let mut uuid_payload = canon_uuid.to_vec();
+    uuid_payload.extend(bx(b"CNCV", b"CanonCR3_001/00.09.00/00.00.00"));
+    let cmt2_at = 8 + 16 + 8 + 8 + 16 + 38 + 8;
+    uuid_payload.extend(bx(b"CMT2", &t.b));
+    let mut f = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+    let mut moov = bx(b"uuid", &uuid_payload);
+    moov.extend(bx(b"mvhd", &[0; 20]));
+    f.extend(bx(b"moov", &moov));
+    f.extend(bx(b"mdat", &[0x5A; 64]));
+    let inv = inventory(&f);
+    inv.validate().unwrap();
+    let at_serial = cmt2_at as u64 + u64::from(serial);
+    let p = leaf_at(&inv, at_serial);
+    assert_eq!(&f[at_serial as usize..at_serial as usize + 7], b"SN-CMT2");
+    let expected = if cfg!(feature = "rawler") {
+        Disposition::Dropped
+    } else {
+        Disposition::Skipped
+    };
+    assert_eq!(p.disposition, expected, "{inv}");
 }

@@ -6,7 +6,11 @@
 <!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
 - `RawError`'s variant set was reshaped for the zencodec `ErrorCategory` taxonomy (see the
-  `### Added
+  `### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
+  single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
+  new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
+
+### Added
 
 - **Structural inventory: `DecodeJob::inventory` and
   `DecodeCapabilities::with_inventory(true)`** (zencodec PR #133, f2e63ba, 42e36ef).
@@ -27,10 +31,6 @@
   0 unexplained). Fuzz target `inventory` (6a1f737). `Cargo.toml` patches
   zencodec/zencodec-testkit to the PR branch; swap for the release before
   merge.
-
-### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
-  single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
-  new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
 
 ### Changed
 

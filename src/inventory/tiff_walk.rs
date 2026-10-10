@@ -14,10 +14,11 @@
 //! note in both details; nothing overlapping is ever emitted.
 
 use alloc::borrow::Cow;
-use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::ops::Range;
 
 use zencodec::inventory::{
@@ -37,9 +38,8 @@ const MAX_SUB_POINTERS: usize = 1024;
 const MAX_NOTES: usize = 4;
 /// Pieces one overlapping part may be split into.
 const MAX_PIECES: usize = 64;
-/// Overlap comparisons per placement; a crafted file with millions of
-/// mutually overlapping values stops being split past this.
-const MAX_OVERLAP_STEPS: usize = 1 << 22;
+/// Kinds of path recorded for one directory.
+const MAX_ROLES: usize = 8;
 
 // ── Tags the walk itself interprets ────────────────────────────────────
 
@@ -217,7 +217,7 @@ pub(super) struct Ifd {
     pub(super) end: u64,
     pub(super) kind: Kind,
     pub(super) name: String,
-    /// Whether the decode path reads this directory.
+    /// Whether the decode path reads this directory by any path.
     pub(super) followed: bool,
     pub(super) entries: Vec<Entry>,
     /// Raw next-IFD pointer (relative to the TIFF's base).
@@ -228,6 +228,56 @@ pub(super) struct Ifd {
     pub(super) notes: Vec<String>,
     /// The IFD and entry whose pointer led here (`None` for the IFD chain).
     pub(super) parent: Option<(usize, usize)>,
+    /// Every kind of path that leads here, the first one first, each with
+    /// whether the decode path follows it (a SubIFD that is also the EXIF
+    /// IFD, an EXIF IFD that is also page 1).
+    pub(super) roles: Vec<(Kind, bool)>,
+    /// Index of the last entry with each tag (decoders keeping a map keep
+    /// the last of duplicate tags).
+    pub(super) last: BTreeMap<u16, usize>,
+    /// Index of the first entry with a field type TIFF does not define.
+    pub(super) first_unknown: Option<usize>,
+    /// Pointer hops from the first directory of the walk (chained IFDs keep
+    /// their predecessor's depth), as decoders that cap recursion count.
+    pub(super) depth: u8,
+}
+
+impl Ifd {
+    /// Whether the IFD was reached as `kind` by any path.
+    #[allow(dead_code)] // not every crate's rules need it
+    pub(super) fn is(&self, kind: Kind) -> bool {
+        self.roles.iter().any(|&(k, _)| k == kind)
+    }
+
+    /// Whether the decode path follows a path that reaches it as `kind`.
+    pub(super) fn followed_as(&self, kind: Kind) -> bool {
+        self.roles.iter().any(|&(k, f)| k == kind && f)
+    }
+
+    /// Whether some path reaches it as a page of the main chain.
+    pub(super) fn page(&self) -> Option<u32> {
+        self.roles.iter().find_map(|&(k, _)| match k {
+            Kind::Page(n) => Some(n),
+            _ => None,
+        })
+    }
+
+    /// Whether some path reaches it as an image directory (a page or a
+    /// SubIFD).
+    pub(super) fn holds_image(&self) -> bool {
+        self.roles
+            .iter()
+            .any(|&(k, _)| matches!(k, Kind::Page(_) | Kind::Sub))
+    }
+}
+
+/// Push `text` onto `notes`, keeping at most `MAX_NOTES` and one marker.
+pub(super) fn add_note(notes: &mut Vec<String>, text: String) {
+    if notes.len() < MAX_NOTES {
+        notes.push(text);
+    } else if notes.len() == MAX_NOTES {
+        notes.push("further notes not listed".into());
+    }
 }
 
 /// One parsed TIFF.
@@ -248,11 +298,77 @@ pub(super) struct Walk<'a> {
     /// Why the header or IFD0 could not be read.
     pub(super) fatal: Option<String>,
     pub(super) ifds: Vec<Ifd>,
+    /// Entries this walk may still parse. Disjoint entries cannot exceed
+    /// `limit / 12`, so only overlapping or repeated IFDs (crafted files)
+    /// run it out.
+    pub(super) entries_left: u64,
+    /// IFD tables parsed so far: start → end. A table overlapping one of
+    /// these is not walked.
+    tables: BTreeMap<u64, u64>,
+    /// Index into `ifds` by absolute offset.
+    by_at: BTreeMap<u64, usize>,
+    /// Whether [`Rules::cancelled`] stopped the walk.
+    pub(super) cancelled: bool,
+    /// Bytes count-only chunk readers may still scan. Overlapping chunks
+    /// would otherwise rescan the same bytes once per chunk.
+    scan_left: Cell<u64>,
+}
+
+/// The entry budget for a walk over `limit` bytes.
+fn entry_budget(limit: u64) -> u64 {
+    limit / 12 + 4096
+}
+
+/// The count-only scan budget for a walk over `limit` bytes.
+fn scan_budget(limit: u64) -> Cell<u64> {
+    Cell::new(limit.saturating_mul(2).saturating_add(1 << 20))
 }
 
 impl Walk<'_> {
     pub(super) fn limit(&self) -> u64 {
         self.d.len() as u64
+    }
+
+    /// Take `n` bytes from the count-only scan budget; false once it is
+    /// spent.
+    pub(super) fn take_scan(&self, n: u64) -> bool {
+        let left = self.scan_left.get();
+        if n > left {
+            return false;
+        }
+        self.scan_left.set(left - n);
+        true
+    }
+
+    /// The start of an already-parsed IFD table that a table at `at` would
+    /// overlap.
+    fn table_overlap(&self, at: u64) -> Option<u64> {
+        use core::ops::Bound::Excluded;
+        if let Some((&s, &e)) = self.tables.range(..=at).next_back()
+            && e > at
+        {
+            return Some(s);
+        }
+        let count = if self.lay.big {
+            self.lay.u64(self.d, at)
+        } else {
+            self.lay.u16(self.d, at).map(u64::from)
+        }
+        .unwrap_or(0);
+        let end = count
+            .saturating_mul(self.lay.entry_len())
+            .saturating_add(at)
+            .saturating_add(self.lay.count_len() + self.lay.inline_cap())
+            .min(self.limit());
+        // A table at or past the limit is never parsed (and `at + 1` could
+        // wrap): nothing to overlap.
+        if end <= at {
+            return None;
+        }
+        self.tables
+            .range((Excluded(at), Excluded(end)))
+            .next()
+            .map(|(&s, _)| s)
     }
 
     /// The absolute position of a TIFF-relative offset.
@@ -330,7 +446,7 @@ impl Walk<'_> {
     /// The last entry with `tag` (decoders keeping a map keep the last of
     /// duplicate tags).
     pub(super) fn find<'i>(&self, ifd: &'i Ifd, tag: u16) -> Option<&'i Entry> {
-        ifd.entries.iter().rev().find(|e| e.tag == tag)
+        ifd.last.get(&tag).and_then(|&i| ifd.entries.get(i))
     }
 }
 
@@ -343,6 +459,7 @@ fn parse_ifd(
     kind: Kind,
     name: String,
     followed: bool,
+    budget: &mut u64,
 ) -> Option<Ifd> {
     let len = d.len() as u64;
     if at >= len {
@@ -359,6 +476,10 @@ fn parse_ifd(
         problem: None,
         notes: Vec::new(),
         parent: None,
+        roles: alloc::vec![(kind, followed)],
+        last: BTreeMap::new(),
+        first_unknown: None,
+        depth: 0,
     };
     let count = if lay.big {
         lay.u64(d, at)
@@ -377,6 +498,13 @@ fn parse_ifd(
     let mut e_at = at + lay.count_len();
     let mut i = 0u64;
     while i < count {
+        if *budget == 0 {
+            ifd.problem = Some(
+                "not read further: the file's entry budget is spent (overlapping or repeated IFDs)"
+                    .into(),
+            );
+            break;
+        }
         let Some(e_end) = e_at.checked_add(lay.entry_len()) else {
             break;
         };
@@ -400,6 +528,7 @@ fn parse_ifd(
             field,
             notes: Vec::new(),
         });
+        *budget -= 1;
         e_at = e_end;
         i += 1;
     }
@@ -408,10 +537,17 @@ fn parse_ifd(
             ifd.end = end;
             ifd.next = lay.offset(d, end - lay.inline_cap()).unwrap_or(0);
         }
-        _ => {
+        _ if ifd.problem.is_none() => {
             ifd.problem = Some(format!(
                 "declares {count} entries but runs past the end of the data"
             ));
+        }
+        _ => {}
+    }
+    for (i, e) in ifd.entries.iter().enumerate() {
+        ifd.last.insert(e.tag, i);
+        if ifd.first_unknown.is_none() && type_size(e.typ).is_none() {
+            ifd.first_unknown = Some(i);
         }
     }
     Some(ifd)
@@ -435,6 +571,45 @@ impl Fate {
             d,
             note: Some(note.into()),
         }
+    }
+}
+
+/// How strongly a disposition says the decode path uses bytes, for picking
+/// one fate among the paths that reach a directory.
+fn rank(d: Disposition) -> u8 {
+    match d {
+        Disposition::Metadata(_) => 6,
+        Disposition::Structure | Disposition::ImageData => 5,
+        Disposition::Malformed => 4,
+        Disposition::Dropped => 3,
+        Disposition::Padding => 2,
+        _ => 1,
+    }
+}
+
+/// The fate of a piece of a directory reached by several paths: the
+/// strongest of `fate(kind, followed)` over its roles, the first role on a
+/// tie. A decoder that reads the directory by any path reads the piece.
+pub(super) fn union_fate(ifd: &Ifd, fate: impl Fn(Kind, bool) -> Fate) -> Fate {
+    let mut best: Option<Fate> = None;
+    for &(kind, followed) in &ifd.roles {
+        let f = fate(kind, followed);
+        if best.as_ref().is_none_or(|b| rank(f.d) > rank(b.d)) {
+            best = Some(f);
+        }
+    }
+    best.unwrap_or_else(|| Fate::new(Disposition::Unknown))
+}
+
+/// A short name for a kind of directory.
+pub(super) fn kind_name(kind: Kind) -> String {
+    match kind {
+        Kind::Page(n) => format!("page {n}"),
+        Kind::Sub => "SubIFD".into(),
+        Kind::Exif => "EXIF IFD".into(),
+        Kind::Gps => "GPS IFD".into(),
+        Kind::Interop => "Interop IFD".into(),
+        Kind::MakerNote => "maker-note IFD".into(),
     }
 }
 
@@ -478,11 +653,18 @@ pub(super) trait Rules {
         None
     }
 
-    /// The bytes each of `chunks` strips (or tiles) holds when the decoder
-    /// reads them exactly, so a longer declared count leaves a tail it never
-    /// reads. `None` when that cannot be told cheaply (compressed data).
-    fn chunk_sizes(&self, w: &Walk<'_>, ifd: &Ifd, tiles: bool, chunks: usize) -> Option<Vec<u64>> {
-        uncompressed_sizes(w, ifd, tiles, chunks)
+    /// How much of each strip or tile, located at `offs` with declared
+    /// lengths `cnts`, the decoder reads. The default follows image-tiff:
+    /// [`default_chunk_use`].
+    fn chunk_use(
+        &self,
+        w: &Walk<'_>,
+        ifd: &Ifd,
+        tiles: bool,
+        offs: &[u64],
+        cnts: &[u64],
+    ) -> Vec<ChunkUse> {
+        default_chunk_use(w, ifd, tiles, offs, cnts)
     }
 
     /// The directory pointer entry `e` in a `kind` IFD leads to.
@@ -501,13 +683,13 @@ pub(super) trait Rules {
         w.uints(e, MAX_SUB_POINTERS)
     }
 
-    /// Whether the decode path reads the directory pointer entry `e` of
-    /// `parent` leads to.
-    fn follows(&self, w: &Walk<'_>, parent: &Ifd, e: &Entry) -> bool;
+    /// Whether the decode path reads the directory the pointer entry `e` of
+    /// `parent`, reached as a `kind` directory, leads to.
+    fn follows(&self, w: &Walk<'_>, parent: &Ifd, kind: Kind, e: &Entry) -> bool;
 
-    /// Whether the decode path reads the directory `ifd`'s next pointer
-    /// leads to.
-    fn follows_next(&self, ifd: &Ifd) -> bool;
+    /// Whether the decode path reads the directory the next pointer of
+    /// `ifd`, reached as a `kind` directory, leads to.
+    fn follows_next(&self, w: &Walk<'_>, ifd: &Ifd, kind: Kind) -> bool;
 
     fn ifd(&self, w: &Walk<'_>, ifd: &Ifd) -> Fate;
 
@@ -526,10 +708,15 @@ pub(super) trait Rules {
     /// A JPEG stream located by JPEGInterchangeFormat (513/514).
     fn jpeg_stream(&self, w: &Walk<'_>, ifd: &Ifd) -> Fate;
 
+    /// Whether the caller's stop token asks the walk to end early.
+    fn cancelled(&self) -> bool {
+        false
+    }
+
     /// Extents `ifd` locates. The default covers strips, tiles, free space
     /// and JPEGInterchangeFormat streams of image IFDs.
     fn extents(&self, w: &Walk<'_>, ifd: &Ifd) -> Vec<ExtentRule> {
-        if !matches!(ifd.kind, Kind::Page(_) | Kind::Sub) {
+        if !ifd.holds_image() {
             return Vec::new();
         }
         alloc::vec![
@@ -565,19 +752,62 @@ pub(super) trait Rules {
     }
 }
 
-/// The bytes each uncompressed (Compression 1) strip or tile holds, from
-/// the IFD's layout tags; `None` for compressed or subsampled data.
-pub(super) fn uncompressed_sizes(
+/// How much of one strip or tile the decoder reads.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ChunkUse {
+    /// Leading bytes the decoder reads; the rest of the declared length is
+    /// a `Dropped` tail. `None` when the end is not found (compressed data
+    /// without a count-only reader).
+    pub(super) used: Option<u64>,
+    /// What the tail is, for its detail.
+    pub(super) tail: &'static str,
+    /// A remark for the chunk's detail.
+    pub(super) note: Option<String>,
+    /// The decoder reads `used` bytes whatever the declared length, so a
+    /// shorter declared length is read past (image-tiff reads uncompressed
+    /// data by row size).
+    pub(super) past_count: bool,
+    /// Another chunk's extent already covers this one (a decoder reading
+    /// every row from the first strip): not listed on its own.
+    pub(super) covered: bool,
+    /// The decoder never reads this chunk: listed alone as `Skipped`, why.
+    pub(super) unread: Option<&'static str>,
+}
+
+/// The decoded layout of one strip or tile.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ChunkGeom {
+    /// Decoded bytes of one chunk row (a whole tile row, padding included).
+    pub(super) row: u64,
+    /// Chunk rows the decoder reads: those inside the image.
+    pub(super) rows_in: u64,
+    /// Chunk rows declared (`TileLength` or `RowsPerStrip`).
+    pub(super) rows: u64,
+    /// Padding bytes per row past the image's right edge.
+    pub(super) pad_per_row: u64,
+}
+
+impl ChunkGeom {
+    /// Decoded bytes the decoder reads from this chunk.
+    pub(super) fn read(&self) -> Option<u64> {
+        self.row.checked_mul(self.rows_in)
+    }
+}
+
+/// The decoded layout of `chunks` strips or tiles of `ifd` from its tags, as
+/// image-tiff computes it (`readout_for_size`, `chunk_data_dimensions`);
+/// `None` for subsampled YCbCr or missing dimensions.
+pub(super) fn chunk_geometry(
     w: &Walk<'_>,
     ifd: &Ifd,
     tiles: bool,
     chunks: usize,
-) -> Option<Vec<u64>> {
+) -> Option<Vec<ChunkGeom>> {
     let one = |tag: u16| {
         w.find(ifd, tag)
             .and_then(|e| w.uints(e, 1).first().copied())
     };
-    if one(259).unwrap_or(1) != 1 || one(262) == Some(6) {
+    if one(262) == Some(6) {
         return None;
     }
     let width = one(256)?;
@@ -596,19 +826,198 @@ pub(super) fn uncompressed_sizes(
         bps.first()?.checked_mul(spp)?
     };
     let row_bytes = |px: u64| px.checked_mul(bits).map(|b| b.div_ceil(8));
+    let mut out = Vec::with_capacity(chunks.min(1 << 20));
     if tiles {
-        let per = row_bytes(one(322)?)?.checked_mul(one(323)?)?;
-        return Some(alloc::vec![per; chunks]);
+        let (tw, tl) = (one(322)?.max(1), one(323)?.max(1));
+        let across = width.div_ceil(tw).max(1);
+        let per_plane = across.checked_mul(height.div_ceil(tl).max(1))?;
+        let row = row_bytes(tw)?;
+        for k in 0..chunks as u64 {
+            let i = k % per_plane;
+            let (col, down) = (i % across, i / across);
+            let cols_in = tw.min(width.saturating_sub(col.saturating_mul(tw)));
+            out.push(ChunkGeom {
+                row,
+                rows_in: tl.min(height.saturating_sub(down.saturating_mul(tl))),
+                rows: tl,
+                pad_per_row: row.saturating_sub(row_bytes(cols_in)?),
+            });
+        }
+        return Some(out);
     }
     let rps = one(278).unwrap_or(height).clamp(1, height.max(1));
     let per_plane = height.div_ceil(rps).max(1);
     let row = row_bytes(width)?;
-    let mut out = Vec::with_capacity(chunks.min(1 << 20));
     for k in 0..chunks as u64 {
-        let rows = rps.min(height.saturating_sub((k % per_plane) * rps));
-        out.push(row.checked_mul(rows)?);
+        let rows_in = rps.min(height.saturating_sub((k % per_plane).saturating_mul(rps)));
+        out.push(ChunkGeom {
+            row,
+            rows_in,
+            rows: rows_in,
+            pad_per_row: 0,
+        });
     }
     Some(out)
+}
+
+/// Where a PackBits stream at `data` has produced `need` decoded bytes: the
+/// compressed bytes image-tiff's `PackBitsReader` reads by then. `None` when
+/// the stream ends first.
+fn packbits_end(data: &[u8], need: u64) -> Option<u64> {
+    let (mut pos, mut out) = (0usize, 0u64);
+    while out < need {
+        let h = *data.get(pos)? as i8;
+        pos += 1;
+        match h {
+            -128 => {}
+            -127..=-1 => {
+                data.get(pos)?;
+                pos += 1;
+                out += (1 - i64::from(h)) as u64;
+            }
+            _ => {
+                let take = (h as u64 + 1).min(need - out);
+                pos = pos.checked_add(usize::try_from(take).ok()?)?;
+                if pos > data.len() {
+                    return None;
+                }
+                out += take;
+            }
+        }
+    }
+    Some(pos as u64)
+}
+
+/// [`Rules::chunk_use`]'s default, after image-tiff's `expand_chunk`: it
+/// reads whole chunk rows (right-edge padding included, then discarded) for
+/// the rows inside the image only. Uncompressed and PackBits chunks are split
+/// at that point; for other compression the end of the coded data is not
+/// found.
+pub(super) fn default_chunk_use(
+    w: &Walk<'_>,
+    ifd: &Ifd,
+    tiles: bool,
+    offs: &[u64],
+    cnts: &[u64],
+) -> Vec<ChunkUse> {
+    let compression = w
+        .find(ifd, 259)
+        .and_then(|e| w.uints(e, 1).first().copied())
+        .unwrap_or(1);
+    let geom = chunk_geometry(w, ifd, tiles, cnts.len());
+    let mut out = Vec::with_capacity(cnts.len().min(1 << 20));
+    for (k, &n) in cnts.iter().enumerate() {
+        let g = geom.as_ref().and_then(|g| g.get(k).copied());
+        let mut u = ChunkUse::default();
+        let Some(g) = g else {
+            out.push(u);
+            continue;
+        };
+        let below = g.rows_in < g.rows;
+        u.tail = if below {
+            "rows below the image (edge-tile padding) and any bytes after them; never read"
+        } else {
+            "after the rows the decoder reads; never read"
+        };
+        if g.pad_per_row > 0 {
+            u.note = Some(format!(
+                "{} padding bytes per decoded row past the image's right edge are read and discarded",
+                g.pad_per_row
+            ));
+        }
+        match compression {
+            // `create_reader` reads uncompressed data straight from the
+            // file: by row size, not by the declared count.
+            1 => {
+                u.used = g.read();
+                u.past_count = true;
+            }
+            32773 => {
+                // Count-only PackBits over the bytes present, within the walk's
+                // scan budget (overlapping chunks would rescan the same bytes).
+                let start = offs.get(k).and_then(|&o| w.abs(o));
+                let avail = start.map_or(0, |s| n.min(w.limit().saturating_sub(s)));
+                if let (Some(s), Some(need)) = (start, g.read())
+                    && w.take_scan(avail)
+                    && let Some(d) = get(w.d, s, avail)
+                {
+                    match packbits_end(d, need) {
+                        Some(end) => u.used = Some(end),
+                        None if avail == n => {
+                            u.used = Some(n);
+                            u.note = Some(
+                                "the PackBits data ends before the chunk's rows are complete"
+                                    .into(),
+                            );
+                        }
+                        None => {}
+                    }
+                }
+            }
+            // Deflate and ZSTD read the file to the end of the stream, which
+            // may lie past the declared count.
+            8 | 32946 | 50000 => {
+                u.note = Some(
+                    "the stream is read to its end, which may lie past the declared count".into(),
+                );
+            }
+            _ => {}
+        }
+        if u.used.is_none() && (below || g.pad_per_row > 0) {
+            let edge = "edge tile: its padding pixels are decoded and discarded";
+            u.note = Some(match u.note.take() {
+                Some(n) => format!("{n}; {edge}"),
+                None => edge.into(),
+            });
+        }
+        out.push(u);
+    }
+    out
+}
+
+/// Children for the parts of an entry's inline value field nothing reads:
+/// an inline value's tail ([`Rules::value_tail`]) and, when not zero, the
+/// field bytes past the value.
+fn inline_children(w: &Walk<'_>, rules: &dyn Rules, ifd: &Ifd, ei: usize, entry: &mut Cand) {
+    let Some(e) = ifd.entries.get(ei) else { return };
+    let size = match w.loc(e) {
+        Loc::Inline => type_size(e.typ)
+            .and_then(|s| s.checked_mul(e.count))
+            .unwrap_or(0),
+        Loc::Empty => 0,
+        _ => return,
+    };
+    let cap = w.lay.inline_cap();
+    let field = e.field..e.field + cap;
+    if size > 0
+        && let Some((keep, tail)) = rules.value_tail(w, ifd, ei)
+        && keep < size
+    {
+        let mut detail = format!("{} value bytes {keep}..{size}", tag_name(ifd.kind, e.tag));
+        if let Some(n) = &tail.note {
+            push_note(&mut detail, n);
+        }
+        entry.children.push(Cand::new(
+            field.start + keep..field.start + size,
+            PartKind::Field,
+            PartTag::Code(u32::from(e.tag)),
+            tail.d,
+            detail,
+        ));
+    }
+    let unused = field.start + size..field.end;
+    if !unused.is_empty()
+        && get(w.d, unused.start, unused.end - unused.start)
+            .is_some_and(|b| b.iter().any(|&x| x != 0))
+    {
+        entry.children.push(Cand::new(
+            unused,
+            PartKind::Gap,
+            PartTag::None,
+            Disposition::Padding,
+            "unused bytes of the inline value field, not zero; nothing reads them".into(),
+        ));
+    }
 }
 
 /// Parse the TIFF whose header is at `base`, with every position below
@@ -629,6 +1038,11 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         header_ext: None,
         fatal: None,
         ifds: Vec::new(),
+        entries_left: entry_budget(limit),
+        scan_left: scan_budget(limit),
+        tables: BTreeMap::new(),
+        by_at: BTreeMap::new(),
+        cancelled: false,
     };
     let rest = limit.saturating_sub(base);
     let lay = match get(d, base, 2) {
@@ -692,14 +1106,14 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
     }
 
     let first = w.abs(ifd0);
-    run_queue(&mut w, first, Kind::Page(0), "IFD0".into(), rules);
+    run_queue(&mut w, first, Kind::Page(0), "IFD0".into(), 0, rules);
     w
 }
 
 /// Walk the directories starting at the absolute offset `at`, which has no
 /// TIFF header of its own (a maker-note IFD): offsets inside are relative to
 /// `base`, and `lay` gives the byte order. Every position stays below
-/// `limit`.
+/// `limit`; the first directory is at pointer depth `depth`.
 #[allow(clippy::too_many_arguments, dead_code)] // not every crate walks maker notes
 pub(super) fn walk_ifd<'a>(
     data: &'a [u8],
@@ -709,6 +1123,7 @@ pub(super) fn walk_ifd<'a>(
     at: u64,
     kind: Kind,
     name: String,
+    depth: u8,
     rules: &dyn Rules,
 ) -> Walk<'a> {
     let limit = limit.min(data.len() as u64);
@@ -723,8 +1138,13 @@ pub(super) fn walk_ifd<'a>(
         header_ext: None,
         fatal: None,
         ifds: Vec::new(),
+        entries_left: entry_budget(limit),
+        scan_left: scan_budget(limit),
+        tables: BTreeMap::new(),
+        by_at: BTreeMap::new(),
+        cancelled: false,
     };
-    run_queue(&mut w, Some(at), kind, name, rules);
+    run_queue(&mut w, Some(at), kind, name, depth, rules);
     w
 }
 
@@ -742,10 +1162,20 @@ struct Pending {
     name: String,
     followed: bool,
     from: From,
+    depth: u8,
 }
 
-/// Walk every directory reachable from the first one, breadth first.
-fn run_queue(w: &mut Walk<'_>, first: Option<u64>, kind: Kind, name: String, rules: &dyn Rules) {
+/// Walk every directory reachable from the first one, breadth first. A
+/// directory reached again by another kind of path records that kind, and
+/// the pointers that kind follows are queued too.
+fn run_queue(
+    w: &mut Walk<'_>,
+    first: Option<u64>,
+    kind: Kind,
+    name: String,
+    depth: u8,
+    rules: &dyn Rules,
+) {
     let d = w.d;
     let lay = w.lay;
     let mut queue = VecDeque::new();
@@ -755,33 +1185,76 @@ fn run_queue(w: &mut Walk<'_>, first: Option<u64>, kind: Kind, name: String, rul
         name,
         followed: true,
         from: From::Header,
+        depth,
     });
-    let mut visited = BTreeSet::new();
     while let Some(p) = queue.pop_front() {
         let note = |w: &mut Walk<'_>, text: String| match p.from {
             From::Header => w.fatal = Some(text),
-            From::Entry(i, e) => w.ifds[i].entries[e].notes.push(text),
-            From::Next(i) => w.ifds[i].notes.push(text),
+            From::Entry(i, e) => add_note(&mut w.ifds[i].entries[e].notes, text),
+            From::Next(i) => add_note(&mut w.ifds[i].notes, text),
         };
         let Some(at) = p.at else {
             note(w, format!("{} offset overflows", p.name));
             continue;
         };
+        if rules.cancelled() {
+            w.cancelled = true;
+            break;
+        }
+        if let Some(&idx) = w.by_at.get(&at) {
+            // Reached again: record the new kind of path and queue what it
+            // follows from here.
+            let ifd = &mut w.ifds[idx];
+            // A page chain that comes back to a page is a loop (image-tiff's
+            // cycle check ends the chain there), not another kind of path.
+            let looped = matches!(p.kind, Kind::Page(_)) && ifd.page().is_some();
+            let role = ifd.roles.iter().position(|&(k, _)| k == p.kind);
+            let new_kind = !looped && role.is_none() && ifd.roles.len() < MAX_ROLES;
+            let upgraded = !looped && p.followed && role.is_some_and(|r| !ifd.roles[r].1);
+            match role {
+                Some(r) if !looped => ifd.roles[r].1 |= p.followed,
+                None if new_kind => ifd.roles.push((p.kind, p.followed)),
+                _ => {}
+            }
+            if new_kind || upgraded {
+                ifd.followed |= p.followed;
+            }
+            let text = if new_kind {
+                format!(
+                    "{} at {at} is also reached as {}",
+                    p.name,
+                    kind_name(p.kind)
+                )
+            } else {
+                format!(
+                    "{} at {at} was already walked (cycle or shared IFD)",
+                    p.name
+                )
+            };
+            note(w, text);
+            if (new_kind || upgraded) && w.ifds[idx].problem.is_none() {
+                enqueue(w, &mut queue, idx, p.kind, rules);
+            }
+            continue;
+        }
         if w.ifds.len() >= MAX_IFDS {
             note(w, format!("not walked: more than {MAX_IFDS} IFDs"));
             continue;
         }
-        if !visited.insert(at) {
+        if let Some(other) = w.table_overlap(at) {
             note(
                 w,
                 format!(
-                    "{} at {at} was already walked (cycle or shared IFD)",
+                    "{} at {at} overlaps the IFD table at {other}; not walked",
                     p.name
                 ),
             );
             continue;
         }
-        let Some(mut ifd) = parse_ifd(d, lay, at, p.kind, p.name.clone(), p.followed) else {
+        let mut budget = w.entries_left;
+        let parsed = parse_ifd(d, lay, at, p.kind, p.name.clone(), p.followed, &mut budget);
+        w.entries_left = budget;
+        let Some(mut ifd) = parsed else {
             note(
                 w,
                 format!("{} offset {at} is past the end of the data", p.name),
@@ -791,67 +1264,90 @@ fn run_queue(w: &mut Walk<'_>, first: Option<u64>, kind: Kind, name: String, rul
         if let From::Entry(i, e) = p.from {
             ifd.parent = Some((i, e));
         }
+        ifd.depth = p.depth;
         if p.kind == Kind::Page(0) && ifd.problem.is_some() {
             w.fatal = Some(format!(
                 "IFD0 {}",
                 ifd.problem.as_deref().unwrap_or_default()
             ));
         }
+        w.tables.insert(ifd.at, ifd.end);
         let idx = w.ifds.len();
+        w.by_at.insert(at, idx);
         let readable = ifd.problem.is_none();
-        let next = ifd.next;
-        let followed_next = rules.follows_next(&ifd);
-        let kind = ifd.kind;
-        let base_name = ifd.name.clone();
         w.ifds.push(ifd);
-        if !readable {
+        if readable {
+            enqueue(w, &mut queue, idx, p.kind, rules);
+        }
+    }
+}
+
+/// Queue the directories IFD `idx`'s pointer entries and next pointer lead
+/// to, as a `kind` directory sees them. Stops queueing at `MAX_IFDS`.
+fn enqueue(
+    w: &mut Walk<'_>,
+    queue: &mut VecDeque<Pending>,
+    idx: usize,
+    kind: Kind,
+    rules: &dyn Rules,
+) {
+    let base_name = w.ifds[idx].name.clone();
+    let followed_here = w.ifds[idx].followed_as(kind);
+    for ei in 0..w.ifds[idx].entries.len() {
+        let e = &w.ifds[idx].entries[ei];
+        let Some((child_kind, label)) = rules.pointer(kind, e) else {
             continue;
+        };
+        let followed = followed_here && rules.follows(w, &w.ifds[idx], kind, e);
+        let ptrs = rules.pointer_offsets(w, e);
+        if ptrs.is_empty() {
+            let text = format!("{label} pointer of type {} not read", type_name(e.typ));
+            add_note(&mut w.ifds[idx].entries[ei].notes, text);
         }
-        for ei in 0..w.ifds[idx].entries.len() {
-            let e = &w.ifds[idx].entries[ei];
-            let Some((child_kind, label)) = rules.pointer(kind, e) else {
-                continue;
-            };
-            let followed = rules.follows(w, &w.ifds[idx], e);
-            let ptrs = rules.pointer_offsets(w, e);
-            if ptrs.is_empty() {
-                let text = format!("{label} pointer of type {} not read", type_name(e.typ));
-                w.ifds[idx].entries[ei].notes.push(text);
+        let numbered = ptrs.len() > 1 || child_kind == Kind::Sub;
+        for (k, off) in ptrs.into_iter().enumerate() {
+            if queue.len() + w.ifds.len() >= MAX_IFDS {
+                add_note(
+                    &mut w.ifds[idx].entries[ei].notes,
+                    format!("further {label} pointers not walked: more than {MAX_IFDS} IFDs"),
+                );
+                break;
             }
-            let numbered = ptrs.len() > 1 || child_kind == Kind::Sub;
-            for (k, off) in ptrs.into_iter().enumerate() {
-                let name = match (numbered, base_name.len() > 48) {
-                    (true, false) => format!("{label} {k} of {base_name}"),
-                    (true, true) => format!("{label} {k} (nested)"),
-                    (false, false) => format!("{label} of {base_name}"),
-                    (false, true) => format!("{label} (nested)"),
-                };
-                queue.push_back(Pending {
-                    at: w.abs(off),
-                    kind: child_kind,
-                    name,
-                    followed,
-                    from: From::Entry(idx, ei),
-                });
-            }
-        }
-        if next != 0 {
-            let (kind, name) = match kind {
-                Kind::Page(n) => (
-                    Kind::Page(n.saturating_add(1)),
-                    format!("IFD{}", n.saturating_add(1)),
-                ),
-                other if base_name.len() > 48 => (other, "IFD chained after a sub-IFD".into()),
-                other => (other, format!("IFD chained after {base_name}")),
+            let name = match (numbered, base_name.len() > 48) {
+                (true, false) => format!("{label} {k} of {base_name}"),
+                (true, true) => format!("{label} {k} (nested)"),
+                (false, false) => format!("{label} of {base_name}"),
+                (false, true) => format!("{label} (nested)"),
             };
             queue.push_back(Pending {
-                at: w.abs(next),
-                kind,
+                at: w.abs(off),
+                kind: child_kind,
                 name,
-                followed: followed_next,
-                from: From::Next(idx),
+                followed,
+                from: From::Entry(idx, ei),
+                depth: w.ifds[idx].depth.saturating_add(1),
             });
         }
+    }
+    let next = w.ifds[idx].next;
+    if next != 0 && queue.len() + w.ifds.len() < MAX_IFDS {
+        let followed_next = followed_here && rules.follows_next(w, &w.ifds[idx], kind);
+        let (kind, name) = match kind {
+            Kind::Page(n) => (
+                Kind::Page(n.saturating_add(1)),
+                format!("IFD{}", n.saturating_add(1)),
+            ),
+            other if base_name.len() > 48 => (other, "IFD chained after a sub-IFD".into()),
+            other => (other, format!("IFD chained after {base_name}")),
+        };
+        queue.push_back(Pending {
+            at: w.abs(next),
+            kind,
+            name,
+            followed: followed_next,
+            from: From::Next(idx),
+            depth: w.ifds[idx].depth,
+        });
     }
 }
 
@@ -927,18 +1423,31 @@ pub(super) struct Placed {
     parts: Vec<Cand>,
     /// start → (end, index into `parts`)
     by_start: BTreeMap<u64, (u64, usize)>,
-    steps: usize,
 }
 
 impl Placed {
+    /// Insert `c`, split around the parts already placed. Placed parts are
+    /// disjoint, so the ones overlapping `c` are the predecessor of
+    /// `c.start` (when it reaches past it) plus those starting inside `c`:
+    /// an O(log n) lookup and at most `MAX_PIECES + 1` comparisons.
     pub(super) fn insert(&mut self, mut c: Cand) {
+        use core::ops::Bound::Excluded;
         if c.range.start >= c.range.end {
             return;
         }
         let mut hits: Vec<(u64, u64, usize)> = Vec::new();
-        for (&s, &(e, i)) in self.by_start.range(..c.range.end).rev() {
-            self.steps += 1;
-            if e <= c.range.start || self.steps > MAX_OVERLAP_STEPS {
+        if let Some((&s, &(e, i))) = self.by_start.range(..=c.range.start).next_back()
+            && e > c.range.start
+        {
+            hits.push((s, e, i));
+        }
+        let mut truncated = false;
+        for (&s, &(e, i)) in self
+            .by_start
+            .range((Excluded(c.range.start), Excluded(c.range.end)))
+        {
+            if hits.len() > MAX_PIECES {
+                truncated = true;
                 break;
             }
             hits.push((s, e, i));
@@ -949,7 +1458,6 @@ impl Placed {
             self.parts.push(c);
             return;
         }
-        hits.reverse();
         let desc = describe(&c);
         let mut pieces = Vec::new();
         let mut cursor = c.range.start;
@@ -960,10 +1468,13 @@ impl Placed {
             cursor = cursor.max(e);
             self.parts[i].note(&format!("overlaps {desc}"));
         }
-        if cursor < c.range.end {
+        // Past the last examined part the rest may overlap parts not
+        // examined, so it is placed only when every overlap was seen.
+        if cursor < c.range.end && !truncated {
             pieces.push(cursor..c.range.end);
         }
         let total = pieces.len();
+        let listed = total.min(MAX_PIECES);
         let mut children = core::mem::take(&mut c.children);
         for (k, r) in pieces.into_iter().enumerate().take(MAX_PIECES) {
             let mut piece = Cand::new(r.clone(), c.kind, c.tag.clone(), c.disp, c.detail.clone());
@@ -977,9 +1488,15 @@ impl Placed {
             piece.children = inside;
             children = rest;
             piece.note(&format!(
-                "overlaps {} other part(s); piece {} of {total}",
+                "overlaps {}{} other part(s); piece {} of {listed}{}",
                 hits.len(),
-                k + 1
+                if truncated { "+" } else { "" },
+                k + 1,
+                if truncated || total > listed {
+                    "; the rest is not listed"
+                } else {
+                    ""
+                }
             ));
             let i = self.parts.len();
             self.by_start.insert(r.start, (r.end, i));
@@ -1068,7 +1585,14 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
     // Values and extents first, so pointer problems land on entries before
     // the entries become parts.
     let mut values: Vec<Cand> = Vec::new();
+    // Extent candidates for the whole TIFF: every listed part covers a byte,
+    // so more than the input's length (plus slack) can never be listed.
+    let mut extents_left = limit.saturating_add(4096);
     for i in 0..w.ifds.len() {
+        if rules.cancelled() {
+            w.cancelled = true;
+            break;
+        }
         let ifd = &w.ifds[i];
         if ifd.problem.is_some() {
             continue;
@@ -1125,7 +1649,17 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
             let Some(oe) = w.find(ifd, rule.offsets) else {
                 continue;
             };
-            let max = usize::try_from(limit / 4 + 1).unwrap_or(usize::MAX);
+            if extents_left == 0 {
+                notes.push((
+                    ifd.entries
+                        .iter()
+                        .rposition(|e| e.tag == rule.offsets)
+                        .unwrap_or(0),
+                    "further extents not listed: the file's extent budget is spent".into(),
+                ));
+                continue;
+            }
+            let max = usize::try_from((limit / 4 + 1).min(extents_left)).unwrap_or(usize::MAX);
             let offs = w.uints(oe, max);
             let cnts = match rule.counts {
                 Count::Tag(ct) => match w.find(ifd, ct) {
@@ -1146,10 +1680,11 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 .unwrap_or(0);
             let pixels = rule.fate.d == Disposition::ImageData
                 && matches!(rule.offsets, STRIP_OFFSETS | TILE_OFFSETS);
-            let sizes = if pixels {
-                rules.chunk_sizes(w, ifd, rule.offsets == TILE_OFFSETS, offs.len())
+            let uses = if pixels {
+                let n = offs.len().min(cnts.len());
+                rules.chunk_use(w, ifd, rule.offsets == TILE_OFFSETS, &offs[..n], &cnts[..n])
             } else {
-                None
+                Vec::new()
             };
             let emit = |r: Range<u64>,
                         first: usize,
@@ -1172,11 +1707,21 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 if let Some(n) = &rule.fate.note {
                     push_note(&mut detail, n);
                 }
-                if pixels && sizes.is_none() {
+                if pixels
+                    && (first..=last).any(|k| {
+                        uses.get(k)
+                            .is_none_or(|u| u.used.is_none() && u.unread.is_none())
+                    })
+                {
                     push_note(
                         &mut detail,
                         "bytes after the end of the coded data are not split out",
                     );
+                }
+                if first == last
+                    && let Some(n) = uses.get(first).and_then(|u| u.note.as_deref())
+                {
+                    push_note(&mut detail, n);
                 }
                 let mut disp = rule.fate.d;
                 if r.end > limit {
@@ -1195,33 +1740,76 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
             let mut run: Option<(Range<u64>, usize, usize)> = None;
             for (k, (&o, &n)) in offs.iter().zip(cnts.iter()).enumerate() {
                 let Some(start) = w.abs(o) else { continue };
-                if n == 0 {
+                if n == 0 || uses.get(k).is_some_and(|u| u.covered) {
                     continue;
                 }
-                let end = start.saturating_add(n);
+                if extents_left == 0 {
+                    break;
+                }
+                extents_left -= 1;
+                // A chunk the decoder never reads is listed alone.
+                if let Some(why) = uses.get(k).and_then(|u| u.unread) {
+                    if let Some((r, first, last)) = run.take() {
+                        emit(r, first, last, &mut values, &mut notes);
+                    }
+                    let before = values.len();
+                    let end = start.saturating_add(n);
+                    logical_end = logical_end.max(end.min(limit));
+                    emit(start..end, k, k, &mut values, &mut notes);
+                    if values.len() > before
+                        && let Some(c) = values.last_mut()
+                    {
+                        if c.disp != Disposition::Malformed {
+                            c.disp = Disposition::Skipped;
+                        }
+                        push_note(&mut c.detail, why);
+                    }
+                    continue;
+                }
+                // A chunk the decoder reads by size runs to what it reads.
+                let read = uses
+                    .get(k)
+                    .filter(|u| u.past_count)
+                    .and_then(|u| u.used)
+                    .filter(|&used| used > n);
+                let end = start.saturating_add(read.unwrap_or(n));
                 logical_end = logical_end.max(end.min(limit));
                 if end > limit {
                     logical_end = limit;
                 }
-                // A strip declared longer than the rows the decoder reads: list
-                // it alone, with the unread tail as a child.
-                let used = sizes.as_ref().and_then(|s| s.get(k).copied());
-                if let Some(used) = used
-                    && used > 0
-                    && used < n
-                    && end <= limit
-                {
+                // A chunk declared longer than the bytes the decoder reads, or
+                // with a remark of its own, is listed alone; the unread tail
+                // becomes a child.
+                let u = uses.get(k);
+                let tail = u
+                    .and_then(|u| u.used)
+                    .filter(|&used| used < n && end <= limit);
+                if tail.is_some() || read.is_some() || u.is_some_and(|u| u.note.is_some()) {
                     if let Some((r, first, last)) = run.take() {
                         emit(r, first, last, &mut values, &mut notes);
                     }
+                    let before = values.len();
                     emit(start..end, k, k, &mut values, &mut notes);
-                    if let Some(c) = values.last_mut() {
+                    if let Some(used) = read
+                        && values.len() > before
+                        && let Some(c) = values.last_mut()
+                    {
+                        push_note(
+                            &mut c.detail,
+                            &format!("declared {n} bytes; the decoder reads {used}, by row size"),
+                        );
+                    }
+                    if let Some(used) = tail
+                        && values.len() > before
+                        && let Some(c) = values.last_mut()
+                    {
+                        let what = u.map_or("", |u| u.tail);
                         c.children.push(Cand::new(
                             start + used..end,
                             rule.kind,
                             PartTag::Code(u32::from(rule.offsets)),
                             Disposition::Dropped,
-                            format!("after the {used} bytes of rows the decoder reads"),
+                            format!("{what} (the decoder reads the first {used} bytes)"),
                         ));
                     }
                     continue;
@@ -1244,7 +1832,7 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
         }
         for (ei, text) in notes {
             if let Some(e) = w.ifds[i].entries.get_mut(ei) {
-                e.notes.push(text);
+                add_note(&mut e.notes, text);
             }
         }
     }
@@ -1258,6 +1846,13 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
         let mut detail = format!("{}, {} entries", ifd.name, ifd.entries.len());
         if let Some(n) = &fate.note {
             push_note(&mut detail, n);
+        }
+        if ifd.roles.len() > 1 {
+            let others: Vec<String> = ifd.roles[1..].iter().map(|&(k, _)| kind_name(k)).collect();
+            push_note(
+                &mut detail,
+                &format!("also reached as {}", others.join(", ")),
+            );
         }
         for n in &ifd.notes {
             push_note(&mut detail, &format!("next IFD: {n}"));
@@ -1291,13 +1886,17 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
             for n in &e.notes {
                 push_note(&mut detail, n);
             }
-            c.children.push(Cand::new(
+            let mut entry = Cand::new(
                 e.at..e.at + w.lay.entry_len(),
                 PartKind::Field,
                 PartTag::Code(u32::from(e.tag)),
                 fate.d,
                 detail,
-            ));
+            );
+            if ifd.problem.is_none() {
+                inline_children(w, rules, ifd, ei, &mut entry);
+            }
+            c.children.push(entry);
         }
         placed.insert(c);
     }

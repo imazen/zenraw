@@ -406,17 +406,27 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         &self,
         data: &[u8],
     ) -> Result<Option<zencodec::inventory::Inventory>, Self::Error> {
-        if let Some(stop) = &self.stop {
-            enough::Stop::check(stop).map_err(|r| at!(RawError::from(r)))?;
+        let stop: &dyn enough::Stop = self
+            .stop
+            .as_ref()
+            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        enough::Stop::check(stop).map_err(|r| at!(RawError::from(r)))?;
+        // The same input-size limit `decoder()` enforces.
+        self.limits
+            .check_input_size(data.len() as u64)
+            .map_err(|e| at!(wrap_limit(e)))?;
+        match crate::inventory::inventory(data, detect_format(data), stop) {
+            Ok(inv) => Ok(Some(inv)),
+            Err(crate::inventory::Failed::Stopped) => Err(at!(RawError::from(
+                enough::Stop::check(stop)
+                    .err()
+                    .unwrap_or(enough::StopReason::Cancelled)
+            ))),
+            Err(crate::inventory::Failed::Parts(e)) => Err(at!(RawError::LimitExceeded(
+                RawLimitKind::Memory,
+                alloc::format!("inventory: {e}")
+            ))),
         }
-        crate::inventory::inventory(data, detect_format(data))
-            .map(Some)
-            .map_err(|e| {
-                at!(RawError::LimitExceeded(
-                    RawLimitKind::Memory,
-                    alloc::format!("inventory: {e}")
-                ))
-            })
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
