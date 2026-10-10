@@ -254,7 +254,7 @@ impl Rules for RawRules {
             ),
             tag if rawloader_knows(tag) => Fate::because(
                 Disposition::Structure,
-                "parsed by rawloader (raw layout, camera parameters)",
+                "parsed by rawloader (raw layout, camera parameters); its decoders may read only part of the value (StripOffsets[0], for example), which is not split out",
             ),
             tag if ifd.kind == Kind::Exif => self.unread(
                 ifd.kind,
