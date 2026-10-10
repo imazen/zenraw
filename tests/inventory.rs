@@ -2461,3 +2461,304 @@ fn wide_pointer_arrays_are_read_only_as_far_as_the_ifd_cap() {
         "{inv}"
     );
 }
+
+// ── Review round 3 (zenraw) ────────────────────────────────────────────
+
+const RAWLER: bool = cfg!(feature = "rawler");
+
+/// A DNG whose IFD0 is a preview (NewSubFileType 1) and whose raw IFD is
+/// reached only through `ptrs`.
+fn preview_ifd0(mut w: W, ptrs: &[E]) -> Vec<u8> {
+    let make = w.put(b"ZenRaw\0");
+    w.pad();
+    let model = w.put(b"SyntheticDng\0");
+    w.pad();
+    let mut e = vec![
+        long(254, 1),
+        at(271, 2, 7, make),
+        at(272, 2, 13, model),
+        inline(50706, 1, 4, &[1, 4, 0, 0]),
+    ];
+    e.extend_from_slice(ptrs);
+    e.sort_by_key(|e| e.tag);
+    let ifd0 = w.ifd(&e, 0);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    w.b
+}
+
+/// A 4x4 16-bit raw IFD's entries, strip at `s0` (StripOffsets is entry 6).
+fn raw_entries(s0: u32) -> Vec<E> {
+    let mut e = vec![
+        long(254, 0),
+        short(256, 4),
+        short(257, 4),
+        short(258, 16),
+        short(259, 1),
+        short(262, 32803),
+        long(273, s0),
+        short(277, 1),
+        long(279, 32),
+        inline(33422, 1, 4, &[0, 1, 1, 2]),
+        short(50717, u16::MAX),
+    ];
+    e.sort_by_key(|e| e.tag);
+    e
+}
+
+/// Whether the strip at `s0` is reported consumed, checked against the
+/// decode: it is consumed exactly when flipping its bytes changes the
+/// decode's outcome.
+fn strip_consumed(label: &str, data: &[u8], s0: u32) -> bool {
+    let inv = inventory(data);
+    inv.validate().unwrap();
+    let strip = leaf_at(&inv, u64::from(s0));
+    let consumed = strip.disposition.is_consumed();
+    let changes = decode_summary(data) != decode_summary(&xor(data, strip.range.clone(), 0xFF));
+    assert_eq!(consumed, changes, "{label}: strip {strip:?}\n{inv}");
+    consumed
+}
+
+/// rawler files sub-IFD offsets in a HashMap (formats/tiff/ifd.rs:105-165):
+/// a LONG value under its tag, so of two SubIFDs entries only the later is
+/// parsed; rawloader follows both.
+#[test]
+fn rawler_parses_only_the_last_of_duplicate_subifds() {
+    for raw_first in [true, false] {
+        let mut w = W::new();
+        let thumb = w.ifd(&[long(254, 1), short(256, 2)], 0);
+        let s0 = w.put(&raw16(0));
+        let raw = w.ifd(&raw_entries(s0), 0);
+        let (a, b) = if raw_first {
+            (raw, thumb)
+        } else {
+            (thumb, raw)
+        };
+        let data = preview_ifd0(w, &[long(330, a), long(330, b)]);
+        let consumed = strip_consumed(&format!("raw first {raw_first}"), &data, s0);
+        assert_eq!(consumed, !(RAWLER && raw_first), "raw first {raw_first}");
+    }
+}
+
+/// rawler files a pointer of a type it does not know (IFD = 13) under the
+/// type code, so two IFD-typed pointers in one IFD collide and only the
+/// later is parsed.
+#[test]
+fn rawler_unknown_type_pointers_collide_on_their_type() {
+    for with_exif in [true, false] {
+        let mut w = W::new();
+        let raw = w.ifd(&raw_entries(0), 0);
+        assert_eq!(raw, 8);
+        let exif = w.ifd(&[long(0x9000, 0x3032_3330)], 0);
+        let s0 = w.put(&raw16(0));
+        let so = (raw + 2 + 6 * 12 + 8) as usize;
+        w.b[so..so + 4].copy_from_slice(&s0.to_le_bytes());
+        let mut ptrs = vec![inline(330, 13, 1, &[raw as u8, 0, 0, 0])];
+        if with_exif {
+            ptrs.push(inline(34665, 13, 1, &[exif as u8, 0, 0, 0]));
+        }
+        let data = preview_ifd0(w, &ptrs);
+        let consumed = strip_consumed(&format!("with EXIF {with_exif}"), &data, s0);
+        if RAWLER {
+            assert_eq!(consumed, !with_exif, "with EXIF {with_exif}");
+        }
+    }
+}
+
+/// rawler reads an IFD-typed value as one byte per count (inline up to 4)
+/// and follows one IFD, at the first byte's value.
+#[test]
+fn rawler_unknown_type_pointer_follows_one_ifd_at_its_first_byte() {
+    for count in [2u32, 5] {
+        let mut w = W::new();
+        let a = w.ifd(&[long(254, 1), short(256, 2)], 0);
+        assert_eq!(a, 8);
+        w.b.resize(264, 0);
+        let s0 = w.put(&raw16(0));
+        let raw = w.ifd(&raw_entries(s0), 0);
+        let mut ptrs = vec![a, raw];
+        while ptrs.len() < count as usize {
+            ptrs.push(raw);
+        }
+        w.pad();
+        while w.pos() % 256 != 8 {
+            w.b.push(0);
+        }
+        let p = w.put(
+            &ptrs
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let data = preview_ifd0(w, &[at(330, 13, count, p)]);
+        let consumed = strip_consumed(&format!("count {count}"), &data, s0);
+        if RAWLER {
+            assert!(!consumed, "count {count}");
+        }
+    }
+}
+
+/// rawler parses at most 4096 entries of an IFD (formats/tiff/ifd.rs:124);
+/// rawloader rejects more than 4000. A StripOffsets at index 4099 is read
+/// by neither.
+#[test]
+fn entries_past_rawlers_4096_stop_are_not_read() {
+    let mut w = W::new();
+    let make = w.put(b"ZenRaw\0");
+    w.pad();
+    let model = w.put(b"SyntheticDng\0");
+    w.pad();
+    let s0 = w.put(&raw16(0));
+    let mut e: Vec<E> = raw_entries(s0)
+        .into_iter()
+        .filter(|e| e.tag != 273)
+        .collect();
+    e.extend_from_slice(&[
+        at(271, 2, 7, make),
+        at(272, 2, 13, model),
+        inline(50706, 1, 4, &[1, 4, 0, 0]),
+    ]);
+    e.sort_by_key(|e| e.tag);
+    let mut k = 0u16;
+    while e.len() < 4096 {
+        e.push(inline(60000 + k, 1, 1, &[0]));
+        k += 1;
+    }
+    e.push(E {
+        tag: 0,
+        typ: 0,
+        count: 0,
+        field: [0; 4],
+    });
+    e.push(inline(65000, 1, 1, &[0]));
+    e.push(inline(65001, 1, 1, &[0]));
+    e.push(long(273, s0));
+    let ifd0 = w.ifd(&e, 0);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let data = w.b;
+    assert!(!strip_consumed("4100 entries", &data, s0));
+    let inv = inventory(&data);
+    let so = leaf_at(&inv, u64::from(ifd0) + 2 + 4099 * 12 + 4);
+    assert!(!so.disposition.is_consumed(), "{so:?}");
+    if RAWLER {
+        assert!(
+            so.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("4096-entry stop")),
+            "{so:?}"
+        );
+        let ifd = inv
+            .parts()
+            .iter()
+            .find(|p| p.kind == PartKind::Ifd && p.range.start == u64::from(ifd0))
+            .unwrap();
+        assert!(
+            ifd.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("rawler's chain ends here")),
+            "{ifd:?}"
+        );
+    }
+}
+
+/// rawloader parses the RAF JPEG's EXIF TIFF with `new_root(..)?`
+/// (decoders/tiff.rs:128): a 4001-entry IFD0 there fails the whole decode.
+#[test]
+fn raf_jpeg_exif_chain_rejection_fails_the_file() {
+    let Some(dir) = std::env::var_os("ZENRAW_RAW_CONFORMANCE_DIR") else {
+        eprintln!("ZENRAW_RAW_CONFORMANCE_DIR not set; corpus check not requested");
+        return;
+    };
+    let data = std::fs::read(PathBuf::from(dir).join("valid/xtrans/fuji_xt1.raf")).unwrap();
+    let jpeg = u32::from_be_bytes(data[84..88].try_into().unwrap()) as usize;
+    let tiff = jpeg + 12;
+    let le = &data[tiff..tiff + 2] == b"II";
+    let off: [u8; 4] = data[tiff + 4..tiff + 8].try_into().unwrap();
+    let ifd0 = tiff
+        + if le {
+            u32::from_le_bytes(off)
+        } else {
+            u32::from_be_bytes(off)
+        } as usize;
+    let mut m = data.clone();
+    let n: u16 = 4001;
+    m[ifd0..ifd0 + 2].copy_from_slice(&if le { n.to_le_bytes() } else { n.to_be_bytes() });
+    let decodes = decode_summary(&m).is_ok();
+    assert_eq!(decodes, RAWLER);
+    let inv = inventory(&m);
+    inv.validate().unwrap();
+    let big: Vec<&Part> = inv
+        .parts()
+        .iter()
+        .filter(|p| p.disposition.is_consumed() && p.range.end - p.range.start > 1000)
+        .collect();
+    assert_eq!(big.is_empty(), !RAWLER, "{big:?}");
+}
+
+/// A CR3 CMT1 TIFF whose walk stops at the IFD cap, and an mdat after a
+/// box-budget stop: their unlisted bytes may still be read, so they are
+/// `Unknown`, not `Unreferenced`.
+#[test]
+fn cr3_budget_stops_leave_cmt_and_mdat_bytes_unknown() {
+    fn bx(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = ((8 + payload.len()) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(fourcc);
+        v.extend_from_slice(payload);
+        v
+    }
+    let ftyp = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
+    let may_read = |p: &Part| {
+        p.disposition == Disposition::Unknown
+            && p.detail.as_deref().is_some_and(|d| d.contains("may read"))
+    };
+    // CMT1: SubIFDs naming 5000 one-entry IFDs.
+    const CANON_UUID: [u8; 16] = [
+        0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a,
+        0x48,
+    ];
+    let mut w = W::new();
+    let subs: Vec<u32> = (0..5000u32).map(|k| w.ifd(&[long(254, k)], 0)).collect();
+    let arr = w.put(
+        &subs
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    let ifd0 = w.ifd(&[at(330, 4, 5000, arr)], 0);
+    w.b[4..8].copy_from_slice(&ifd0.to_le_bytes());
+    let mut canon = CANON_UUID.to_vec();
+    canon.extend_from_slice(&bx(b"CMT1", &w.b));
+    let mut data = ftyp.clone();
+    let moov_at = data.len();
+    data.extend_from_slice(&bx(b"moov", &bx(b"uuid", &canon)));
+    let tiff_at = (moov_at + 8 + 8 + 16 + 8) as u64;
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let last = leaf_at(&inv, tiff_at + u64::from(*subs.last().unwrap()));
+    assert!(may_read(last), "{last:?}");
+    // A moov of 4100 boxes stops the box budget before the mdat.
+    let mut moov = Vec::new();
+    for _ in 0..4100 {
+        moov.extend_from_slice(&bx(b"free", &[]));
+    }
+    let mut data = ftyp;
+    data.extend_from_slice(&bx(b"moov", &moov));
+    let mdat_at = data.len() as u64;
+    data.extend_from_slice(&bx(b"mdat", b"MDAT-PAYLOAD-0042"));
+    let inv = inventory(&data);
+    inv.validate().unwrap();
+    let payload = leaf_at(&inv, mdat_at + 8);
+    assert!(may_read(payload), "{payload:?}");
+}
+
+/// rawler files an unknown-type pointer as `vec![offsets[0]]`, which panics
+/// for count 0 (formats/tiff/ifd.rs:157); rawler catches the panic and the
+/// decode fails. rawloader ignores the entry.
+#[test]
+fn rawler_count0_unknown_type_pointer_fails_the_decode() {
+    let mut w = W::new();
+    let s0 = w.put(&raw16(0));
+    let raw = w.ifd(&raw_entries(s0), 0);
+    let data = preview_ifd0(w, &[long(330, raw), at(34665, 13, 0, 0)]);
+    let consumed = strip_consumed("count-0 IFD-typed ExifIFD", &data, s0);
+    assert_eq!(consumed, !RAWLER);
+}

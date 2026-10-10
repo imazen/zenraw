@@ -25,6 +25,7 @@ mod tiff_walk;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::ops::Range;
 
 use zencodec::ImageFormat;
@@ -129,9 +130,74 @@ struct RawRules<'s> {
     /// Offsets of the MakerNote values the backend parses as IFDs.
     parsed_notes: Vec<u64>,
     stop: &'s dyn enough::Stop,
+    /// rawler's sub-IFD offset map for one IFD (its offset), per entry:
+    /// whether the entry is the last of its map key ([`RawRules::rawler_keeps`]).
+    rawler_map: RefCell<Option<(u64, Vec<bool>)>>,
+}
+
+/// rawler parses at most this many entries of an IFD and stops there
+/// (formats/tiff/ifd.rs:23, :124-130).
+const RAWLER_MAX_ENTRIES: usize = 4096;
+
+/// Detail for entries past rawler's entry cap.
+const RAWLER_PAST_CAP: &str =
+    "past rawler's 4096-entry stop (formats/tiff/ifd.rs:124), so rawler never parses it";
+
+/// The index of `e` within `ifd`, from its position.
+fn entry_index(w: &Walk<'_>, ifd: &Ifd, e: &Entry) -> usize {
+    let first = ifd.at + if w.lay.big { 8 } else { 2 };
+    usize::try_from(e.at.saturating_sub(first) / w.lay.entry_len()).unwrap_or(usize::MAX)
 }
 
 impl RawRules<'_> {
+    /// Whether rawler's `IFD::new` of the TIFF this rules set reads puts
+    /// `tag` into its sub-IFD offset map (the `sub_tags` of each reader).
+    fn rawler_sub_tag(&self, tag: u16) -> bool {
+        match (self.role, tag) {
+            (Role::RafCfa, tag) => tag == RAF_RAW_SUB_IFD,
+            (Role::RafJpegExif, tag) => matches!(tag, 330 | 34665),
+            (_, 330 | 34665 | GPS_IFD) => true,
+            (Role::Main, KODAK_IFD) => self.make_is(&["Canon"]),
+            _ => false,
+        }
+    }
+
+    /// The key rawler's sub-IFD offset map files entry `e` under, if it
+    /// files it at all (formats/tiff/ifd.rs:150-165): a LONG or UNDEFINED
+    /// value under its tag, a type rawler does not know (`Value::Unknown`)
+    /// under its type code; other types are ignored.
+    fn rawler_key(&self, e: &Entry) -> Option<(bool, u16)> {
+        if !self.rawler_sub_tag(e.tag) {
+            return None;
+        }
+        match e.typ {
+            4 | 7 => Some((false, e.tag)),
+            0 | 13.. => Some((true, e.typ)),
+            _ => None,
+        }
+    }
+
+    /// Whether entry `idx` of `ifd` is the last parsed entry of its map
+    /// key: a later insert under the same key replaces it in rawler's
+    /// HashMap, so only the last one's IFDs are parsed.
+    fn rawler_keeps(&self, ifd: &Ifd, idx: usize) -> bool {
+        let mut map = self.rawler_map.borrow_mut();
+        if map.as_ref().is_none_or(|(at, _)| *at != ifd.at) {
+            let n = ifd.entries.len().min(RAWLER_MAX_ENTRIES);
+            let mut keeps = alloc::vec![false; n];
+            let mut seen = alloc::collections::BTreeSet::new();
+            for j in (0..n).rev() {
+                keeps[j] = self
+                    .rawler_key(&ifd.entries[j])
+                    .is_some_and(|k| seen.insert(k));
+            }
+            *map = Some((ifd.at, keeps));
+        }
+        map.as_ref()
+            .and_then(|(_, keeps)| keeps.get(idx).copied())
+            .unwrap_or(false)
+    }
+
     fn unread(&self, kind: Kind, tag: u16, why: &'static str) -> Fate {
         if tag_known(kind, tag) {
             Fate::because(Disposition::Skipped, why)
@@ -163,7 +229,7 @@ impl RawRules<'_> {
                 Kind::Page(_) => "past the backend's IFD chain limit",
                 Kind::MakerNote => "maker note this backend does not parse for this make",
                 _ if RAWLER => {
-                    "rawler follows only LONG (or small unknown-type) SubIFDs, EXIF and GPS pointers of main-chain IFDs (formats/tiff/ifd.rs)"
+                    "rawler follows only the last LONG or unknown-type SubIFDs, EXIF and GPS pointer of each map key in the first 4096 entries of main-chain IFDs (formats/tiff/ifd.rs:105-165)"
                 }
                 _ => "not walked by rawloader",
             };
@@ -189,6 +255,9 @@ impl RawRules<'_> {
         };
         if !ifd.followed {
             return self.unread(ifd.kind, e.tag, "in a directory the decoder does not walk");
+        }
+        if RAWLER && index >= RAWLER_MAX_ENTRIES {
+            return Fate::because(Disposition::Skipped, RAWLER_PAST_CAP);
         }
         // rawloader keeps known tags in a HashMap and rawler all tags in a
         // BTreeMap: the last duplicate wins. rawloader follows every
@@ -477,6 +546,23 @@ impl Rules for RawRules<'_> {
                 .map(|v| alloc::vec![u64::from(v)])
                 .unwrap_or_default();
         }
+        // rawler reads a type it does not know as one byte per count (inline
+        // up to 4) and files one IFD, at the value of the first byte
+        // (formats/tiff/entry.rs `compat_typ`, ifd.rs `Value::Unknown`).
+        if RAWLER && (e.typ == 0 || e.typ > 12) {
+            let at = if e.count <= 4 {
+                Some(e.field)
+            } else {
+                w.lay.offset(w.d, e.field).and_then(|o| w.abs(o))
+            };
+            return at
+                .and_then(|a| get(w.d, a, 1))
+                .map(|b| alloc::vec![u64::from(b[0])])
+                .unwrap_or_default()
+                .into_iter()
+                .take(max)
+                .collect();
+        }
         // Every pointer the walk can still queue: both backends follow them
         // all.
         w.uints(e, max)
@@ -492,37 +578,36 @@ impl Rules for RawRules<'_> {
             // ExifIFD and GPSInfo (wellknown_sub_ifd_tags), plus KodakIFD for
             // the CR2 decoder; the RAF decoder's `new_root` follows SubIFDs
             // and ExifIFD in the JPEG's TIFF, and only FujiIFD in the CFA's.
-            // rawler follows a sub-IFD tag for a LONG value, and for a type
-            // it does not know (IFD, LONG8, IFD8: `Value::Unknown`) at the
-            // value's first byte only (formats/tiff/ifd.rs `IFD::new`,
-            // entry.rs); an UNDEFINED one takes the value's own offset (not
-            // modelled). Other types are not followed.
-            let first_byte = || {
-                let v = w.uints(e, 1).first().copied();
-                let b = w.bytes(e).and_then(|b| b.first().copied()).map(u64::from);
-                v.is_some() && v == b
-            };
-            let usable = e.typ == 4 || (e.typ >= 13 && e.count >= 1 && first_byte());
-            if !matches!(kind, Kind::Page(_)) || !usable {
-                return false;
-            }
-            return match (self.role, e.tag) {
-                (Role::RafCfa, tag) => tag == RAF_RAW_SUB_IFD,
-                (Role::RafJpegExif, tag) => matches!(tag, 330 | 34665),
-                (_, 330 | 34665 | GPS_IFD) => true,
-                (Role::Main, KODAK_IFD) => self.make_is(&["Canon"]),
-                _ => false,
-            };
+            // rawler's `IFD::new` (formats/tiff/ifd.rs:105-165) files the
+            // offsets of the first 4096 entries in a HashMap: a LONG value
+            // under its tag (every pointer), a type it does not know
+            // (`Value::Unknown`) under its type code (one IFD, at the value's
+            // first byte, `pointer_offsets`); a later entry with the same key
+            // replaces an earlier one. An UNDEFINED value takes the value's
+            // own offset (not modelled). Other types are not followed.
+            let idx = entry_index(w, parent, e);
+            let usable = e.typ == 4 || ((e.typ == 0 || e.typ > 12) && e.count >= 1);
+            return matches!(kind, Kind::Page(_))
+                && idx < RAWLER_MAX_ENTRIES
+                && usable
+                && self.rawler_sub_tag(e.tag)
+                && self.rawler_keeps(parent, idx);
         }
         // rawloader `TiffIFD::new`: five pointer tags from every IFD, to
         // depth 10.
         rawloader_follows(e.tag) && parent.depth < 10
     }
 
-    fn follows_next(&self, _w: &Walk<'_>, _ifd: &Ifd, kind: Kind) -> bool {
+    fn follows_next(&self, _w: &Walk<'_>, ifd: &Ifd, kind: Kind) -> bool {
         let Kind::Page(n) = kind else {
             return false;
         };
+        // rawler stops after 4096 entries and reads its next pointer from the
+        // first bytes of entry 4096 (formats/tiff/ifd.rs:124, :188): not
+        // modelled, the real next pointer is not followed.
+        if RAWLER && ifd.entries.len() > RAWLER_MAX_ENTRIES {
+            return false;
+        }
         match self.role {
             // rawler reads one IFD from a CMT box (`new_with_buffer`,
             // max_chained Some(0)).
@@ -549,8 +634,27 @@ impl Rules for RawRules<'_> {
             .then_some("rawloader rejects an IFD of more than 4000 entries (decoders/tiff.rs:197)")
     }
 
-    fn ifd(&self, _w: &Walk<'_>, ifd: &Ifd) -> Fate {
-        union_fate(ifd, |kind, followed| self.ifd_as(kind, followed))
+    fn ifd(&self, w: &Walk<'_>, ifd: &Ifd) -> Fate {
+        let fate = union_fate(ifd, |kind, followed| self.ifd_as(kind, followed));
+        if RAWLER && ifd.followed && ifd.entries.len() > RAWLER_MAX_ENTRIES {
+            let at = ifd.entries[RAWLER_MAX_ENTRIES].at;
+            let next = w.lay.u32(w.d, at).unwrap_or(0);
+            let mut note = String::from(
+                "rawler parses only its first 4096 entries (formats/tiff/ifd.rs:124) and reads the next-IFD pointer from the first four bytes of entry 4096 (:188)",
+            );
+            note.push_str(&if next == 0 {
+                format!("; that u32 (at {at}) is 0, so rawler's chain ends here")
+            } else {
+                format!(
+                    "; that u32 (at {at}) is {next}: rawler reads an IFD there, which zenraw does not model"
+                )
+            });
+            if let Some(n) = &fate.note {
+                note = format!("{n}; {note}");
+            }
+            return Fate::because(fate.d, note);
+        }
+        fate
     }
 
     fn entry(&self, w: &Walk<'_>, ifd: &Ifd, index: usize) -> Fate {
@@ -848,6 +952,24 @@ fn pick_raw_ifd(w: &Walk<'_>, order: &[Node], dng: bool, make: Option<&str>) -> 
     }
 }
 
+/// rawler never parses entries past its 4096-entry stop: leave them out of
+/// every tag lookup (strips, values, the raw IFD, Make).
+fn rawler_entry_cap(w: &mut Walk<'_>) {
+    if !RAWLER {
+        return;
+    }
+    for ifd in w
+        .ifds
+        .iter_mut()
+        .filter(|i| i.entries.len() > RAWLER_MAX_ENTRIES)
+    {
+        ifd.last.clear();
+        for (i, e) in ifd.entries[..RAWLER_MAX_ENTRIES].iter().enumerate() {
+            ifd.last.insert(e.tag, i);
+        }
+    }
+}
+
 /// Walk and place one TIFF of the file.
 fn place_tiff(
     data: &[u8],
@@ -868,8 +990,10 @@ fn place_tiff(
         sony_arw: false,
         parsed_notes: Vec::new(),
         stop,
+        rawler_map: RefCell::new(None),
     };
     let mut w = walk(data, base, limit, &rules);
+    rawler_entry_cap(&mut w);
     let probe = rawloader_order(&w, &[]);
     rules.dng = probe
         .iter()
@@ -889,6 +1013,7 @@ fn place_tiff(
         // DNGPrivateData leads to the SR2Private IFD only for Sony ARWs:
         // walk again with that pointer.
         w = walk(data, base, limit, &rules);
+        rawler_entry_cap(&mut w);
     }
     // rawler parses maker notes only in the decoders of these makes.
     let notes_parsed = !RAWLER
@@ -980,6 +1105,18 @@ fn place_tiff(
             && w.ifds.iter().any(|i| {
                 i.page().is_some_and(|n| n < 100) && w.lay.u16(w.d, i.at).is_some_and(|c| c > 4000)
             }),
+        // rawler files an unknown-type pointer as `vec![offsets[0]]`, which
+        // panics for count 0 (formats/tiff/ifd.rs:157) in every main-chain
+        // IFD its GenericTiffReader parses.
+        rawler_panics: RAWLER
+            && role == Role::Main
+            && w.ifds.iter().any(|i| {
+                i.page().is_some()
+                    && i.followed
+                    && i.entries.iter().take(RAWLER_MAX_ENTRIES).any(|e| {
+                        e.count == 0 && (e.typ == 0 || e.typ > 12) && rules.rawler_sub_tag(e.tag)
+                    })
+            }),
     }
 }
 
@@ -995,6 +1132,9 @@ struct TiffPlacement {
     /// rawloader rejects a main-chain IFD (more than 4000 entries), so its
     /// `new_root` fails and nothing decodes.
     chain_rejected: bool,
+    /// rawler panics parsing a main-chain IFD (and reports the decode
+    /// failed), so nothing decodes.
+    rawler_panics: bool,
 }
 
 /// What one CR3 `CMTn` TIFF's entries mean on the zencodec path: rawler
@@ -1349,6 +1489,9 @@ fn not_decoded(c: &mut Cand, why: &str) {
     }
 }
 
+/// Detail when rawler panics parsing a main-chain IFD.
+const RAWLER_PANICS: &str = "rawler panics on a SubIFDs, ExifIFD or GPS pointer of an unknown type with count 0 (formats/tiff/ifd.rs:157, `offsets[0]`) and reports the decode failed";
+
 /// Detail when rawloader rejects a main-chain IFD.
 const CHAIN_REJECTED: &str = "rawloader rejects a main-chain IFD of more than 4000 entries (decoders/tiff.rs:197), so the decode fails";
 
@@ -1363,8 +1506,9 @@ pub(crate) fn inventory(
     let mut inv = Inventory::new(format, len);
     let mut cancelled = false;
     let mut chain_rejected = false;
+    let mut rawler_panics = false;
     let (mut parts, logical_end, gap) = if data.starts_with(b"FUJIFILM") {
-        raf(data, xmp, stop, &mut cancelled)
+        raf(data, xmp, stop, &mut cancelled, &mut chain_rejected)
     } else if data.get(4..8) == Some(b"ftyp") {
         cr3(data, stop, &mut cancelled)
     } else if matches!(data.get(..2), Some(b"II" | b"MM")) {
@@ -1372,6 +1516,7 @@ pub(crate) fn inventory(
         let t = place_tiff(data, 0, len, Role::Main, xmp, stop, first);
         cancelled |= t.cancelled;
         chain_rejected = t.chain_rejected;
+        rawler_panics = t.rawler_panics;
         let gap = if t.ifd0_ok && t.budget_hit {
             (
                 Disposition::Unknown,
@@ -1406,6 +1551,10 @@ pub(crate) fn inventory(
         for c in &mut parts {
             not_decoded(c, CHAIN_REJECTED);
         }
+    } else if rawler_panics {
+        for c in &mut parts {
+            not_decoded(c, RAWLER_PANICS);
+        }
     }
     emit_top(&mut inv, data, parts, logical_end, gap)?;
     inv.fill_gaps(None, Disposition::Trailing)?;
@@ -1436,7 +1585,16 @@ fn section(off: u64, n: u64, len: u64) -> Option<(Range<u64>, bool)> {
 
 /// RAF: header, JPEG preview, CFA header records, CFA section
 /// (rawloader `TiffIFD::new_file`).
-fn raf(data: &[u8], xmp: bool, stop: &dyn enough::Stop, cancelled: &mut bool) -> Placement {
+/// `chain_rejected` is set when rawloader rejects the JPEG EXIF TIFF's chain:
+/// `new_file` parses it with `new_root(..)?` (decoders/tiff.rs:128), so the
+/// whole decode fails. A failing CFA TIFF is tolerated (tiff.rs:134-146).
+fn raf(
+    data: &[u8],
+    xmp: bool,
+    stop: &dyn enough::Stop,
+    cancelled: &mut bool,
+    chain_rejected: &mut bool,
+) -> Placement {
     let len = data.len() as u64;
     let mut placed = Placed::default();
     if let Some(c) = xmp_cand(data) {
@@ -1556,6 +1714,7 @@ fn raf(data: &[u8], xmp: bool, stop: &dyn enough::Stop, cancelled: &mut bool) ->
                 Vec::new(),
             );
             *cancelled |= t.cancelled;
+            *chain_rejected |= t.chain_rejected;
             note_tags(&t.parts);
             c.children.push(Cand::new(
                 r.start + 2..r.start + 12,
@@ -2138,6 +2297,9 @@ impl Cr3<'_> {
                     self.cancelled |= t.cancelled;
                     c.children = t.parts;
                     c.body = Some(payload.clone());
+                    if t.budget_hit {
+                        c.gap = Some((Disposition::Unknown, tiff_walk::BUDGET_GAP.into()));
+                    }
                     if self.rawler {
                         c.disp = Disposition::Structure;
                         c.detail = format!("CMT{n} TIFF, parsed by rawler");
@@ -2379,6 +2541,11 @@ impl Cr3<'_> {
                 }
             }
             mdat.children = inner.into_sorted();
+            // After a box-budget or depth stop, sample tables that would
+            // locate data here may not have been walked.
+            if self.stopped || self.budget == 0 {
+                mdat.gap = Some((Disposition::Unknown, tiff_walk::BUDGET_GAP.into()));
+            }
             if outside > 0 {
                 mdat.note(&format!(
                     "{outside} sample(s) cross the mdat boundary and are not listed"
