@@ -1241,15 +1241,29 @@ fn run_queue(
             note(w, format!("not walked: more than {MAX_IFDS} IFDs"));
             continue;
         }
+        // A table overlapping one already parsed is refused only when the
+        // decode path does not read it: a directory the decoder follows (the
+        // page chain, the EXIF target) is walked anyway, its parts split
+        // around the other table, and the entry budget still bounds the
+        // total.
         if let Some(other) = w.table_overlap(at) {
+            if !p.followed {
+                note(
+                    w,
+                    format!(
+                        "{} at {at} overlaps the IFD table at {other}; not walked",
+                        p.name
+                    ),
+                );
+                continue;
+            }
             note(
                 w,
                 format!(
-                    "{} at {at} overlaps the IFD table at {other}; not walked",
+                    "{} at {at} overlaps the IFD table at {other}; walked, because the decoder reads it",
                     p.name
                 ),
             );
-            continue;
         }
         let mut budget = w.entries_left;
         let parsed = parse_ifd(d, lay, at, p.kind, p.name.clone(), p.followed, &mut budget);
