@@ -318,6 +318,8 @@ fn estimate_decode_resources_scales_and_is_serial() {
     use zenpixels::PixelDescriptor;
 
     let config = zenraw::RawDecoderConfig::new();
+    // `new` is deprecated from zencodec 0.1.27 on; 0.1.26 has no `conservative()`.
+    #[allow(deprecated)]
     let compute = ComputeEnvironment::new().with_cores(8);
 
     // A 6 MP image: the modelled peak is dominated by the RGB-f32 working set
@@ -351,7 +353,9 @@ fn estimate_decode_resources_scales_and_is_serial() {
     // RAW decode is single-threaded per image: wall time does not scale with
     // cores, so 1-core and 8-core estimates must agree.
     assert_eq!(est6.threading(), Some(ThreadingInformation::SERIAL));
-    let est6_1core = config.estimate_decode_resources(&img6, &ComputeEnvironment::new());
+    #[allow(deprecated)]
+    let one_core = ComputeEnvironment::new();
+    let est6_1core = config.estimate_decode_resources(&img6, &one_core);
     assert_eq!(
         est6.wall_ms(),
         est6_1core.wall_ms(),
