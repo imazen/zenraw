@@ -80,7 +80,7 @@ fn is_dng_header(data: &[u8]) -> bool {
 }
 
 /// Detect the image format (DNG vs generic RAW) from file bytes.
-fn detect_format(data: &[u8]) -> ImageFormat {
+pub(crate) fn detect_format(data: &[u8]) -> ImageFormat {
     if crate::is_raw_file(data) && crate::decode::is_dng_data(data) {
         ImageFormat::Custom(&DNG_FORMAT)
     } else {

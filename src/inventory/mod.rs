@@ -18,9 +18,20 @@
 //! keeping only the tags it knows ([`RAWLOADER_TAGS`]); its camera decoders
 //! look those up anywhere in that tree. No EXIF, GPS or other metadata
 //! reaches `ImageInfo`, although the decoder advertises `with_exif`.
+//!
+//! Whether the backend gets past the file at all is decided by the backend
+//! itself: before reporting, [`inventory`] runs the decode path's checks up
+//! to pixel decoding (the length check, then rawloader's `decode_dummy` or
+//! rawler's `get_decoder`) under the decode path's panic guard, and on a
+//! rejection marks every consumed part `Skipped`. Not covered: rawler
+//! failures raised in `raw_image` before any pixel work (its dummy image
+//! step decodes DNG pixels, so it is not run).
 
 mod tags;
 mod tiff_walk;
+
+#[cfg(test)]
+mod pregate_tests;
 
 use alloc::format;
 use alloc::string::String;
@@ -1121,22 +1132,6 @@ fn place_tiff(
         fatal: w.fatal.clone(),
         cancelled: w.cancelled,
         budget_hit: p.budget_hit,
-        chain_rejected: !RAWLER
-            && w.ifds.iter().any(|i| {
-                i.page().is_some_and(|n| n < 100) && w.lay.u16(w.d, i.at).is_some_and(|c| c > 4000)
-            }),
-        // rawler files an unknown-type pointer as `vec![offsets[0]]`, which
-        // panics for count 0 (formats/tiff/ifd.rs:157) in every main-chain
-        // IFD its GenericTiffReader parses.
-        rawler_panics: RAWLER
-            && role == Role::Main
-            && w.ifds.iter().any(|i| {
-                i.page().is_some()
-                    && i.followed
-                    && i.entries.iter().take(RAWLER_MAX_ENTRIES).any(|e| {
-                        e.count == 0 && (e.typ == 0 || e.typ > 12) && rules.rawler_sub_tag(e.tag)
-                    })
-            }),
     }
 }
 
@@ -1149,12 +1144,6 @@ struct TiffPlacement {
     cancelled: bool,
     /// A budget or cap stopped part of the walk.
     budget_hit: bool,
-    /// rawloader rejects a main-chain IFD (more than 4000 entries), so its
-    /// `new_root` fails and nothing decodes.
-    chain_rejected: bool,
-    /// rawler panics parsing a main-chain IFD (and reports the decode
-    /// failed), so nothing decodes.
-    rawler_panics: bool,
 }
 
 /// What one CR3 `CMTn` TIFF's entries mean on the zencodec path: rawler
@@ -1509,11 +1498,25 @@ fn not_decoded(c: &mut Cand, why: &str) {
     }
 }
 
-/// Detail when rawler panics parsing a main-chain IFD.
-const RAWLER_PANICS: &str = "rawler panics on a SubIFDs, ExifIFD or GPS pointer of an unknown type with count 0 (formats/tiff/ifd.rs:157, `offsets[0]`) and reports the decode failed";
-
-/// Detail when rawloader rejects a main-chain IFD.
-const CHAIN_REJECTED: &str = "rawloader rejects a main-chain IFD of more than 4000 entries (decoders/tiff.rs:197), so the decode fails";
+/// The decode path's checks before pixel decoding, run by the backend
+/// itself under the decode path's panic guard: rawloader's `decode_dummy`,
+/// rawler's `get_decoder`. rawler failures raised in `raw_image` before any
+/// pixel work are not seen (rawler's dummy image step decodes DNG pixels).
+fn container_check(data: &[u8]) -> Result<(), String> {
+    #[cfg(feature = "rawler")]
+    {
+        crate::rawler_backend::container_check(data)
+    }
+    #[cfg(all(feature = "rawloader", not(feature = "rawler")))]
+    {
+        crate::decode::container_check(data)
+    }
+    #[cfg(not(any(feature = "rawloader", feature = "rawler")))]
+    {
+        let _ = data;
+        Err(String::from("no decode backend is enabled"))
+    }
+}
 
 /// Inventory `data` the way zenraw's zencodec decode job reads it.
 pub(crate) fn inventory(
@@ -1521,22 +1524,30 @@ pub(crate) fn inventory(
     format: ImageFormat,
     stop: &dyn enough::Stop,
 ) -> Result<Inventory, Failed> {
+    inventory_with(data, format, stop, true)
+}
+
+/// [`inventory`], with the backend's container parse (`gate`) optional:
+/// the crate's tests check the walk's classification of fixtures the
+/// backends reject with it off.
+fn inventory_with(
+    data: &[u8],
+    format: ImageFormat,
+    stop: &dyn enough::Stop,
+    gate: bool,
+) -> Result<Inventory, Failed> {
     let len = data.len() as u64;
     let xmp = cfg!(feature = "xmp");
     let mut inv = Inventory::new(format, len);
     let mut cancelled = false;
-    let mut chain_rejected = false;
-    let mut rawler_panics = false;
     let (mut parts, logical_end, gap) = if data.starts_with(b"FUJIFILM") {
-        raf(data, xmp, stop, &mut cancelled, &mut chain_rejected)
+        raf(data, xmp, stop, &mut cancelled)
     } else if data.get(4..8) == Some(b"ftyp") {
         cr3(data, stop, &mut cancelled)
     } else if matches!(data.get(..2), Some(b"II" | b"MM")) {
         let first: Vec<Cand> = xmp_cand(data).into_iter().collect();
         let t = place_tiff(data, 0, len, Role::Main, xmp, stop, first);
         cancelled |= t.cancelled;
-        chain_rejected = t.chain_rejected;
-        rawler_panics = t.rawler_panics;
         let gap = if t.ifd0_ok && t.budget_hit {
             (
                 Disposition::Unknown,
@@ -1567,13 +1578,12 @@ pub(crate) fn inventory(
         for c in &mut parts {
             not_decoded(c, NOT_RAW);
         }
-    } else if chain_rejected {
+    } else if let Some(Err(why)) = gate.then(|| container_check(data)) {
+        // The backend's own container parse decides whether the decode
+        // gets past it; when it does not, nothing is read.
+        let why = format!("the {BACKEND} container parse rejects this file: {why}");
         for c in &mut parts {
-            not_decoded(c, CHAIN_REJECTED);
-        }
-    } else if rawler_panics {
-        for c in &mut parts {
-            not_decoded(c, RAWLER_PANICS);
+            not_decoded(c, &why);
         }
     }
     emit_top(&mut inv, data, parts, logical_end, gap)?;
@@ -1605,16 +1615,7 @@ fn section(off: u64, n: u64, len: u64) -> Option<(Range<u64>, bool)> {
 
 /// RAF: header, JPEG preview, CFA header records, CFA section
 /// (rawloader `TiffIFD::new_file`).
-/// `chain_rejected` is set when rawloader rejects the JPEG EXIF TIFF's chain:
-/// `new_file` parses it with `new_root(..)?` (decoders/tiff.rs:128), so the
-/// whole decode fails. A failing CFA TIFF is tolerated (tiff.rs:134-146).
-fn raf(
-    data: &[u8],
-    xmp: bool,
-    stop: &dyn enough::Stop,
-    cancelled: &mut bool,
-    chain_rejected: &mut bool,
-) -> Placement {
+fn raf(data: &[u8], xmp: bool, stop: &dyn enough::Stop, cancelled: &mut bool) -> Placement {
     let len = data.len() as u64;
     let mut placed = Placed::default();
     if let Some(c) = xmp_cand(data) {
@@ -1734,7 +1735,6 @@ fn raf(
                 Vec::new(),
             );
             *cancelled |= t.cancelled;
-            *chain_rejected |= t.chain_rejected;
             note_tags(&t.parts);
             c.children.push(Cand::new(
                 r.start + 2..r.start + 12,

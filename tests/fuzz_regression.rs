@@ -12,7 +12,7 @@ use zenutils_fuzz::RegressionSuite;
 /// so an emptied, renamed, or never-checked-out corpus would let this test pass
 /// without replaying a single seed. Pinning the floor makes that a loud failure.
 /// Raise this when seeds are added; only lower it when deleting seeds on purpose.
-const MIN_SEEDS: usize = 1;
+const MIN_SEEDS: usize = 3;
 
 /// Count the files `RegressionSuite::run` will actually replay, using its own
 /// filters: recurse into subdirectories, skip dotfiles, `*.md` and `*.txt`.
