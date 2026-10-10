@@ -1815,8 +1815,7 @@ fn budget_stopped_walk_leaves_unknown_gaps() {
 /// the work is about `n + 4096` pointer reads, not `n * c`.
 #[test]
 fn wide_pointer_arrays_are_read_only_as_far_as_the_ifd_cap() {
-    // Tests build at opt-level 2, so the input is the reviewer's 4 MB case
-    // (39 s before the fix in a release build).
+    // The reviewer's 4 MB case (39 s before the fix in a release build).
     let (n, c) = (65_535u32, 819_200u32);
     let arr = 8 + 2 + 12 * n + 4;
     let target = arr + 4 * c;
@@ -1835,11 +1834,11 @@ fn wide_pointer_arrays_are_read_only_as_far_as_the_ifd_cap() {
     data.extend_from_slice(&[0; 6]);
     // 4,063,240 bytes: before the fix, 65,535 x 819,200 pointer reads.
     assert_eq!(data.len(), 4_063_240);
-    let t = std::time::Instant::now();
+    // The read count itself is bounded by the crate's own
+    // `wide_pointer_arrays_read_at_most_n_plus_the_ifd_cap`
+    // (src/inventory/mod.rs): a wall-clock bound measures the runner.
     let inv = inventory(&data);
-    let took = t.elapsed();
     inv.validate().unwrap();
-    assert!(took.as_secs_f64() < 5.0, "took {took:?}");
     assert!(
         inv.parts().iter().any(|p| p
             .detail

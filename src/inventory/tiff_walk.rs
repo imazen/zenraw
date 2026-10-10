@@ -315,6 +315,10 @@ pub(super) struct Walk<'a> {
     /// Whether a budget or cap stopped part of the walk: its gaps may hold
     /// bytes the decoder reads.
     pub(super) budget_hit: bool,
+    /// Directory pointers read from pointer entries ([`Rules::pointer_offsets`]),
+    /// the walk's work on pointer arrays; the crates' tests bound it.
+    #[allow(dead_code)] // read only by the crates' tests
+    pub(super) pointer_reads: u64,
     /// Bytes count-only chunk readers may still scan. Overlapping chunks
     /// would otherwise rescan the same bytes once per chunk.
     scan_left: Cell<u64>,
@@ -1066,6 +1070,7 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         by_at: BTreeMap::new(),
         cancelled: false,
         budget_hit: false,
+        pointer_reads: 0,
     };
     let rest = limit.saturating_sub(base);
     let lay = match get(d, base, 2) {
@@ -1167,6 +1172,7 @@ pub(super) fn walk_ifd<'a>(
         by_at: BTreeMap::new(),
         cancelled: false,
         budget_hit: false,
+        pointer_reads: 0,
     };
     run_queue(&mut w, Some(at), kind, name, depth, rules);
     w
@@ -1360,6 +1366,7 @@ fn enqueue(
             continue;
         }
         let ptrs = rules.pointer_offsets(w, e, room + 1);
+        w.pointer_reads += ptrs.len() as u64;
         if ptrs.is_empty() {
             let text = format!("{label} pointer of type {} not read", type_name(e.typ));
             add_note(&mut w.ifds[idx].entries[ei].notes, text);

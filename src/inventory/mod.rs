@@ -1132,6 +1132,8 @@ fn place_tiff(
         fatal: w.fatal.clone(),
         cancelled: w.cancelled,
         budget_hit: p.budget_hit,
+        #[cfg(test)]
+        pointer_reads: w.pointer_reads,
     }
 }
 
@@ -1144,6 +1146,9 @@ struct TiffPlacement {
     cancelled: bool,
     /// A budget or cap stopped part of the walk.
     budget_hit: bool,
+    /// Directory pointers the walk read (`Walk::pointer_reads`).
+    #[cfg(test)]
+    pointer_reads: u64,
 }
 
 /// What one CR3 `CMTn` TIFF's entries mean on the zencodec path: rawler
@@ -2572,5 +2577,61 @@ impl Cr3<'_> {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IFD0 with `n` SubIFDs entries, each LONG[`c`], all naming one shared
+    /// array of `c` pointers to one tiny table (review round 4, R4-1).
+    fn wide_pointer_arrays(n: u32, c: u32) -> Vec<u8> {
+        let arr = 8 + 2 + 12 * n + 4;
+        let target = arr + 4 * c;
+        let mut b = b"II\x2a\x00\x08\x00\x00\x00".to_vec();
+        b.extend_from_slice(&(n as u16).to_le_bytes());
+        for _ in 0..n {
+            b.extend_from_slice(&330u16.to_le_bytes());
+            b.extend_from_slice(&4u16.to_le_bytes());
+            b.extend_from_slice(&c.to_le_bytes());
+            b.extend_from_slice(&arr.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..c {
+            b.extend_from_slice(&target.to_le_bytes());
+        }
+        b.extend_from_slice(&[0; 6]);
+        b
+    }
+
+    /// The walk reads only the pointers it can still queue: each pointer
+    /// entry reads at most the room left under the 4,096-IFD cap plus one,
+    /// and none once the room is gone, so `n` entries read at most
+    /// `n + 4096` pointers, not `n * c`. A work bound, not a wall-clock one;
+    /// it runs zenraw's own rules, whose `pointer_offsets` must honour `max`.
+    #[test]
+    fn wide_pointer_arrays_read_at_most_n_plus_the_ifd_cap() {
+        let (n, c) = (65_535u32, 819_200u32);
+        let data = wide_pointer_arrays(n, c);
+        // 4,063,240 bytes: before the fix, 65,535 x 819,200 pointer reads.
+        assert_eq!(data.len(), 4_063_240);
+        let t = place_tiff(
+            &data,
+            0,
+            data.len() as u64,
+            Role::Main,
+            false,
+            &enough::Unstoppable,
+            Vec::new(),
+        );
+        let bound = u64::from(n) + 4096 + 1;
+        assert!(t.pointer_reads > 0);
+        assert!(
+            t.pointer_reads <= bound,
+            "{} pointer reads, bound {bound} (n x c = {})",
+            t.pointer_reads,
+            u64::from(n) * u64::from(c)
+        );
     }
 }
