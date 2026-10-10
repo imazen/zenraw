@@ -20,7 +20,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use zencodec::inventory::{Disposition, Inventory, InventoryError, Part, PartId, PartKind, PartTag};
+use zencodec::inventory::{
+    Disposition, Inventory, InventoryError, Part, PartId, PartKind, PartTag,
+};
 
 use super::tags::tag_name;
 
@@ -236,8 +238,9 @@ pub(super) struct Walk<'a> {
     pub(super) header: Range<u64>,
     /// Whether the header parsed completely.
     pub(super) header_ok: bool,
-    /// A note for the header part (a raw header extension).
-    pub(super) header_note: Option<&'static str>,
+    /// Bytes after the header that belong to the file format (CR2), with
+    /// their disposition and detail.
+    pub(super) header_ext: Option<(Range<u64>, Disposition, String)>,
     /// Why the header or IFD0 could not be read.
     pub(super) fatal: Option<String>,
     pub(super) ifds: Vec<Ifd>,
@@ -329,7 +332,14 @@ impl Walk<'_> {
 
 /// Parse the directory at absolute offset `at`. `None` when `at` is outside
 /// the TIFF.
-fn parse_ifd(d: &[u8], lay: Layout, at: u64, kind: Kind, name: String, followed: bool) -> Option<Ifd> {
+fn parse_ifd(
+    d: &[u8],
+    lay: Layout,
+    at: u64,
+    kind: Kind,
+    name: String,
+    followed: bool,
+) -> Option<Ifd> {
     let len = d.len() as u64;
     if at >= len {
         return None;
@@ -425,6 +435,7 @@ impl Fate {
 }
 
 /// How long the extents of an [`ExtentRule`] are.
+#[allow(dead_code)] // not every crate's rules use every variant
 pub(super) enum Count {
     /// Byte counts in this tag, one per offset.
     Tag(u16),
@@ -450,10 +461,24 @@ pub(super) trait Rules {
         false
     }
 
-    /// Bytes after the classic 8-byte header that belong to it (CR2), with a
-    /// note.
-    fn header_extension(&self, _w: &Walk<'_>) -> Option<(u64, &'static str)> {
+    /// Bytes after the classic 8-byte header that the file format defines
+    /// (CR2), and what the decode path does with them.
+    fn header_extension(&self, _w: &Walk<'_>) -> Option<(u64, Fate)> {
         None
+    }
+
+    /// For a value the decode path consumes only in part: how many leading
+    /// bytes it uses, and the fate of the rest (an ASCII value's bytes after
+    /// its NUL, for example).
+    fn value_tail(&self, _w: &Walk<'_>, _ifd: &Ifd, _index: usize) -> Option<(u64, Fate)> {
+        None
+    }
+
+    /// The bytes each of `chunks` strips (or tiles) holds when the decoder
+    /// reads them exactly, so a longer declared count leaves a tail it never
+    /// reads. `None` when that cannot be told cheaply (compressed data).
+    fn chunk_sizes(&self, w: &Walk<'_>, ifd: &Ifd, tiles: bool, chunks: usize) -> Option<Vec<u64>> {
+        uncompressed_sizes(w, ifd, tiles, chunks)
     }
 
     /// The directory pointer entry `e` in a `kind` IFD leads to.
@@ -536,6 +561,52 @@ pub(super) trait Rules {
     }
 }
 
+/// The bytes each uncompressed (Compression 1) strip or tile holds, from
+/// the IFD's layout tags; `None` for compressed or subsampled data.
+pub(super) fn uncompressed_sizes(
+    w: &Walk<'_>,
+    ifd: &Ifd,
+    tiles: bool,
+    chunks: usize,
+) -> Option<Vec<u64>> {
+    let one = |tag: u16| {
+        w.find(ifd, tag)
+            .and_then(|e| w.uints(e, 1).first().copied())
+    };
+    if one(259).unwrap_or(1) != 1 || one(262) == Some(6) {
+        return None;
+    }
+    let width = one(256)?;
+    let height = one(257)?;
+    let spp = one(277).unwrap_or(1).max(1);
+    let bps = w
+        .find(ifd, 258)
+        .map(|e| w.uints(e, 64))
+        .unwrap_or_else(|| alloc::vec![1]);
+    let planar = one(284) == Some(2);
+    let bits = if planar {
+        *bps.first()?
+    } else if bps.len() as u64 == spp {
+        bps.iter().try_fold(0u64, |a, &b| a.checked_add(b))?
+    } else {
+        bps.first()?.checked_mul(spp)?
+    };
+    let row_bytes = |px: u64| px.checked_mul(bits).map(|b| b.div_ceil(8));
+    if tiles {
+        let per = row_bytes(one(322)?)?.checked_mul(one(323)?)?;
+        return Some(alloc::vec![per; chunks]);
+    }
+    let rps = one(278).unwrap_or(height).clamp(1, height.max(1));
+    let per_plane = height.div_ceil(rps).max(1);
+    let row = row_bytes(width)?;
+    let mut out = Vec::with_capacity(chunks.min(1 << 20));
+    for k in 0..chunks as u64 {
+        let rows = rps.min(height.saturating_sub((k % per_plane) * rps));
+        out.push(row.checked_mul(rows)?);
+    }
+    Some(out)
+}
+
 /// Parse the TIFF whose header is at `base`, with every position below
 /// `limit`, following pointers the way `rules` describes.
 pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules) -> Walk<'a> {
@@ -551,7 +622,7 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         magic: 0,
         header: base..base,
         header_ok: false,
-        header_note: None,
+        header_ext: None,
         fatal: None,
         ifds: Vec::new(),
     };
@@ -608,11 +679,12 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
     };
     w.header = base..base + lay.header_len();
     w.header_ok = true;
-    if let Some((extra, note)) = rules.header_extension(&w)
+    if let Some((extra, fate)) = rules.header_extension(&w)
         && w.header.end + extra <= limit
     {
-        w.header.end += extra;
-        w.header_note = Some(note);
+        let r = w.header.end..w.header.end + extra;
+        let detail = fate.note.map(|n| n.into_owned()).unwrap_or_default();
+        w.header_ext = Some((r, fate.d, detail));
     }
 
     /// Where a pending directory's pointer came from.
@@ -655,19 +727,28 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         if !visited.insert(at) {
             note(
                 &mut w,
-                format!("{} at {at} was already walked (cycle or shared IFD)", p.name),
+                format!(
+                    "{} at {at} was already walked (cycle or shared IFD)",
+                    p.name
+                ),
             );
             continue;
         }
         let Some(mut ifd) = parse_ifd(d, lay, at, p.kind, p.name.clone(), p.followed) else {
-            note(&mut w, format!("{} offset {at} is past the end of the data", p.name));
+            note(
+                &mut w,
+                format!("{} offset {at} is past the end of the data", p.name),
+            );
             continue;
         };
         if let From::Entry(i, e) = p.from {
             ifd.parent = Some((i, e));
         }
         if p.kind == Kind::Page(0) && ifd.problem.is_some() {
-            w.fatal = Some(format!("IFD0 {}", ifd.problem.as_deref().unwrap_or_default()));
+            w.fatal = Some(format!(
+                "IFD0 {}",
+                ifd.problem.as_deref().unwrap_or_default()
+            ));
         }
         let idx = w.ifds.len();
         let readable = ifd.problem.is_none();
@@ -743,7 +824,13 @@ pub(super) struct Cand {
 }
 
 impl Cand {
-    pub(super) fn new(range: Range<u64>, kind: PartKind, tag: PartTag, disp: Disposition, detail: String) -> Self {
+    pub(super) fn new(
+        range: Range<u64>,
+        kind: PartKind,
+        tag: PartTag,
+        disp: Disposition,
+        detail: String,
+    ) -> Self {
         Self {
             range,
             kind,
@@ -775,7 +862,12 @@ pub(super) fn push_note(detail: &mut String, text: &str) {
 
 fn describe(c: &Cand) -> String {
     let head = c.detail.split(';').next().unwrap_or("");
-    format!("{} {}..{} ({head})", c.kind.name(), c.range.start, c.range.end)
+    format!(
+        "{} {}..{} ({head})",
+        c.kind.name(),
+        c.range.start,
+        c.range.end
+    )
 }
 
 /// Non-overlapping sibling parts. Each insertion is split around the parts
@@ -884,21 +976,37 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
     }
     if w.header.end > w.header.start {
         let mut c = if w.header_ok {
-            let what = if w.lay.big { "BigTIFF header" } else { "TIFF header" };
-            Cand::new(w.header.clone(), PartKind::Header, PartTag::None, Disposition::Structure, what.into())
+            let what = if w.lay.big {
+                "BigTIFF header"
+            } else {
+                "TIFF header"
+            };
+            Cand::new(
+                w.header.clone(),
+                PartKind::Header,
+                PartTag::None,
+                Disposition::Structure,
+                what.into(),
+            )
         } else {
             let why = w.fatal.clone().unwrap_or_default();
-            Cand::new(w.header.clone(), PartKind::Header, PartTag::None, Disposition::Malformed, why)
+            Cand::new(
+                w.header.clone(),
+                PartKind::Header,
+                PartTag::None,
+                Disposition::Malformed,
+                why,
+            )
         };
-        if let Some(n) = w.header_note {
-            c.note(n);
-        }
         if w.header_ok
             && let Some(why) = &w.fatal
         {
             c.note(why);
         }
         placed.insert(c);
+    }
+    if let Some((r, d, detail)) = w.header_ext.clone() {
+        placed.insert(Cand::new(r, PartKind::Header, PartTag::None, d, detail));
     }
     for c in first {
         logical_end = logical_end.max(c.range.end);
@@ -936,13 +1044,30 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 logical_end = limit;
             }
             logical_end = logical_end.max(end.min(limit));
-            values.push(Cand::new(
+            let mut c = Cand::new(
                 off..end.min(limit),
                 PartKind::Field,
                 PartTag::Code(u32::from(e.tag)),
                 disp,
                 detail,
-            ));
+            );
+            if end <= limit
+                && let Some((keep, tail)) = rules.value_tail(w, ifd, ei)
+                && keep < size
+            {
+                let mut t = String::new();
+                if let Some(n) = &tail.note {
+                    push_note(&mut t, n);
+                }
+                c.children.push(Cand::new(
+                    off + keep..end,
+                    PartKind::Field,
+                    PartTag::Code(u32::from(e.tag)),
+                    tail.d,
+                    t,
+                ));
+            }
+            values.push(c);
         }
         for rule in rules.extents(w, ifd) {
             let Some(oe) = w.find(ifd, rule.offsets) else {
@@ -962,20 +1087,44 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                     .unwrap_or_default(),
                 Count::Bytes(n) => alloc::vec![n],
             };
-            let oi = ifd.entries.iter().rposition(|e| e.tag == rule.offsets).unwrap_or(0);
-            let emit = |r: Range<u64>, first: usize, last: usize, values: &mut Vec<Cand>, notes: &mut Vec<(usize, String)>| {
+            let oi = ifd
+                .entries
+                .iter()
+                .rposition(|e| e.tag == rule.offsets)
+                .unwrap_or(0);
+            let pixels = rule.fate.d == Disposition::ImageData
+                && matches!(rule.offsets, STRIP_OFFSETS | TILE_OFFSETS);
+            let sizes = if pixels {
+                rules.chunk_sizes(w, ifd, rule.offsets == TILE_OFFSETS, offs.len())
+            } else {
+                None
+            };
+            let emit = |r: Range<u64>,
+                        first: usize,
+                        last: usize,
+                        values: &mut Vec<Cand>,
+                        notes: &mut Vec<(usize, String)>| {
                 let which = if first == last {
                     format!("{} {first}", rule.what)
                 } else {
                     format!("{}s {first}..={last}", rule.what)
                 };
                 if r.start >= limit {
-                    notes.push((oi, format!("{which} at {} is past the end of the data", r.start)));
+                    notes.push((
+                        oi,
+                        format!("{which} at {} is past the end of the data", r.start),
+                    ));
                     return;
                 }
                 let mut detail = format!("{}, {which}", ifd.name);
                 if let Some(n) = &rule.fate.note {
                     push_note(&mut detail, n);
+                }
+                if pixels && sizes.is_none() {
+                    push_note(
+                        &mut detail,
+                        "bytes after the end of the coded data are not split out",
+                    );
                 }
                 let mut disp = rule.fate.d;
                 if r.end > limit {
@@ -1002,8 +1151,33 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
                 if end > limit {
                     logical_end = limit;
                 }
+                // A strip declared longer than the rows the decoder reads: list
+                // it alone, with the unread tail as a child.
+                let used = sizes.as_ref().and_then(|s| s.get(k).copied());
+                if let Some(used) = used
+                    && used > 0
+                    && used < n
+                    && end <= limit
+                {
+                    if let Some((r, first, last)) = run.take() {
+                        emit(r, first, last, &mut values, &mut notes);
+                    }
+                    emit(start..end, k, k, &mut values, &mut notes);
+                    if let Some(c) = values.last_mut() {
+                        c.children.push(Cand::new(
+                            start + used..end,
+                            rule.kind,
+                            PartTag::Code(u32::from(rule.offsets)),
+                            Disposition::Dropped,
+                            format!("after the {used} bytes of rows the decoder reads"),
+                        ));
+                    }
+                    continue;
+                }
                 run = match run {
-                    Some((r, first, last)) if r.end == start && last + 1 == k => Some((r.start..end, first, k)),
+                    Some((r, first, last)) if r.end == start && last + 1 == k => {
+                        Some((r.start..end, first, k))
+                    }
                     other => {
                         if let Some((r, first, last)) = other {
                             emit(r, first, last, &mut values, &mut notes);
@@ -1036,7 +1210,13 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
         for n in &ifd.notes {
             push_note(&mut detail, &format!("next IFD: {n}"));
         }
-        let mut c = Cand::new(ifd.at..ifd.end, PartKind::Ifd, PartTag::None, fate.d, detail);
+        let mut c = Cand::new(
+            ifd.at..ifd.end,
+            PartKind::Ifd,
+            PartTag::None,
+            fate.d,
+            detail,
+        );
         logical_end = logical_end.max(ifd.end);
         if ifd.problem.is_some() {
             logical_end = limit;
@@ -1047,7 +1227,12 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
             } else {
                 rules.entry(w, ifd, ei)
             };
-            let mut detail = format!("{} {}[{}]", tag_name(ifd.kind, e.tag), type_name(e.typ), e.count);
+            let mut detail = format!(
+                "{} {}[{}]",
+                tag_name(ifd.kind, e.tag),
+                type_name(e.typ),
+                e.count
+            );
             if let Some(n) = &fate.note {
                 push_note(&mut detail, n);
             }
@@ -1077,7 +1262,11 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
 // ── Emission ───────────────────────────────────────────────────────────
 
 /// Push `c` (and its children) under `parent`.
-pub(super) fn emit(inv: &mut Inventory, parent: Option<PartId>, c: Cand) -> Result<(), InventoryError> {
+pub(super) fn emit(
+    inv: &mut Inventory,
+    parent: Option<PartId>,
+    c: Cand,
+) -> Result<(), InventoryError> {
     let mut p = Part::new(c.kind, c.tag, c.range, c.disp);
     if let Some(l) = c.label {
         p = p.with_label(l);
@@ -1115,15 +1304,23 @@ pub(super) fn emit_top(
         let mut part = Part::new(PartKind::Gap, PartTag::None, r.start..end, gap.0);
         if let Some(d) = &gap.1 {
             part = part.with_detail(d.clone());
-        } else if gap.0 == Disposition::Unreferenced && end - r.start == 1 && r.start % 2 == 1 && end < logical_end {
+        } else if gap.0 == Disposition::Unreferenced
+            && end - r.start == 1
+            && r.start % 2 == 1
+            && end < logical_end
+        {
             let byte = get(data, r.start, 1).map_or(0, |b| b[0]);
-            part = Part::new(PartKind::Gap, PartTag::None, r.start..end, Disposition::Padding).with_detail(
-                if byte == 0 {
-                    "word-alignment pad byte"
-                } else {
-                    "word-alignment pad byte (non-zero)"
-                },
-            );
+            part = Part::new(
+                PartKind::Gap,
+                PartTag::None,
+                r.start..end,
+                Disposition::Padding,
+            )
+            .with_detail(if byte == 0 {
+                "word-alignment pad byte"
+            } else {
+                "word-alignment pad byte (non-zero)"
+            });
         }
         inv.push(None, part)?;
         Ok(())

@@ -28,13 +28,20 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 use zencodec::ImageFormat;
-use zencodec::inventory::{Disposition, Inventory, InventoryError, MetadataKind, PartKind, PartTag};
+use zencodec::inventory::{
+    Disposition, Inventory, InventoryError, MetadataKind, PartKind, PartTag,
+};
 
 use tags::tag_known;
 use tiff_walk::{
-    Cand, Count, Entry, ExtentRule, Fate, GPS_IFD, Ifd, Kind, Placed, Rules, STRIP_OFFSETS, TILE_OFFSETS,
-    Walk, emit_top, get, place, walk,
+    Cand, Count, Entry, ExtentRule, Fate, GPS_IFD, Ifd, Kind, Placed, Rules, STRIP_OFFSETS,
+    TILE_OFFSETS, Walk, emit_top, get, place, uncompressed_sizes, walk,
 };
+
+/// Whether the zencodec path decodes with rawler (`rawler` feature) instead
+/// of rawloader. rawler keeps every tag of the IFDs it walks, so those
+/// entries are all `Structure` in such builds.
+const RAWLER: bool = cfg!(feature = "rawler");
 
 const NEW_SUBFILE_TYPE: u16 = 254;
 const COMPRESSION: u16 = 259;
@@ -101,6 +108,8 @@ struct RawRules {
     orientation_ifd: Option<u64>,
     /// Whether the build surfaces XMP (`xmp` feature).
     xmp: bool,
+    /// Whether the file is a DNG (uncompressed strip sizes are then exact).
+    dng: bool,
 }
 
 impl RawRules {
@@ -119,18 +128,44 @@ impl Rules for RawRules {
         matches!(magic, 0x4F52 | 0x5352 | 0x0055)
     }
 
-    fn header_extension(&self, w: &Walk<'_>) -> Option<(u64, &'static str)> {
-        (self.role == Role::Main && !w.lay.big && get(w.d, w.base + 8, 2) == Some(b"CR"))
-            .then_some((8, "CR2 header: version and raw IFD offset"))
+    fn header_extension(&self, w: &Walk<'_>) -> Option<(u64, Fate)> {
+        if self.role != Role::Main || w.lay.big || get(w.d, w.base + 8, 2) != Some(b"CR") {
+            return None;
+        }
+        let fate = if RAWLER {
+            Fate::because(
+                Disposition::Structure,
+                "CR2 header extension: version and raw IFD offset",
+            )
+        } else {
+            Fate::because(
+                Disposition::Skipped,
+                "CR2 header extension: version and raw IFD offset; rawloader finds the raw IFD by tag",
+            )
+        };
+        Some((8, fate))
+    }
+
+    fn chunk_sizes(&self, w: &Walk<'_>, ifd: &Ifd, tiles: bool, chunks: usize) -> Option<Vec<u64>> {
+        // Only DNG's uncompressed layout is standard; vendor RAWs pack rows
+        // their own way.
+        if self.dng {
+            uncompressed_sizes(w, ifd, tiles, chunks)
+        } else {
+            None
+        }
     }
 
     fn pointer(&self, kind: Kind, e: &Entry) -> Option<(Kind, &'static str)> {
         match (e.tag, kind) {
-            (RAF_RAW_SUB_IFD | KODAK_IFD | KDC_IFD, Kind::Page(_) | Kind::Sub) => Some((Kind::Sub, "sub-IFD")),
+            (RAF_RAW_SUB_IFD | KODAK_IFD | KDC_IFD, Kind::Page(_) | Kind::Sub) => {
+                Some((Kind::Sub, "sub-IFD"))
+            }
             // Sony stores a pointer to its SR2Private IFD in DNGPrivateData
             // (a single LONG); DNGs store maker data bytes there instead.
             (DNG_PRIVATE_DATA, Kind::Page(_) | Kind::Sub)
-                if (e.count == 1 && matches!(e.typ, 4 | 13)) || (e.count == 4 && matches!(e.typ, 1 | 7)) =>
+                if (e.count == 1 && matches!(e.typ, 4 | 13))
+                    || (e.count == 4 && matches!(e.typ, 1 | 7)) =>
             {
                 Some((Kind::Sub, "SR2Private IFD"))
             }
@@ -162,9 +197,11 @@ impl Rules for RawRules {
     }
 
     fn follows_next(&self, ifd: &Ifd) -> bool {
-        // `TiffIFD::new_root` walks the main chain (up to 100 IFDs); sub-IFD
-        // next pointers are read but never followed.
-        matches!(ifd.kind, Kind::Page(n) if n < 100)
+        // rawloader's `TiffIFD::new_root` walks the main chain up to 100 IFDs,
+        // rawler's `IFD::new_root` up to 10; sub-IFD next pointers are read
+        // but never followed.
+        let max = if RAWLER { 10 } else { 100 };
+        matches!(ifd.kind, Kind::Page(n) if n < max)
     }
 
     fn ifd(&self, _w: &Walk<'_>, ifd: &Ifd) -> Fate {
@@ -174,7 +211,7 @@ impl Rules for RawRules {
         let why = match ifd.kind {
             Kind::Gps => "rawloader does not walk GPS IFDs; zenraw reports no GPS",
             Kind::Interop => "rawloader does not walk Interop IFDs",
-            Kind::Page(_) => "past rawloader's 100-IFD chain limit",
+            Kind::Page(_) => "past the backend's IFD chain limit",
             _ => "not walked by rawloader",
         };
         Fate::because(Disposition::Skipped, why)
@@ -185,12 +222,18 @@ impl Rules for RawRules {
             return Fate::new(Disposition::Malformed);
         };
         if !ifd.followed {
-            return self.unread(ifd.kind, e.tag, "in a directory rawloader does not walk");
+            return self.unread(ifd.kind, e.tag, "in a directory the decoder does not walk");
+        }
+        if e.tag == ORIENTATION && self.orientation_ifd == Some(ifd.at) {
+            return Fate::new(Disposition::Metadata(MetadataKind::Orientation));
+        }
+        if RAWLER {
+            return Fate::because(
+                Disposition::Structure,
+                "parsed by rawler, which keeps every tag of the IFDs it walks; its decoders read what they need",
+            );
         }
         match e.tag {
-            ORIENTATION if self.orientation_ifd == Some(ifd.at) => {
-                Fate::new(Disposition::Metadata(MetadataKind::Orientation))
-            }
             // rawloader parses the entry (Xmp is one of its tags) but never
             // reads the value; zenraw's XMP comes from a byte scan.
             XMP if self.xmp => Fate::because(
@@ -203,10 +246,16 @@ impl Rules for RawRules {
             ),
             MAKER_NOTE => Fate::because(
                 Disposition::Structure,
-                "parsed by rawloader as a maker-note IFD; camera decoders read white balance, levels and keys from it",
+                "parsed by rawloader as a maker-note IFD; camera decoders read white balance, levels and keys from it; bytes it never reads inside are not split out",
             ),
-            GPS_IFD => Fate::because(Disposition::Skipped, "GPS IFD pointer; rawloader does not follow it"),
-            tag if rawloader_knows(tag) => Fate::because(Disposition::Structure, "parsed by rawloader (raw layout, camera parameters)"),
+            GPS_IFD => Fate::because(
+                Disposition::Skipped,
+                "GPS IFD pointer; rawloader does not follow it",
+            ),
+            tag if rawloader_knows(tag) => Fate::because(
+                Disposition::Structure,
+                "parsed by rawloader (raw layout, camera parameters)",
+            ),
             tag if ifd.kind == Kind::Exif => self.unread(
                 ifd.kind,
                 tag,
@@ -218,6 +267,10 @@ impl Rules for RawRules {
 
     fn value(&self, w: &Walk<'_>, ifd: &Ifd, index: usize) -> Fate {
         match ifd.entries.get(index) {
+            Some(e) if e.tag == XMP && ifd.followed && RAWLER => Fate::because(
+                Disposition::Dropped,
+                "rawler reads it but nothing uses it; zenraw's XMP comes from a byte scan",
+            ),
             Some(e) if e.tag == XMP && ifd.followed => Fate::because(
                 Disposition::Skipped,
                 if self.xmp {
@@ -234,7 +287,10 @@ impl Rules for RawRules {
         if self.raw_ifd == Some(ifd.at) {
             Fate::because(Disposition::ImageData, "raw sensor data rawloader decodes")
         } else {
-            Fate::because(Disposition::Skipped, "preview or thumbnail image, not decoded")
+            Fate::because(
+                Disposition::Skipped,
+                "preview or thumbnail image, not decoded",
+            )
         }
     }
 
@@ -289,8 +345,12 @@ impl Rules for RawRules {
 /// `(w*row*9 + w/14*2*row)/8`, and the bit pump loads whole 0x4000-byte
 /// blocks.
 fn rw2_raw_len(w: &Walk<'_>, ifd: &Ifd) -> Option<u64> {
-    let width = w.find(ifd, 0x0002).and_then(|e| w.uints(e, 1).first().copied())?;
-    let height = w.find(ifd, 0x0003).and_then(|e| w.uints(e, 1).first().copied())?;
+    let width = w
+        .find(ifd, 0x0002)
+        .and_then(|e| w.uints(e, 1).first().copied())?;
+    let height = w
+        .find(ifd, 0x0003)
+        .and_then(|e| w.uints(e, 1).first().copied())?;
     let bits = width
         .checked_mul(height)?
         .checked_mul(9)?
@@ -368,7 +428,9 @@ fn pick_raw_ifd(w: &Walk<'_>) -> Option<u64> {
             .copied()
             .find(|&i| {
                 let ifd = &w.ifds[i];
-                let compression = w.find(ifd, COMPRESSION).and_then(|e| w.uints(e, 1).first().copied());
+                let compression = w
+                    .find(ifd, COMPRESSION)
+                    .and_then(|e| w.uints(e, 1).first().copied());
                 let reduced = w
                     .find(ifd, NEW_SUBFILE_TYPE)
                     .and_then(|e| w.uints(e, 1).first().copied())
@@ -393,14 +455,23 @@ fn pick_raw_ifd(w: &Walk<'_>) -> Option<u64> {
 }
 
 /// Walk and place one TIFF of the file.
-fn place_tiff(data: &[u8], base: u64, limit: u64, role: Role, xmp: bool, first: Vec<Cand>) -> (Vec<Cand>, u64, bool, Option<String>) {
+fn place_tiff(
+    data: &[u8],
+    base: u64,
+    limit: u64,
+    role: Role,
+    xmp: bool,
+    first: Vec<Cand>,
+) -> (Vec<Cand>, u64, bool, Option<String>) {
     let mut rules = RawRules {
         role,
         raw_ifd: None,
         orientation_ifd: None,
         xmp,
+        dng: false,
     };
     let mut w = walk(data, base, limit, &rules);
+    rules.dng = w.ifds.iter().any(|ifd| w.find(ifd, DNG_VERSION).is_some());
     if role != Role::RafJpegExif {
         rules.raw_ifd = pick_raw_ifd(&w);
     }
@@ -496,28 +567,78 @@ fn raf(data: &[u8], xmp: bool) -> Placement {
     if let Some(c) = xmp_cand(data) {
         placed.insert(c);
     }
-    let (Some(jpeg_off), Some(jpeg_len), Some(hdr_off), Some(hdr_len), Some(cfa_off), Some(cfa_len)) = (
+    let (
+        Some(jpeg_off),
+        Some(jpeg_len),
+        Some(hdr_off),
+        Some(hdr_len),
+        Some(cfa_off),
+        Some(cfa_len),
+    ) = (
         be32(data, 84),
         be32(data, 88),
         be32(data, 92),
         be32(data, 96),
         be32(data, 100),
         be32(data, 104),
-    ) else {
-        let mut h = Cand::new(0..len, PartKind::Header, PartTag::None, Disposition::Malformed, "truncated RAF header".into());
+    )
+    else {
+        let mut h = Cand::new(
+            0..len,
+            PartKind::Header,
+            PartTag::None,
+            Disposition::Malformed,
+            "truncated RAF header".into(),
+        );
         h.label = Some(String::from("FUJIFILM"));
         placed.insert(h);
         return (placed.into_sorted(), len, (Disposition::Malformed, None));
     };
-    let header_end = if (108..=4096).contains(&jpeg_off) { jpeg_off.min(len) } else { 108 };
+    let header_end = if (108..=4096).contains(&jpeg_off) {
+        jpeg_off.min(len)
+    } else {
+        108
+    };
     let mut h = Cand::new(
         0..header_end,
         PartKind::Header,
         PartTag::None,
         Disposition::Structure,
-        "RAF header: magic, version, camera ID, section offsets (rawloader reads the JPEG, CFA-header and CFA offsets)".into(),
+        "RAF header".into(),
     );
-    h.label = Some(String::from_utf8_lossy(&data[..16.min(data.len())]).trim_end().into());
+    h.label = Some(
+        String::from_utf8_lossy(&data[..16.min(data.len())])
+            .trim_end()
+            .into(),
+    );
+    // rawloader checks the magic and reads three section offsets; the
+    // version, camera ID and other fields are never read.
+    let (unread, why) = if RAWLER {
+        (
+            Disposition::Structure,
+            "version, camera ID and other header fields, parsed by rawler",
+        )
+    } else {
+        (
+            Disposition::Skipped,
+            "version, camera ID and other header fields; rawloader does not read them",
+        )
+    };
+    for (r, d, what) in [
+        (0..8, Disposition::Structure, "magic"),
+        (8..84, unread, why),
+        (
+            84..108,
+            Disposition::Structure,
+            "JPEG, CFA-header and CFA offsets and lengths",
+        ),
+        (108..header_end, unread, why),
+    ] {
+        if r.start < r.end && r.end <= header_end {
+            h.children
+                .push(Cand::new(r, PartKind::Field, PartTag::None, d, what.into()));
+        }
+    }
     placed.insert(h);
     let mut logical_end = header_end;
 
@@ -535,7 +656,14 @@ fn raf(data: &[u8], xmp: bool) -> Placement {
             && get(data, r.start + 6, 6) == Some(b"Exif\0\0")
         {
             let app1_end = be16(data, r.start + 4).map_or(r.end, |n| (r.start + 4 + n).min(r.end));
-            let (parts, _, _, _) = place_tiff(data, r.start + 12, app1_end, Role::RafJpegExif, xmp, Vec::new());
+            let (parts, _, _, _) = place_tiff(
+                data,
+                r.start + 12,
+                app1_end,
+                Role::RafJpegExif,
+                xmp,
+                Vec::new(),
+            );
             c.children = parts;
         }
         placed.insert(c);
@@ -551,7 +679,11 @@ fn raf(data: &[u8], xmp: bool) -> Placement {
             r.clone(),
             PartKind::Chunk,
             PartTag::None,
-            if cut { Disposition::Malformed } else { Disposition::Structure },
+            if cut {
+                Disposition::Malformed
+            } else {
+                Disposition::Structure
+            },
             "RAF CFA section".into(),
         );
         if is_tiff {
@@ -563,10 +695,17 @@ fn raf(data: &[u8], xmp: bool) -> Placement {
         }
         placed.insert(c);
     }
-    if cfa_off.saturating_add(cfa_len) > len || hdr_off.saturating_add(hdr_len) > len || jpeg_off.saturating_add(jpeg_len) > len {
+    if cfa_off.saturating_add(cfa_len) > len
+        || hdr_off.saturating_add(hdr_len) > len
+        || jpeg_off.saturating_add(jpeg_len) > len
+    {
         logical_end = len;
     }
-    (placed.into_sorted(), logical_end, (Disposition::Unreferenced, None))
+    (
+        placed.into_sorted(),
+        logical_end,
+        (Disposition::Unreferenced, None),
+    )
 }
 
 /// RAF CFA header: a big-endian record count, then `tag:u16 len:u16 data`
@@ -577,7 +716,11 @@ fn raf_cfa_header(data: &[u8], r: Range<u64>, cut: bool) -> Cand {
         r.clone(),
         PartKind::Ifd,
         PartTag::None,
-        if cut { Disposition::Malformed } else { Disposition::Structure },
+        if cut {
+            Disposition::Malformed
+        } else {
+            Disposition::Structure
+        },
         "RAF CFA header records".into(),
     );
     let d = &data[..r.end as usize];
@@ -596,14 +739,24 @@ fn raf_cfa_header(data: &[u8], r: Range<u64>, cut: bool) -> Cand {
             break;
         }
         let fate = match tag {
+            _ if RAWLER => Fate::because(Disposition::Structure, "read by rawler"),
             0x100 | 0x2FF0 => Fate::because(Disposition::Structure, "read by rawloader"),
-            _ => Fate::because(Disposition::Skipped, "rawloader reads only ImageWidth and RafOldWB here"),
+            _ => Fate::because(
+                Disposition::Skipped,
+                "rawloader reads only ImageWidth and RafOldWB here",
+            ),
         };
         let mut detail = format!("record {i}, {n} bytes");
         if let Some(note) = fate.note {
             tiff_walk::push_note(&mut detail, &note);
         }
-        c.children.push(Cand::new(at..end, PartKind::Field, PartTag::Code(tag as u32), fate.d, detail));
+        c.children.push(Cand::new(
+            at..end,
+            PartKind::Field,
+            PartTag::Code(tag as u32),
+            fate.d,
+            detail,
+        ));
         at = end;
     }
     c
@@ -611,7 +764,10 @@ fn raf_cfa_header(data: &[u8], r: Range<u64>, cut: bool) -> Cand {
 
 /// ISOBMFF container boxes the CR3 walk recurses into.
 fn is_container(fourcc: &[u8; 4]) -> bool {
-    matches!(fourcc, b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"dinf" | b"edts")
+    matches!(
+        fourcc,
+        b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"dinf" | b"edts"
+    )
 }
 
 /// CR3 (ISOBMFF): every box, recursing into containers and Canon's `uuid`.
@@ -630,17 +786,34 @@ fn cr3(data: &[u8]) -> Placement {
                 placed.insert(c);
             }
             None => {
-                placed.insert(Cand::new(at..len, PartKind::Gap, PartTag::None, Disposition::Malformed, "box header runs past the end of the file".into()));
+                placed.insert(Cand::new(
+                    at..len,
+                    PartKind::Gap,
+                    PartTag::None,
+                    Disposition::Malformed,
+                    "box header runs past the end of the file".into(),
+                ));
                 logical_end = len;
                 break;
             }
         }
     }
-    (placed.into_sorted(), logical_end, (Disposition::Unreferenced, None))
+    (
+        placed.into_sorted(),
+        logical_end,
+        (Disposition::Unreferenced, None),
+    )
 }
 
 /// One box at `at` within `end`, with its children.
-fn cr3_box(data: &[u8], at: u64, end: u64, rawler: bool, depth: u32, budget: &mut usize) -> Option<Cand> {
+fn cr3_box(
+    data: &[u8],
+    at: u64,
+    end: u64,
+    rawler: bool,
+    depth: u32,
+    budget: &mut usize,
+) -> Option<Cand> {
     let size32 = be32(data, at)?;
     let fourcc: [u8; 4] = get(data, at + 4, 4)?.try_into().ok()?;
     let (header, size) = match size32 {
@@ -651,7 +824,11 @@ fn cr3_box(data: &[u8], at: u64, end: u64, rawler: bool, depth: u32, budget: &mu
         }
         n => (8, n),
     };
-    let header = if &fourcc == b"uuid" { header + 16 } else { header };
+    let header = if &fourcc == b"uuid" {
+        header + 16
+    } else {
+        header
+    };
     if size < header {
         return None;
     }
@@ -660,9 +837,19 @@ fn cr3_box(data: &[u8], at: u64, end: u64, rawler: bool, depth: u32, budget: &mu
     let box_end = box_end.min(end);
     *budget = budget.saturating_sub(1);
     let (disp, note): (Disposition, &str) = match (&fourcc, rawler) {
-        (b"ftyp", _) => (Disposition::Structure, "brand checked by zenraw's format detection"),
-        (b"free" | b"skip", _) => (Disposition::Padding, "free space"),
-        (b"mdat", true) => (Disposition::ImageData, "holds the CRX raw track rawler decodes, plus preview tracks"),
+        (b"ftyp", _) => (
+            Disposition::Structure,
+            "brand checked by zenraw's format detection",
+        ),
+        (b"free" | b"skip", false) => (Disposition::Padding, "free space"),
+        (b"free" | b"skip", true) => (
+            Disposition::Structure,
+            "box header parsed by rawler; the payload is free space",
+        ),
+        (b"mdat", true) => (
+            Disposition::ImageData,
+            "holds the CRX raw track rawler decodes, plus preview tracks it does not; track extents are not split out",
+        ),
         (_, true) => (Disposition::Structure, "parsed by rawler"),
         (_, false) => (
             Disposition::Skipped,
@@ -670,9 +857,24 @@ fn cr3_box(data: &[u8], at: u64, end: u64, rawler: bool, depth: u32, budget: &mu
         ),
     };
     let disp = if cut { Disposition::Malformed } else { disp };
-    let mut c = Cand::new(at..box_end, PartKind::Box, PartTag::FourCc(fourcc), disp, note.into());
+    let mut c = Cand::new(
+        at..box_end,
+        PartKind::Box,
+        PartTag::FourCc(fourcc),
+        disp,
+        note.into(),
+    );
     if cut {
         c.note("box runs past the end of its parent");
+    }
+    if rawler && matches!(&fourcc, b"free" | b"skip") && at + header < box_end {
+        c.children.push(Cand::new(
+            at + header..box_end,
+            PartKind::Gap,
+            PartTag::None,
+            Disposition::Padding,
+            "free space".into(),
+        ));
     }
     let recurse = is_container(&fourcc)
         || (&fourcc == b"uuid" && get(data, at + header - 16, 16) == Some(&CANON_UUID[..]));
