@@ -37,7 +37,7 @@ fn check_inventory(data: &[u8]) -> Result<(), String> {
     if !inv
         .parts()
         .iter()
-        .any(|p| p.disposition == Disposition::ImageData)
+        .any(|p| p.disposition() == Disposition::ImageData)
     {
         return Err(format!("no part is attributed to image data\n{inv}"));
     }
@@ -53,7 +53,7 @@ fn raf_fixture_passes_check_inventory() {
     assert!(
         inv.parts()
             .iter()
-            .any(|p| p.disposition == Disposition::ImageData && p.tag == PartTag::Code(0xF007)),
+            .any(|p| p.disposition() == Disposition::ImageData && *p.tag() == PartTag::Code(0xF007)),
         "{inv}"
     );
     // The EXIF TIFF inside the JPEG preview is walked: its orientation is
@@ -61,14 +61,14 @@ fn raf_fixture_passes_check_inventory() {
     let orientation = inv
         .parts()
         .iter()
-        .find(|p| p.tag == PartTag::Code(274))
+        .find(|p| *p.tag() == PartTag::Code(274))
         .unwrap_or_else(|| panic!("{inv}"));
     let expected = if cfg!(feature = "rawler") {
         Disposition::Dropped
     } else {
         Disposition::Metadata(MetadataKind::Orientation)
     };
-    assert_eq!(orientation.disposition, expected, "{inv}");
+    assert_eq!(orientation.disposition(), expected, "{inv}");
 }
 
 #[test]
@@ -79,8 +79,8 @@ fn cr3_fixture_inventory_is_valid() {
     let boxes: Vec<_> = inv
         .parts()
         .iter()
-        .filter(|p| p.kind == PartKind::Box)
-        .map(|p| p.tag.to_string())
+        .filter(|p| p.kind() == PartKind::Box)
+        .map(|p| p.tag().to_string())
         .collect();
     // rawler seeks past dinf; rawloader builds enumerate its dref.
     let mut expected = vec![
@@ -100,7 +100,7 @@ fn cr3_fixture_inventory_is_valid() {
         assert!(
             !inv.parts()
                 .iter()
-                .any(|p| p.disposition == Disposition::ImageData)
+                .any(|p| p.disposition() == Disposition::ImageData)
         );
     }
 }
@@ -114,21 +114,21 @@ fn raf_slack_is_unreferenced_and_lengths_unread() {
     inv.validate().unwrap();
     for at in [hdr_slack, mid, tail] {
         assert_eq!(
-            leaf_at(&inv, at).disposition,
+            leaf_at(&inv, at).disposition(),
             Disposition::Unreferenced,
             "{at}: {inv}"
         );
     }
     for at in [88, 96, 104] {
         assert_eq!(
-            leaf_at(&inv, at).disposition,
+            leaf_at(&inv, at).disposition(),
             Disposition::Skipped,
             "{at}: {inv}"
         );
     }
     for at in [84, 92, 100] {
         assert_eq!(
-            leaf_at(&inv, at).disposition,
+            leaf_at(&inv, at).disposition(),
             Disposition::Structure,
             "{at}: {inv}"
         );
@@ -144,9 +144,9 @@ fn raf_raw_length_follows_the_backend() {
     let raw = inv
         .parts()
         .iter()
-        .find(|p| p.tag == PartTag::Code(0xF007) && p.disposition == Disposition::ImageData)
+        .find(|p| *p.tag() == PartTag::Code(0xF007) && p.disposition() == Disposition::ImageData)
         .unwrap_or_else(|| panic!("{inv}"))
-        .range
+        .range()
         .clone();
     let f008 = data
         .windows(4)
@@ -165,9 +165,9 @@ fn raf_raw_length_follows_the_backend() {
     let r = inv
         .parts()
         .iter()
-        .find(|p| p.tag == PartTag::Code(0xF007) && p.disposition == Disposition::ImageData)
+        .find(|p| *p.tag() == PartTag::Code(0xF007) && p.disposition() == Disposition::ImageData)
         .unwrap_or_else(|| panic!("{inv}"))
-        .range
+        .range()
         .clone();
     assert_eq!((r.start, r.end - r.start), (raw.start, expected), "{inv}");
 }
@@ -181,8 +181,8 @@ fn raw_ifd_follows_the_make() {
         let (data, thumb, raw) = make_order_fixture(make);
         let inv = inventory(&data);
         inv.validate().unwrap();
-        let t = leaf_at(&inv, u64::from(thumb)).disposition;
-        let r = leaf_at(&inv, u64::from(raw)).disposition;
+        let t = leaf_at(&inv, u64::from(thumb)).disposition();
+        let r = leaf_at(&inv, u64::from(raw)).disposition();
         if first_strip_is_raw {
             assert_eq!(
                 (t, r),
@@ -209,17 +209,17 @@ fn rawler_skips_cr3_boxes_it_does_not_parse() {
     inv.validate().unwrap();
     let inner = (24 + 8 + 28 + 8) as u64;
     assert_eq!(
-        leaf_at(&inv, inner).disposition,
+        leaf_at(&inv, inner).disposition(),
         Disposition::Skipped,
         "{inv}"
     );
     assert_eq!(
-        leaf_at(&inv, top + 8).disposition,
+        leaf_at(&inv, top + 8).disposition(),
         Disposition::Skipped,
         "{inv}"
     );
     assert_eq!(
-        leaf_at(&inv, top).disposition,
+        leaf_at(&inv, top).disposition(),
         Disposition::Structure,
         "{inv}"
     );
@@ -235,12 +235,12 @@ fn rawler_cr3_xmp_uuid_packet_is_metadata() {
     inv.validate().unwrap();
     let p = leaf_at(&inv, at);
     assert_eq!(
-        p.disposition,
+        p.disposition(),
         Disposition::Metadata(MetadataKind::Xmp),
         "{inv}"
     );
     assert_eq!(
-        p.range.end - p.range.start,
+        p.range().end - p.range().start,
         XMP_PACKET.len() as u64,
         "{inv}"
     );

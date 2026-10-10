@@ -128,12 +128,12 @@ fn rows(inv: &Inventory) -> Vec<Row> {
         for id in inv.children(parent) {
             let p = inv.get(id).unwrap();
             out.push((
-                p.kind,
-                p.tag.clone(),
-                p.range.start,
-                p.range.end,
-                p.disposition,
-                p.label.as_ref().map(|l| l.to_string()),
+                p.kind(),
+                p.tag().clone(),
+                p.range().start,
+                p.range().end,
+                p.disposition(),
+                p.label().as_ref().map(|l| l.to_string()),
                 depth,
             ));
             walk(inv, Some(id), depth + 1, out);
@@ -349,7 +349,7 @@ fn decode_summary(data: &[u8]) -> Result<Summary, String> {
 
 fn unread(p: &Part) -> bool {
     matches!(
-        p.disposition,
+        p.disposition(),
         Disposition::Skipped
             | Disposition::Unknown
             | Disposition::Unreferenced
@@ -362,7 +362,7 @@ fn unread(p: &Part) -> bool {
 /// (EXIF and GPS values in rawler builds, the XMP entry) cannot turn valid
 /// under a mutation.
 fn unread_or_dropped(p: &Part) -> bool {
-    unread(p) || p.disposition == Disposition::Dropped
+    unread(p) || p.disposition() == Disposition::Dropped
 }
 
 /// Byte ranges to XOR for each part the inventory marks never read: whole
@@ -376,8 +376,8 @@ fn mutation_targets(
     let parts = inv.parts();
     let mut consumed_below = vec![false; parts.len()];
     for i in (0..parts.len()).rev() {
-        if let Some(par) = parts[i].parent
-            && (parts[i].disposition.is_consumed() || consumed_below[i])
+        if let Some(par) = parts[i].parent()
+            && (parts[i].disposition().is_consumed() || consumed_below[i])
         {
             consumed_below[par.index()] = true;
         }
@@ -388,26 +388,26 @@ fn mutation_targets(
         if !unread(p) {
             continue;
         }
-        if let Some(par) = p.parent
+        if let Some(par) = p.parent()
             && target(par.index())
         {
             continue;
         }
         let what = format!(
             "{} {}..{} {} ({})",
-            p.kind.name(),
-            p.range.start,
-            p.range.end,
-            p.disposition,
-            p.detail.as_deref().unwrap_or("")
+            p.kind().name(),
+            p.range().start,
+            p.range().end,
+            p.disposition(),
+            p.detail().unwrap_or("")
         );
         if consumed_below[i] {
             // Only the bytes no child covers.
-            let mut cursor = p.range.start;
+            let mut cursor = p.range().start;
             let mut kids: Vec<_> = parts
                 .iter()
-                .filter(|c| c.parent.is_some_and(|id| id.index() == i))
-                .map(|c| c.range.clone())
+                .filter(|c| c.parent().is_some_and(|id| id.index() == i))
+                .map(|c| c.range())
                 .collect();
             kids.sort_by_key(|r| r.start);
             for r in kids {
@@ -416,24 +416,24 @@ fn mutation_targets(
                 }
                 cursor = cursor.max(r.end);
             }
-            if cursor < p.range.end {
-                out.push((cursor..p.range.end, format!("uncovered bytes of {what}")));
+            if cursor < p.range().end {
+                out.push((cursor..p.range().end, format!("uncovered bytes of {what}")));
             }
             continue;
         }
-        let entry = p.kind == PartKind::Field
-            && p.parent
-                .is_some_and(|id| parts[id.index()].kind == PartKind::Ifd);
+        let entry = p.kind() == PartKind::Field
+            && p.parent()
+                .is_some_and(|id| parts[id.index()].kind() == PartKind::Ifd);
         // A dropped entry is parsed: both backends slice its value from the
         // count and offset, so corrupting them can fail the parse. Only
         // dropped values are mutated.
-        if entry && p.disposition == Disposition::Dropped {
+        if entry && p.disposition() == Disposition::Dropped {
             continue;
         }
         let r = if entry {
-            p.range.start + 4..p.range.end
+            p.range().start + 4..p.range().end
         } else {
-            p.range.clone()
+            p.range()
         };
         out.push((r, what));
     }
@@ -480,10 +480,10 @@ fn unread_parts_do_not_influence_decode_fixture() {
     let raw = inv
         .parts()
         .iter()
-        .find(|p| p.disposition == Disposition::ImageData)
+        .find(|p| p.disposition() == Disposition::ImageData)
         .unwrap();
     let mut mutated = data.clone();
-    for b in &mut mutated[raw.range.start as usize..raw.range.end as usize] {
+    for b in &mut mutated[raw.range().start as usize..raw.range().end as usize] {
         *b ^= 0x5A;
     }
     assert_ne!(decode_summary(&mutated), decode_summary(&data));
@@ -535,18 +535,18 @@ fn mutate_read(name: &str, data: &[u8], per_file: usize) -> Option<(usize, usize
     let parts = inv.parts();
     let mut has_child = vec![false; parts.len()];
     for p in parts {
-        if let Some(id) = p.parent {
+        if let Some(id) = p.parent() {
             has_child[id.index()] = true;
         }
     }
     let leaves: Vec<&Part> = parts
         .iter()
         .enumerate()
-        .filter(|&(i, p)| p.disposition.is_consumed() && !has_child[i])
+        .filter(|&(i, p)| p.disposition().is_consumed() && !has_child[i])
         .map(|(_, p)| p)
         .collect();
     let explained = |p: &Part| {
-        let d = p.detail.as_deref().unwrap_or("");
+        let d = p.detail().unwrap_or("");
         EXPLAINED.iter().any(|x| d.contains(x))
     };
     let exempt = leaves.iter().filter(|p| explained(p)).count();
@@ -556,19 +556,19 @@ fn mutate_read(name: &str, data: &[u8], per_file: usize) -> Option<(usize, usize
     let mut n = 0;
     for p in targets.into_iter().step_by(step) {
         // IFD entries (12 bytes) in their value field; RAF records whole.
-        let entry = p.kind == PartKind::Field
+        let entry = p.kind() == PartKind::Field
             && p.len() == 12
-            && p.parent.is_some_and(|id| {
-                parts[id.index()].kind == PartKind::Ifd
+            && p.parent().is_some_and(|id| {
+                parts[id.index()].kind() == PartKind::Ifd
                     && !parts[id.index()]
-                        .detail
+                        .detail()
                         .as_deref()
                         .is_some_and(|d| d.starts_with("RAF CFA header"))
             });
         let (s, e) = if entry {
-            (p.range.start + 8, p.range.end)
+            (p.range().start + 8, p.range().end)
         } else {
-            (p.range.start, p.range.end)
+            (p.range().start, p.range().end)
         };
         n += 1;
         // Whole-range masks, then single bytes (both ends, and the second
@@ -605,9 +605,9 @@ fn mutate_read(name: &str, data: &[u8], per_file: usize) -> Option<(usize, usize
         {
             failures.push(format!(
                 "{name}: {} {s}..{e} {} ({}) left the decode unchanged",
-                p.kind.name(),
-                p.disposition,
-                p.detail.as_deref().unwrap_or("")
+                p.kind().name(),
+                p.disposition(),
+                p.detail().unwrap_or("")
             ));
         }
     }
@@ -788,21 +788,21 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
     // of the stream holding it (a RAF's JPEG preview): try the file start,
     // every TIFF header and every part enclosing one.
     let mut headers: Vec<(u64, bool)> = vec![(0, false)];
-    for p in parts.iter().filter(|p| p.kind == PartKind::Header) {
-        let big = match p.detail.as_deref() {
+    for p in parts.iter().filter(|p| p.kind() == PartKind::Header) {
+        let big = match p.detail() {
             Some(d) if d.starts_with("TIFF header") => false,
             Some(d) if d.starts_with("BigTIFF header") => true,
             _ => continue,
         };
-        headers.push((p.range.start, big));
-        let mut up = p.parent;
+        headers.push((p.range().start, big));
+        let mut up = p.parent();
         while let Some(id) = up {
-            headers.push((parts[id.index()].range.start, big));
-            up = parts[id.index()].parent;
+            headers.push((parts[id.index()].range().start, big));
+            up = parts[id.index()].parent();
         }
     }
     if parts.first().is_some_and(|p| {
-        p.detail
+        p.detail()
             .as_deref()
             .is_some_and(|d| d.starts_with("BigTIFF"))
     }) {
@@ -813,12 +813,12 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
     // Each IFD's entry tags, in file order.
     let mut entry_tags: Vec<Vec<(u64, u16)>> = vec![Vec::new(); parts.len()];
     for p in parts {
-        if let Some(id) = p.parent
-            && parts[id.index()].kind == PartKind::Ifd
-            && p.kind == PartKind::Field
-            && let PartTag::Code(c) = p.tag
+        if let Some(id) = p.parent()
+            && parts[id.index()].kind() == PartKind::Ifd
+            && p.kind() == PartKind::Field
+            && let PartTag::Code(c) = p.tag()
         {
-            entry_tags[id.index()].push((p.range.start, c as u16));
+            entry_tags[id.index()].push((p.range().start, *c as u16));
         }
     }
     for t in &mut entry_tags {
@@ -828,8 +828,8 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
     // every entry, on its tag sequence.
     let ifd_at = |at: Option<u64>, n: u64, tags: &[u16]| {
         parts.iter().enumerate().any(|(i, p)| {
-            p.kind == PartKind::Ifd
-                && at.is_none_or(|a| a == p.range.start)
+            p.kind() == PartKind::Ifd
+                && at.is_none_or(|a| a == p.range().start)
                 && entry_tags[i].len() as u64 == n
                 && (tags.len() as u64 != n
                     || entry_tags[i]
@@ -856,12 +856,14 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
                     let at = base + off;
                     if *size <= inline_cap {
                         parts.iter().any(|p| {
-                            p.parent.is_some() && p.tag == code && p.range.start + field_off == at
+                            p.parent().is_some()
+                                && *p.tag() == code
+                                && p.range().start + field_off == at
                         })
                     } else {
                         parts
                             .iter()
-                            .any(|p| p.tag == code && p.range.start == at && p.len() == *size)
+                            .any(|p| *p.tag() == code && p.range().start == at && p.len() == *size)
                     }
                 }
             }
@@ -889,9 +891,9 @@ fn oracle_compare(inv: &Inventory, units: &[OracleUnit]) -> OracleTally {
         let split = off.is_some_and(|off| {
             headers.iter().any(|&(base, _)| {
                 parts.iter().any(|p| {
-                    p.range.start <= base + off
-                        && base + off < p.range.end
-                        && p.detail.as_deref().is_some_and(|d| d.contains("overlaps"))
+                    p.range().start <= base + off
+                        && base + off < p.range().end
+                        && p.detail().is_some_and(|d| d.contains("overlaps"))
                 })
             })
         });
@@ -1041,7 +1043,7 @@ fn exif_is_advertised_but_never_surfaced() {
     assert!(
         !inv.parts()
             .iter()
-            .any(|p| p.disposition == Disposition::Metadata(MetadataKind::Exif))
+            .any(|p| p.disposition() == Disposition::Metadata(MetadataKind::Exif))
     );
 }
 
@@ -1058,36 +1060,37 @@ fn rawler_build_walks_and_drops_exif_entries() {
     inv.validate().unwrap();
     let mut seen = 0;
     for (i, p) in inv.parts().iter().enumerate() {
-        if p.kind != PartKind::Ifd {
+        if p.kind() != PartKind::Ifd {
             continue;
         }
-        let d = p.detail.as_deref().unwrap_or("");
+        let d = p.detail().unwrap_or("");
         let entries: Vec<&Part> = inv
             .parts()
             .iter()
-            .filter(|c| c.parent.is_some_and(|id| id.index() == i))
+            .filter(|c| c.parent().is_some_and(|id| id.index() == i))
             .collect();
         if d.starts_with("Interop") {
-            assert_eq!(p.disposition, Disposition::Skipped, "{inv}");
+            assert_eq!(p.disposition(), Disposition::Skipped, "{inv}");
             assert!(
-                entries.iter().all(|c| !c.disposition.is_consumed()),
+                entries.iter().all(|c| !c.disposition().is_consumed()),
                 "{inv}"
             );
         } else if d.starts_with("EXIF") || d.starts_with("GPS") {
             seen += 1;
-            assert_eq!(p.disposition, Disposition::Structure, "{inv}");
+            assert_eq!(p.disposition(), Disposition::Structure, "{inv}");
             assert!(
                 entries
                     .iter()
-                    .all(|c| c.disposition == Disposition::Dropped),
+                    .all(|c| c.disposition() == Disposition::Dropped),
                 "{inv}"
             );
         } else {
-            assert_eq!(p.disposition, Disposition::Structure, "{inv}");
+            assert_eq!(p.disposition(), Disposition::Structure, "{inv}");
             assert!(
                 entries
                     .iter()
-                    .all(|c| c.disposition.is_consumed() || c.disposition == Disposition::Dropped),
+                    .all(|c| c.disposition().is_consumed()
+                        || c.disposition() == Disposition::Dropped),
                 "{inv}"
             );
         }
@@ -1218,7 +1221,7 @@ fn overlap_and_blowup_inputs_stay_valid_and_bounded() {
     let ifds = inv
         .parts()
         .iter()
-        .filter(|p| p.kind == PartKind::Ifd)
+        .filter(|p| p.kind() == PartKind::Ifd)
         .count();
     assert!(ifds < 64, "{ifds} IFDs walked");
 }
@@ -1248,14 +1251,14 @@ fn multistrip_uncompressed_dng_follows_the_backend() {
         decode_summary(&xor(&data, u64::from(junk)..u64::from(junk) + 16, 0x5A)).unwrap() != base;
     let s1_changes =
         decode_summary(&xor(&data, u64::from(s1)..u64::from(s1) + 16, 0x5A)).unwrap() != base;
-    assert_eq!(junk_part.disposition.is_consumed(), junk_changes, "{inv}");
-    assert_eq!(s1_part.disposition.is_consumed(), s1_changes, "{inv}");
+    assert_eq!(junk_part.disposition().is_consumed(), junk_changes, "{inv}");
+    assert_eq!(s1_part.disposition().is_consumed(), s1_changes, "{inv}");
     if cfg!(feature = "rawler") {
-        assert_eq!(s1_part.disposition, Disposition::ImageData, "{inv}");
-        assert!(!junk_part.disposition.is_consumed(), "{inv}");
+        assert_eq!(s1_part.disposition(), Disposition::ImageData, "{inv}");
+        assert!(!junk_part.disposition().is_consumed(), "{inv}");
     } else {
-        assert_eq!(junk_part.disposition, Disposition::ImageData, "{inv}");
-        assert_eq!(s1_part.disposition, Disposition::Skipped, "{inv}");
+        assert_eq!(junk_part.disposition(), Disposition::ImageData, "{inv}");
+        assert_eq!(s1_part.disposition(), Disposition::Skipped, "{inv}");
     }
 
     // Strip 0 declared over all four rows, strip 1 right after it.
@@ -1272,14 +1275,14 @@ fn multistrip_uncompressed_dng_follows_the_backend() {
     let base = decode_summary(&data).expect("decodes");
     let rows23 = u64::from(s0) + 16..u64::from(s0) + 32;
     assert_eq!(
-        leaf_at(&inv, rows23.start).disposition,
+        leaf_at(&inv, rows23.start).disposition(),
         Disposition::ImageData,
         "{inv}"
     );
     assert_ne!(decode_summary(&xor(&data, rows23, 0x5A)).unwrap(), base);
     let s1r = u64::from(s1)..u64::from(s1) + 16;
     assert_eq!(
-        leaf_at(&inv, s1r.start).disposition,
+        leaf_at(&inv, s1r.start).disposition(),
         Disposition::Skipped,
         "{inv}"
     );
@@ -1300,21 +1303,21 @@ fn duplicate_tags_keep_the_last() {
     let orient: Vec<&Part> = inv
         .parts()
         .iter()
-        .filter(|p| p.tag == PartTag::Code(274) && p.kind == PartKind::Field)
+        .filter(|p| *p.tag() == PartTag::Code(274) && p.kind() == PartKind::Field)
         .collect();
     assert_eq!(orient.len(), 2);
-    assert_eq!(orient[0].disposition, Disposition::Dropped, "{inv}");
+    assert_eq!(orient[0].disposition(), Disposition::Dropped, "{inv}");
     assert_eq!(
-        orient[1].disposition,
+        orient[1].disposition(),
         Disposition::Metadata(MetadataKind::Orientation),
         "{inv}"
     );
     let base = decode_summary(&data).expect("decodes");
     assert!(base.1.contains("Rotate90"), "{}", base.1);
-    let first = orient[0].range.start + 8..orient[0].range.start + 10;
+    let first = orient[0].range().start + 8..orient[0].range().start + 10;
     assert_eq!(decode_summary(&xor(&data, first, 0x5A)).unwrap(), base);
     assert_eq!(
-        leaf_at(&inv, u64::from(secret)).disposition,
+        leaf_at(&inv, u64::from(secret)).disposition(),
         Disposition::Dropped,
         "{inv}"
     );
@@ -1333,9 +1336,11 @@ fn sr2_rules_need_a_sony_arw() {
     let inv = inventory(&data);
     inv.validate().unwrap();
     let b = leaf_at(&inv, u64::from(blob));
-    assert!(!b.disposition.is_consumed(), "{inv}");
+    assert!(!b.disposition().is_consumed(), "{inv}");
     assert!(
-        !leaf_at(&inv, u64::from(sr2) + 2).disposition.is_consumed(),
+        !leaf_at(&inv, u64::from(sr2) + 2)
+            .disposition()
+            .is_consumed(),
         "{inv}"
     );
     let base = decode_summary(&data).expect("decodes");
@@ -1362,7 +1367,7 @@ fn cr3_bad_child_box_is_malformed() {
     let inv = inventory(&f);
     inv.validate().unwrap();
     let p = leaf_at(&inv, 24 + 8 + 28 + 10);
-    assert_eq!(p.disposition, Disposition::Malformed, "{inv}");
+    assert_eq!(p.disposition(), Disposition::Malformed, "{inv}");
 }
 
 /// zenraw's decode rejects BigTIFF (`is_raw_file`), so nothing is consumed.
@@ -1389,7 +1394,7 @@ fn bigtiff_is_not_decoded() {
     assert!(!zenraw::is_raw_file(&b));
     assert!(decode_summary(&b).is_err());
     assert!(
-        !inv.parts().iter().any(|p| p.disposition.is_consumed()),
+        !inv.parts().iter().any(|p| p.disposition().is_consumed()),
         "{inv}"
     );
 }
@@ -1434,7 +1439,7 @@ fn orientation_reached_through_the_exif_ifd() {
     inv.validate().unwrap();
     let p = leaf_at(&inv, u64::from(nested) + 2 + 8);
     assert_eq!(
-        p.disposition,
+        p.disposition(),
         Disposition::Metadata(MetadataKind::Orientation),
         "{inv}"
     );
@@ -1455,9 +1460,9 @@ fn ascii_after_nul_is_dropped() {
     let inv = inventory(&data);
     inv.validate().unwrap();
     let tail = leaf_at(&inv, u64::from(soft) + 7);
-    assert_eq!(tail.disposition, Disposition::Dropped, "{inv}");
+    assert_eq!(tail.disposition(), Disposition::Dropped, "{inv}");
     assert_eq!(
-        leaf_at(&inv, u64::from(soft)).disposition,
+        leaf_at(&inv, u64::from(soft)).disposition(),
         Disposition::Structure,
         "{inv}"
     );
@@ -1475,7 +1480,7 @@ fn rawler_orientation_only_for_dng_ifd0() {
     assert!(
         inv.parts()
             .iter()
-            .any(|p| p.disposition == Disposition::Metadata(MetadataKind::Orientation)),
+            .any(|p| p.disposition() == Disposition::Metadata(MetadataKind::Orientation)),
         "{inv}"
     );
     let mut w = W::new();
@@ -1487,10 +1492,10 @@ fn rawler_orientation_only_for_dng_ifd0() {
     let o = inv
         .parts()
         .iter()
-        .find(|p| p.tag == PartTag::Code(274))
+        .find(|p| *p.tag() == PartTag::Code(274))
         .unwrap();
-    assert_eq!(o.disposition, Disposition::Dropped, "{inv}");
-    assert!(o.detail.as_deref().unwrap().contains("zenraw#22"));
+    assert_eq!(o.disposition(), Disposition::Dropped, "{inv}");
+    assert!(o.detail().unwrap().contains("zenraw#22"));
 }
 
 // ── Maker notes and CR3 CMT TIFFs ──────────────────────────────────────
@@ -1533,17 +1538,17 @@ fn nikon_maker_note_is_walked() {
     let base = u64::from(mn_at) + 10;
     let ifd_at = base + 8;
     let wb = leaf_at(&inv, ifd_at + 2 + 8);
-    assert_eq!(wb.disposition, Disposition::Structure, "{inv}");
+    assert_eq!(wb.disposition(), Disposition::Structure, "{inv}");
     // Not a tag rawloader knows, nor one the tag table names: Unknown.
     let owner = leaf_at(&inv, base + u64::from(owner_rel));
-    assert_eq!(owner.disposition, Disposition::Unknown, "{inv}");
+    assert_eq!(owner.disposition(), Disposition::Unknown, "{inv}");
     let slack = leaf_at(&inv, base + u64::from(owner_rel) + 11);
-    assert_eq!(slack.disposition, Disposition::Unreferenced, "{inv}");
+    assert_eq!(slack.disposition(), Disposition::Unreferenced, "{inv}");
     // The decode does not change when the skipped owner name or the slack
     // changes.
     let summary = decode_summary(&data).expect("decodes");
-    let m = xor(&data, owner.range.clone(), 0x5A);
-    let m = xor(&m, slack.range.clone(), 0x5A);
+    let m = xor(&data, owner.range(), 0x5A);
+    let m = xor(&m, slack.range(), 0x5A);
     assert_eq!(decode_summary(&m).unwrap(), summary);
 }
 
@@ -1587,7 +1592,7 @@ fn cr3_cmt_exif_is_never_surfaced() {
     } else {
         Disposition::Skipped
     };
-    assert_eq!(p.disposition, expected, "{inv}");
+    assert_eq!(p.disposition(), expected, "{inv}");
 }
 
 // ── Review round 2 (zenraw) / round 3 (shared walker) ─────────────────
@@ -1603,7 +1608,7 @@ fn split_container_keeps_its_body() {
     let inv = inventory(&data);
     inv.validate().unwrap();
     assert_eq!(
-        leaf_at(&inv, hdr_slack).disposition,
+        leaf_at(&inv, hdr_slack).disposition(),
         Disposition::Unreferenced,
         "{inv}"
     );
@@ -1625,13 +1630,13 @@ fn split_real_raf_keeps_its_slack_unreferenced() {
     let inv = inventory(&data);
     inv.validate().unwrap();
     assert_eq!(
-        leaf_at(&inv, 898210).disposition,
+        leaf_at(&inv, 898210).disposition(),
         Disposition::Metadata(MetadataKind::Xmp),
         "{inv}"
     );
     for at in [898080, 898600] {
         assert_eq!(
-            leaf_at(&inv, at).disposition,
+            leaf_at(&inv, at).disposition(),
             Disposition::Unreferenced,
             "{at}: {inv}"
         );
@@ -1676,7 +1681,7 @@ fn rawler_ignores_a_short_subifd_pointer() {
     inv.validate().unwrap();
     let v = leaf_at(&inv, u64::from(secret));
     if cfg!(feature = "rawler") {
-        assert!(!v.disposition.is_consumed(), "{inv}");
+        assert!(!v.disposition().is_consumed(), "{inv}");
     }
     let base = decode_summary(&data).expect("decodes");
     let m = xor(&data, u64::from(secret)..u64::from(secret) + 19, 0x5A);
@@ -1701,7 +1706,7 @@ fn rawloader_rejects_ifds_over_4000_entries() {
     let inv = inventory(&data);
     inv.validate().unwrap();
     let o = leaf_at(&inv, u64::from(nested) + 2 + 8);
-    assert!(!o.disposition.is_consumed(), "{inv}");
+    assert!(!o.disposition().is_consumed(), "{inv}");
     let base = decode_summary(&data).expect("decodes");
     assert!(!base.1.contains("Rotate90"), "{}", base.1);
 
@@ -1718,7 +1723,7 @@ fn rawloader_rejects_ifds_over_4000_entries() {
     if !cfg!(feature = "rawler") {
         assert!(decode_summary(&data).is_err());
         assert!(
-            !inv.parts().iter().any(|p| p.disposition.is_consumed()),
+            !inv.parts().iter().any(|p| p.disposition().is_consumed()),
             "{inv}"
         );
     }
@@ -1770,7 +1775,7 @@ fn every_subifd_pointer_is_followed() {
     let inv = inventory(&data);
     inv.validate().unwrap();
     assert_eq!(
-        leaf_at(&inv, u64::from(s0)).disposition,
+        leaf_at(&inv, u64::from(s0)).disposition(),
         Disposition::ImageData,
         "{inv}"
     );
@@ -1797,16 +1802,18 @@ fn budget_stopped_walk_leaves_unknown_gaps() {
         .parts()
         .iter()
         .filter(|p| {
-            p.parent.is_none() && p.kind == PartKind::Gap && p.disposition != Disposition::Trailing
+            p.parent().is_none()
+                && p.kind() == PartKind::Gap
+                && p.disposition() != Disposition::Trailing
         })
         .collect();
     assert!(!gaps.is_empty(), "{inv}");
     for g in gaps {
-        if g.disposition == Disposition::Padding {
+        if g.disposition() == Disposition::Padding {
             continue;
         }
-        assert_eq!(g.disposition, Disposition::Unknown, "{inv}");
-        assert!(g.detail.as_deref().unwrap().contains("may read"), "{inv}");
+        assert_eq!(g.disposition(), Disposition::Unknown, "{inv}");
+        assert!(g.detail().unwrap().contains("may read"), "{inv}");
     }
 }
 
@@ -1841,7 +1848,7 @@ fn wide_pointer_arrays_are_read_only_as_far_as_the_ifd_cap() {
     inv.validate().unwrap();
     assert!(
         inv.parts().iter().any(|p| p
-            .detail
+            .detail()
             .as_deref()
             .is_some_and(|d| d.contains("pointers not walked: more than 4096 IFDs"))),
         "{inv}"
@@ -1898,8 +1905,8 @@ fn strip_consumed(label: &str, data: &[u8], s0: u32) -> bool {
     let inv = inventory(data);
     inv.validate().unwrap();
     let strip = leaf_at(&inv, u64::from(s0));
-    let consumed = strip.disposition.is_consumed();
-    let changes = decode_summary(data) != decode_summary(&xor(data, strip.range.clone(), 0xFF));
+    let consumed = strip.disposition().is_consumed();
+    let changes = decode_summary(data) != decode_summary(&xor(data, strip.range(), 0xFF));
     assert_eq!(consumed, changes, "{label}: strip {strip:?}\n{inv}");
     consumed
 }
@@ -2024,10 +2031,10 @@ fn entries_past_rawlers_4096_stop_are_not_read() {
     assert!(!strip_consumed("4100 entries", &data, s0));
     let inv = inventory(&data);
     let so = leaf_at(&inv, u64::from(ifd0) + 2 + 4099 * 12 + 4);
-    assert!(!so.disposition.is_consumed(), "{so:?}");
+    assert!(!so.disposition().is_consumed(), "{so:?}");
     if RAWLER {
         assert!(
-            so.detail
+            so.detail()
                 .as_deref()
                 .is_some_and(|d| d.contains("4096-entry stop")),
             "{so:?}"
@@ -2035,10 +2042,10 @@ fn entries_past_rawlers_4096_stop_are_not_read() {
         let ifd = inv
             .parts()
             .iter()
-            .find(|p| p.kind == PartKind::Ifd && p.range.start == u64::from(ifd0))
+            .find(|p| p.kind() == PartKind::Ifd && p.range().start == u64::from(ifd0))
             .unwrap();
         assert!(
-            ifd.detail
+            ifd.detail()
                 .as_deref()
                 .is_some_and(|d| d.contains("rawler's chain ends here")),
             "{ifd:?}"
@@ -2075,7 +2082,7 @@ fn raf_jpeg_exif_chain_rejection_fails_the_file() {
     let big: Vec<&Part> = inv
         .parts()
         .iter()
-        .filter(|p| p.disposition.is_consumed() && p.range.end - p.range.start > 1000)
+        .filter(|p| p.disposition().is_consumed() && p.range().end - p.range().start > 1000)
         .collect();
     assert_eq!(big.is_empty(), !RAWLER, "{big:?}");
 }
@@ -2093,8 +2100,8 @@ fn cr3_budget_stops_leave_cmt_and_mdat_bytes_unknown() {
     }
     let ftyp = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
     let may_read = |p: &Part| {
-        p.disposition == Disposition::Unknown
-            && p.detail.as_deref().is_some_and(|d| d.contains("may read"))
+        p.disposition() == Disposition::Unknown
+            && p.detail().is_some_and(|d| d.contains("may read"))
     };
     // CMT1: SubIFDs naming 5000 one-entry IFDs.
     const CANON_UUID: [u8; 16] = [
@@ -2225,10 +2232,10 @@ fn unparsable_entries_are_decided_by_the_backend() {
             let ifd = inv
                 .parts()
                 .iter()
-                .find(|p| p.kind == PartKind::Ifd && p.range.start == u64::from(ifd0))
+                .find(|p| p.kind() == PartKind::Ifd && p.range().start == u64::from(ifd0))
                 .unwrap();
             assert!(
-                ifd.detail
+                ifd.detail()
                     .as_deref()
                     .is_some_and(|d| d.contains("container parse rejects this file")),
                 "{ifd:?}"
@@ -2344,9 +2351,9 @@ fn an_icc_profile_walked_as_a_sub_ifd_keeps_the_dng_decodable() {
     if RAWLER {
         let inv = inventory(&data);
         let walked = inv.parts().iter().any(|p| {
-            p.kind == PartKind::Ifd
-                && p.range.start == u64::from(icc_at)
-                && p.detail
+            p.kind() == PartKind::Ifd
+                && p.range().start == u64::from(icc_at)
+                && p.detail()
                     .as_deref()
                     .is_some_and(|d| d.contains("IccProfile sub-IFD"))
         });
@@ -2383,13 +2390,13 @@ fn the_gate_rejects_undecodable_fixtures() {
         let consumed: Vec<&Part> = inv
             .parts()
             .iter()
-            .filter(|p| p.disposition.is_consumed())
+            .filter(|p| p.disposition().is_consumed())
             .collect();
         assert!(consumed.is_empty(), "{name}: {consumed:?}");
         assert!(
             inv.parts()
                 .iter()
-                .any(|p| p.detail.as_deref().is_some_and(|d| d.contains(&why))),
+                .any(|p| p.detail().is_some_and(|d| d.contains(&why))),
             "{name}: {inv}"
         );
     }

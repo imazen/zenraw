@@ -254,15 +254,15 @@ fn check_inventory_without_image_data(data: &[u8]) -> Result<(), String> {
     let inv = run(&junked)?;
     let mut has_child = vec![false; inv.parts().len()];
     for p in inv.parts() {
-        if let Some(id) = p.parent {
+        if let Some(id) = p.parent() {
             has_child[id.index()] = true;
         }
     }
     for (i, p) in inv.parts().iter().enumerate() {
-        if !has_child[i] && p.range.end > data.len() as u64 && p.disposition.is_consumed() {
+        if !has_child[i] && p.range().end > data.len() as u64 && p.disposition().is_consumed() {
             return Err(format!(
                 "appended junk reported as {}\n{inv}",
-                p.disposition
+                p.disposition()
             ));
         }
     }
@@ -279,17 +279,17 @@ fn check_inventory_without_image_data(data: &[u8]) -> Result<(), String> {
 fn leaf_at(inv: &Inventory, at: u64) -> &Part {
     let parts = inv.parts();
     let depth = |i: usize| {
-        let (mut d, mut cur) = (0, parts[i].parent);
+        let (mut d, mut cur) = (0, parts[i].parent());
         while let Some(id) = cur {
             d += 1;
-            cur = parts[id.index()].parent;
+            cur = parts[id.index()].parent();
         }
         d
     };
     parts
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.range.start <= at && at < p.range.end)
+        .filter(|(_, p)| p.range().start <= at && at < p.range().end)
         .max_by_key(|&(i, _)| depth(i))
         .map(|(_, p)| p)
         .unwrap_or_else(|| panic!("no part at {at}:\n{inv}"))
