@@ -81,3 +81,13 @@ opt-level = 2
 name = "kernel_tiers"
 harness = false
 required-features = ["_dev"]
+
+[patch.crates-io]
+# zencodec PR imazen/zencodec#133 (`feat/inventory`): structural inventory API.
+# Swap for the released zencodec / zencodec-testkit before merging.
+zencodec = { git = "https://github.com/imazen/zencodec", branch = "feat/inventory" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", branch = "feat/inventory" }
+
+[[example]]
+name = "inventory_dump"
+required-features = ["zencodec"]

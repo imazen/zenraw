@@ -99,6 +99,8 @@ pub mod xmp;
 pub mod apple;
 
 #[cfg(feature = "zencodec")]
+mod inventory;
+#[cfg(feature = "zencodec")]
 mod zencodec_impl;
 #[cfg(feature = "zencodec")]
 pub use zencodec_impl::{DNG_FORMAT, RAW_FORMAT, RawDecoderConfig};

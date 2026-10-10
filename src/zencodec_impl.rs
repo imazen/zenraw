@@ -260,7 +260,8 @@ static RAW_DECODE_CAPABILITIES: DecodeCapabilities = DecodeCapabilities::EMPTY
     .with_stop(true)
     .with_enforces_max_pixels(true)
     .with_enforces_max_memory(true)
-    .with_enforces_max_input_bytes(true);
+    .with_enforces_max_input_bytes(true)
+    .with_inventory(true);
 
 // ── DecoderConfig ──────────────────────────────────────────────────────
 
@@ -397,6 +398,25 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn with_orientation(mut self, hint: OrientationHint) -> Self {
         self.orientation = hint;
         self
+    }
+
+    /// Map every byte of `data` without decoding pixels; see
+    /// [`crate::inventory`] for the walk and the dispositions.
+    fn inventory(
+        &self,
+        data: &[u8],
+    ) -> Result<Option<zencodec::inventory::Inventory>, Self::Error> {
+        if let Some(stop) = &self.stop {
+            enough::Stop::check(stop).map_err(|r| at!(RawError::from(r)))?;
+        }
+        crate::inventory::inventory(data, detect_format(data))
+            .map(Some)
+            .map_err(|e| {
+                at!(RawError::LimitExceeded(
+                    RawLimitKind::Memory,
+                    alloc::format!("inventory: {e}")
+                ))
+            })
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {

@@ -78,6 +78,21 @@ pub fn extract_xmp(data: &[u8]) -> Option<String> {
     extract_xmpmeta_block(data)
 }
 
+/// Byte range of the packet [`extract_xmp`] returns, for the structural
+/// inventory. Mirrors `extract_xmp` exactly: the first `<?xpacket` packet
+/// that is valid UTF-8, else the first `<x:xmpmeta>` block.
+#[cfg(feature = "zencodec")]
+pub(crate) fn extract_xmp_range(data: &[u8]) -> Option<core::ops::Range<usize>> {
+    if let Some(first) = extract_xmp_packets(data).into_iter().next() {
+        return Some(first.offset..first.offset + first.xml.len());
+    }
+    let close = b"</x:xmpmeta>";
+    let start = find_bytes(data, b"<x:xmpmeta")?;
+    let end = start + find_bytes(&data[start..], close)? + close.len();
+    core::str::from_utf8(&data[start..end]).ok()?;
+    Some(start..end)
+}
+
 /// Extract XMP from `<x:xmpmeta>` blocks (without xpacket wrappers).
 fn extract_xmpmeta_block(data: &[u8]) -> Option<String> {
     let open = b"<x:xmpmeta";
