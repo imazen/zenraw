@@ -10,11 +10,12 @@
 //! TIFF parts can interleave in any order, so a TIFF's parts are siblings in
 //! file order: header, IFDs (each with one child `Field` per entry),
 //! out-of-line values (`Field`, same tag as their entry) and extents.
-//! Overlapping parts are split around the parts placed before them, with a
-//! note in both details; nothing overlapping is ever emitted.
+//! Where parts overlap, each byte takes the strongest fate among the parts
+//! covering it ([`Placed`]); the others are split around it, with a note in
+//! both details. Nothing overlapping is ever emitted.
 
 use alloc::borrow::Cow;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -683,10 +684,10 @@ pub(super) trait Rules {
         }
     }
 
-    /// The TIFF-relative offsets a pointer entry holds.
-    fn pointer_offsets(&self, w: &Walk<'_>, e: &Entry) -> Vec<u64> {
-        // Every pointer: `MAX_IFDS` and the visited-offset map bound the work.
-        w.uints(e, usize::try_from(w.limit() / 4 + 1).unwrap_or(usize::MAX))
+    /// The TIFF-relative offsets a pointer entry holds, at most `max` of
+    /// them (the walk reads only as many as it can still queue).
+    fn pointer_offsets(&self, w: &Walk<'_>, e: &Entry, max: usize) -> Vec<u64> {
+        w.uints(e, max)
     }
 
     /// Whether the decode path reads the directory the pointer entry `e` of
@@ -1347,7 +1348,18 @@ fn enqueue(
             continue;
         };
         let followed = followed_here && rules.follows(w, &w.ifds[idx], kind, e);
-        let ptrs = rules.pointer_offsets(w, e);
+        // Read only the pointers that can still be queued, plus one to tell
+        // whether more were left: reading every array in full is quadratic.
+        let room = MAX_IFDS.saturating_sub(queue.len() + w.ifds.len());
+        if room == 0 {
+            w.budget_hit = true;
+            add_note(
+                &mut w.ifds[idx].entries[ei].notes,
+                format!("{label} pointers not walked: more than {MAX_IFDS} IFDs"),
+            );
+            continue;
+        }
+        let ptrs = rules.pointer_offsets(w, e, room + 1);
         if ptrs.is_empty() {
             let text = format!("{label} pointer of type {} not read", type_name(e.typ));
             add_note(&mut w.ifds[idx].entries[ei].notes, text);
@@ -1379,7 +1391,13 @@ fn enqueue(
         }
     }
     let next = w.ifds[idx].next;
-    if next != 0 && queue.len() + w.ifds.len() < MAX_IFDS {
+    if next != 0 && queue.len() + w.ifds.len() >= MAX_IFDS {
+        w.budget_hit = true;
+        add_note(
+            &mut w.ifds[idx].notes,
+            format!("not walked: more than {MAX_IFDS} IFDs"),
+        );
+    } else if next != 0 {
         let followed_next = followed_here && rules.follows_next(w, &w.ifds[idx], kind);
         let (kind, name) = match kind {
             Kind::Page(n) => (
@@ -1470,8 +1488,8 @@ fn describe(c: &Cand) -> String {
 }
 
 /// `c` cut to `r`, with its body and children cut the same way; `None`
-/// when they do not meet.
-fn clip(c: &Cand, r: &Range<u64>) -> Option<Cand> {
+/// when they do not meet. A cut child says so when `mark`.
+fn clip(c: &Cand, r: &Range<u64>, mark: bool) -> Option<Cand> {
     let range = c.range.start.max(r.start)..c.range.end.min(r.end);
     if range.start >= range.end {
         return None;
@@ -1494,190 +1512,236 @@ fn clip(c: &Cand, r: &Range<u64>) -> Option<Cand> {
     out.children = c
         .children
         .iter()
-        .filter_map(|ch| clip(ch, &range))
+        .filter_map(|ch| clip(ch, &range, true))
         .collect();
-    if range != c.range {
+    if mark && range != c.range {
         out.note("split by an overlapping part");
     }
     Some(out)
 }
 
-/// Non-overlapping sibling parts. Each insertion is split around the parts
-/// already placed.
+/// Parts that may overlap, resolved into non-overlapping siblings. Every
+/// byte goes to the candidate whose fate at that byte (the deepest part of
+/// its subtree there, or its body's gap fate) ranks strongest; on a tie the
+/// candidate inserted first keeps it. Each candidate is then cut to the
+/// stretches it won.
 #[derive(Default)]
 pub(super) struct Placed {
-    parts: Vec<Cand>,
-    /// start → (end, index into `parts`)
-    by_start: BTreeMap<u64, (u64, usize)>,
-    /// Ranges of parts left unlisted past the overlap cap, with the part
-    /// they belong to: their uncovered bytes become `Unknown`.
-    zones: Vec<(Range<u64>, String)>,
+    cands: Vec<Cand>,
+}
+
+/// One stretch of a candidate with a single fate.
+struct Seg {
+    range: Range<u64>,
+    rank: u8,
+    cand: usize,
+}
+
+/// The fate rank of a container's body bytes no child covers.
+fn gap_rank(c: &Cand) -> u8 {
+    rank(c.gap.as_ref().map_or(Disposition::Unreferenced, |g| g.0))
+}
+
+/// Split `c` (clipped to `within`) into stretches of one fate each.
+fn segments(c: &Cand, within: &Range<u64>, cand: usize, out: &mut Vec<Seg>) {
+    let range = c.range.start.max(within.start)..c.range.end.min(within.end);
+    if range.start >= range.end {
+        return;
+    }
+    let body = c
+        .body
+        .as_ref()
+        .filter(|b| b.start >= c.range.start && b.end <= c.range.end);
+    let own = |r: Range<u64>, out: &mut Vec<Seg>| {
+        if r.start >= r.end {
+            return;
+        }
+        let Some(b) = body else {
+            out.push(Seg {
+                range: r,
+                rank: rank(c.disp),
+                cand,
+            });
+            return;
+        };
+        let cuts = [
+            (r.start..r.end.min(b.start), rank(c.disp)),
+            (r.start.max(b.start)..r.end.min(b.end), gap_rank(c)),
+            (r.start.max(b.end)..r.end, rank(c.disp)),
+        ];
+        for (r, rank) in cuts {
+            if r.start < r.end {
+                out.push(Seg {
+                    range: r,
+                    rank,
+                    cand,
+                });
+            }
+        }
+    };
+    let mut kids: Vec<&Cand> = c.children.iter().collect();
+    kids.sort_by_key(|ch| ch.range.start);
+    let mut cursor = range.start;
+    for ch in kids {
+        let start = ch.range.start.clamp(range.start, range.end);
+        if start > cursor {
+            own(cursor..start, out);
+        }
+        segments(ch, &range, cand, out);
+        cursor = cursor.max(ch.range.end.min(range.end));
+    }
+    own(cursor..range.end, out);
+}
+
+/// Record that `winner` took bytes `loser` covers.
+fn beaten(by: &mut [Vec<usize>], loser: usize, winner: usize) {
+    let list = &mut by[loser];
+    if list.len() <= MAX_NOTES && !list.contains(&winner) {
+        list.push(winner);
+    }
 }
 
 impl Placed {
-    /// Insert `c`, split around the parts already placed. Placed parts are
-    /// disjoint, so the ones overlapping `c` are the predecessor of
-    /// `c.start` (when it reaches past it) plus those starting inside `c`:
-    /// an O(log n) lookup and at most `MAX_PIECES + 1` comparisons.
-    pub(super) fn insert(&mut self, mut c: Cand) {
-        use core::ops::Bound::Excluded;
-        if c.range.start >= c.range.end {
-            return;
-        }
-        let mut hits: Vec<(u64, u64, usize)> = Vec::new();
-        if let Some((&s, &(e, i))) = self.by_start.range(..=c.range.start).next_back()
-            && e > c.range.start
-        {
-            hits.push((s, e, i));
-        }
-        let mut truncated = false;
-        for (&s, &(e, i)) in self
-            .by_start
-            .range((Excluded(c.range.start), Excluded(c.range.end)))
-        {
-            if hits.len() > MAX_PIECES {
-                truncated = true;
-                break;
-            }
-            hits.push((s, e, i));
-        }
-        if hits.is_empty() {
-            let i = self.parts.len();
-            self.by_start.insert(c.range.start, (c.range.end, i));
-            self.parts.push(c);
-            return;
-        }
-        let desc = describe(&c);
-        let mut pieces = Vec::new();
-        let mut cursor = c.range.start;
-        for &(s, e, i) in &hits {
-            if s > cursor {
-                pieces.push(cursor..s);
-            }
-            cursor = cursor.max(e);
-            self.parts[i].note(&format!("overlaps {desc}"));
-        }
-        // Past the last examined part the rest may overlap parts not
-        // examined, so it is placed only when every overlap was seen.
-        if cursor < c.range.end && !truncated {
-            pieces.push(cursor..c.range.end);
-        }
-        let total = pieces.len();
-        let listed = total.min(MAX_PIECES);
-        // The rest of `c` past the examined overlaps or the listed pieces may
-        // still be read: its bytes no other part covers become `Unknown`.
-        let unlisted = match (pieces.get(listed), truncated) {
-            (Some(r), _) => Some(r.start),
-            (None, true) => Some(cursor),
-            (None, false) => None,
-        };
-        if let Some(from) = unlisted.filter(|&f| f < c.range.end) {
-            self.zones.push((from..c.range.end, desc.clone()));
-        }
-        let children = core::mem::take(&mut c.children);
-        for (k, r) in pieces.into_iter().enumerate().take(MAX_PIECES) {
-            let mut piece = Cand::new(r.clone(), c.kind, c.tag.clone(), c.disp, c.detail.clone());
-            piece.label = c.label.clone();
-            piece.notes = c.notes;
-            // A split container keeps the part of its body inside the piece,
-            // and children straddling the piece's edge are clipped to it.
-            piece.body = c
-                .body
-                .as_ref()
-                .map(|b| b.start.max(r.start)..b.end.min(r.end))
-                .filter(|b| b.start < b.end);
-            piece.gap = c.gap.clone();
-            piece.children = children.iter().filter_map(|ch| clip(ch, &r)).collect();
-            piece.note(&format!(
-                "overlaps {}{} other part(s); piece {} of {listed}{}",
-                hits.len(),
-                if truncated { "+" } else { "" },
-                k + 1,
-                if truncated || total > listed {
-                    "; the rest is not listed"
-                } else {
-                    ""
-                }
-            ));
-            let i = self.parts.len();
-            self.by_start.insert(r.start, (r.end, i));
-            self.parts.push(piece);
-        }
-        // Children lying wholly in bytes other parts cover are not listed.
-        let lost = children
-            .iter()
-            .filter(|ch| {
-                self.by_start
-                    .range(..ch.range.end)
-                    .next_back()
-                    .is_some_and(|(&s, &(e, _))| s <= ch.range.start && e >= ch.range.end)
-            })
-            .count();
-        if lost > 0
-            && let Some(&(_, _, i)) = hits.first()
-        {
-            self.parts[i].note(&format!(
-                "{lost} parts of {desc} lie inside it and are not listed"
-            ));
+    /// Add a candidate. Insertion order breaks ties between equal fates.
+    pub(super) fn insert(&mut self, c: Cand) {
+        if c.range.start < c.range.end {
+            self.cands.push(c);
         }
     }
 
-    /// The placed parts in file order, plus an `Unknown` part for each
-    /// stretch of an unlisted remainder no placed part covers.
+    /// The parts in file order: each candidate cut to the bytes it won (at
+    /// most `MAX_PIECES` pieces), plus an `Unknown` part for each stretch it
+    /// won past that cap.
     pub(super) fn into_sorted(self) -> Vec<Cand> {
-        let mut parts = self.parts;
-        let mut zones = self.zones;
-        zones.sort_by_key(|(r, _)| r.start);
-        // Merge overlapping zones; keep the first part's description.
-        let mut merged: Vec<(Range<u64>, String, usize)> = Vec::new();
-        for (r, d) in zones {
-            match merged.last_mut() {
-                Some((m, _, n)) if r.start <= m.end => {
-                    m.end = m.end.max(r.end);
-                    *n += 1;
+        use core::cmp::Reverse;
+        let mut cands = self.cands;
+        let n = cands.len();
+        let mut segs = Vec::new();
+        for (i, c) in cands.iter().enumerate() {
+            segments(c, &c.range, i, &mut segs);
+        }
+        // Sweep the segment boundaries; the strongest active segment (first
+        // candidate on a tie) wins each stretch between two boundaries.
+        let mut events: Vec<(u64, bool, usize)> = Vec::with_capacity(segs.len() * 2);
+        for (k, sg) in segs.iter().enumerate() {
+            events.push((sg.range.start, true, k));
+            events.push((sg.range.end, false, k));
+        }
+        events.sort_unstable_by_key(|&(x, start, k)| (x, start, k));
+        let mut active: BTreeSet<(Reverse<u8>, usize, usize)> = BTreeSet::new();
+        let mut live = alloc::vec![0u32; n];
+        let mut won: Vec<Vec<Range<u64>>> = (0..n).map(|_| Vec::new()).collect();
+        let mut by: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+        let mut top: Option<usize> = None;
+        let mut added = Vec::new();
+        let mut i = 0;
+        while i < events.len() {
+            let x = events[i].0;
+            added.clear();
+            while i < events.len() && events[i].0 == x {
+                let (_, start, k) = events[i];
+                let sg = &segs[k];
+                let key = (Reverse(sg.rank), sg.cand, k);
+                if start {
+                    active.insert(key);
+                    live[sg.cand] += 1;
+                    added.push(sg.cand);
+                } else {
+                    active.remove(&key);
+                    live[sg.cand] -= 1;
                 }
-                _ => merged.push((r, d, 0)),
+                i += 1;
+            }
+            let now = active.first().map(|&(_, c, _)| c);
+            if let Some(wc) = now {
+                for &c in &added {
+                    if c != wc {
+                        beaten(&mut by, c, wc);
+                    }
+                }
+                if let Some(p) = top
+                    && p != wc
+                    && live[p] > 0
+                {
+                    beaten(&mut by, p, wc);
+                }
+                if let Some(&(next, _, _)) = events.get(i) {
+                    let r = &mut won[wc];
+                    match r.last_mut() {
+                        Some(last) if last.end == x => last.end = next,
+                        _ => r.push(x..next),
+                    }
+                }
+            }
+            top = now;
+        }
+        // Notes: each winner names what it overlaps, and the children of a
+        // candidate left in bytes others won.
+        let descs: Vec<Option<String>> = (0..n)
+            .map(|k| (!by[k].is_empty()).then(|| describe(&cands[k])))
+            .collect();
+        for loser in 0..n {
+            let Some(desc) = &descs[loser] else { continue };
+            for &wc in &by[loser] {
+                cands[wc].note(&format!("overlaps {desc}"));
+            }
+            let mine = &won[loser];
+            let lost = cands[loser]
+                .children
+                .iter()
+                .filter(|ch| {
+                    let k = mine.partition_point(|r| r.end <= ch.range.start);
+                    mine.get(k).is_none_or(|r| r.start >= ch.range.end)
+                })
+                .count();
+            if lost > 0 {
+                let wc = by[loser][0];
+                cands[wc].note(&format!(
+                    "{lost} part(s) of {desc} lie in bytes other parts take and are not listed"
+                ));
             }
         }
-        for (zone, desc, others) in merged {
-            let detail = if others == 0 {
-                format!(
-                    "part of {desc}; not listed past {MAX_PIECES} overlaps; the decoder may read it"
-                )
-            } else {
-                format!(
-                    "part of {desc} and {others} other part(s); not listed past {MAX_PIECES} overlaps; the decoder may read it"
-                )
-            };
-            let mut cursor = zone.start;
-            let from = self
-                .by_start
-                .range(..=zone.start)
-                .next_back()
-                .map_or(zone.start, |(&s, _)| s);
-            for (&s, &(e, _)) in self.by_start.range(from..zone.end) {
-                if e <= cursor {
-                    continue;
-                }
-                if s > cursor {
+        let mut parts = Vec::new();
+        for (k, c) in cands.into_iter().enumerate() {
+            let pieces = core::mem::take(&mut won[k]);
+            if pieces.len() == 1 && pieces[0] == c.range {
+                parts.push(c);
+                continue;
+            }
+            let others = by[k].len();
+            let more = if others > MAX_NOTES { "+" } else { "" };
+            let total = pieces.len();
+            let listed = total.min(MAX_PIECES);
+            let desc = descs[k].clone().unwrap_or_else(|| describe(&c));
+            for (j, r) in pieces.into_iter().enumerate() {
+                if j >= MAX_PIECES {
+                    // Past the cap a piece is not listed, but the decoder may
+                    // still read its bytes.
                     parts.push(Cand::new(
-                        cursor..s,
+                        r,
                         PartKind::Gap,
                         PartTag::None,
                         Disposition::Unknown,
-                        detail.clone(),
+                        format!(
+                            "part of {desc}; not listed past {MAX_PIECES} overlaps; the decoder may read it"
+                        ),
                     ));
+                    continue;
                 }
-                cursor = cursor.max(e);
-            }
-            if cursor < zone.end {
-                parts.push(Cand::new(
-                    cursor..zone.end,
-                    PartKind::Gap,
-                    PartTag::None,
-                    Disposition::Unknown,
-                    detail,
+                let Some(mut piece) = clip(&c, &r, false) else {
+                    continue;
+                };
+                piece.note(&format!(
+                    "overlaps {}{more} other part(s); piece {} of {listed}{}",
+                    others.max(1),
+                    j + 1,
+                    if total > listed {
+                        "; the rest is not listed"
+                    } else {
+                        ""
+                    }
                 ));
+                parts.push(piece);
             }
         }
         parts.sort_by_key(|c| c.range.start);
@@ -2076,9 +2140,8 @@ pub(super) fn place(w: &mut Walk<'_>, rules: &dyn Rules, first: Vec<Cand>) -> Pl
         }
         placed.insert(c);
     }
-    // Overlapping bytes take the strongest fate: consumed values and
-    // extents are placed first (a stable sort keeps file order otherwise).
-    values.sort_by_key(|v| core::cmp::Reverse(rank(v.disp)));
+    // Overlapping bytes take the strongest fate (`Placed`); on a tie the
+    // header, directories and then values in file order keep them.
     for v in values {
         placed.insert(v);
     }
@@ -2189,4 +2252,158 @@ pub(super) fn emit_top(
         push_gap(inv, cursor..len)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zencodec::inventory::MetadataKind;
+
+    /// xorshift64*: deterministic, no dependency.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    const FATES: [Disposition; 10] = [
+        Disposition::Metadata(MetadataKind::Xmp),
+        Disposition::Metadata(MetadataKind::Exif),
+        Disposition::Structure,
+        Disposition::ImageData,
+        Disposition::Malformed,
+        Disposition::Dropped,
+        Disposition::Padding,
+        Disposition::Skipped,
+        Disposition::Unknown,
+        Disposition::Unreferenced,
+    ];
+
+    /// A random candidate inside `r`: a table with entry children, a value
+    /// with a tail child, or a container with a body, children and a gap
+    /// fate, nested up to `depth` levels.
+    fn random_cand(rng: &mut Rng, r: Range<u64>, depth: u32) -> Cand {
+        let disp = FATES[rng.below(FATES.len() as u64) as usize];
+        let mut c = Cand::new(
+            r.clone(),
+            PartKind::Field,
+            PartTag::None,
+            disp,
+            String::new(),
+        );
+        let len = r.end - r.start;
+        if depth == 0 || len < 2 {
+            return c;
+        }
+        let inner = match rng.below(4) {
+            // A value with a tail it does not consume.
+            0 => {
+                let keep = rng.below(len);
+                c.children
+                    .push(random_cand(rng, r.start + keep..r.end, depth - 1));
+                return c;
+            }
+            // A container: children tile part of its body.
+            1 => {
+                let a = r.start + rng.below(len);
+                let b = a + 1 + rng.below(r.end - a);
+                c.body = Some(a..b);
+                if rng.below(2) == 0 {
+                    c.gap = Some((Disposition::Unknown, "budget".into()));
+                }
+                a..b
+            }
+            // A table: entries anywhere in it.
+            2 => r.clone(),
+            _ => return c,
+        };
+        let mut at = inner.start;
+        while at < inner.end && c.children.len() < 4 {
+            let start = at + rng.below(3);
+            if start >= inner.end {
+                break;
+            }
+            let end = start + 1 + rng.below((inner.end - start).min(12));
+            c.children.push(random_cand(rng, start..end, depth - 1));
+            at = end;
+        }
+        c
+    }
+
+    /// The fate rank the inventory gives byte `b` of `c`: its deepest part
+    /// there, or its body's gap fate.
+    fn at(c: &Cand, b: u64) -> Option<u8> {
+        if !c.range.contains(&b) {
+            return None;
+        }
+        for ch in &c.children {
+            if let Some(r) = at(ch, b) {
+                return Some(r);
+            }
+        }
+        match &c.body {
+            Some(body) if body.contains(&b) => Some(gap_rank(c)),
+            _ => Some(rank(c.disp)),
+        }
+    }
+
+    /// Children lie inside their parent (and its body) and do not overlap.
+    fn well_formed(c: &Cand) {
+        let mut kids: Vec<&Cand> = c.children.iter().collect();
+        kids.sort_by_key(|ch| ch.range.start);
+        let mut end = c.range.start;
+        for ch in kids {
+            assert!(ch.range.start >= end && ch.range.end <= c.range.end);
+            assert!(ch.range.start < ch.range.end);
+            end = ch.range.end;
+            well_formed(ch);
+        }
+        if let Some(b) = &c.body {
+            assert!(b.start >= c.range.start && b.end <= c.range.end);
+        }
+    }
+
+    #[test]
+    fn every_byte_takes_the_strongest_fate() {
+        const SPACE: u64 = 48;
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for round in 0..4000 {
+            let n = 1 + rng.below(8) as usize;
+            let cands: Vec<Cand> = (0..n)
+                .map(|_| {
+                    let a = rng.below(SPACE);
+                    let b = a + 1 + rng.below(SPACE - a);
+                    random_cand(&mut rng, a..b, 3)
+                })
+                .collect();
+            let expect: Vec<Option<u8>> = (0..SPACE)
+                .map(|b| cands.iter().filter_map(|c| at(c, b)).max())
+                .collect();
+            let mut placed = Placed::default();
+            for c in cands {
+                placed.insert(c);
+            }
+            let parts = placed.into_sorted();
+            let mut end = 0;
+            for p in &parts {
+                assert!(p.range.start >= end, "round {round}: siblings overlap");
+                assert!(!p.detail.contains("not listed past"), "round {round}");
+                end = p.range.end;
+                well_formed(p);
+            }
+            for b in 0..SPACE {
+                let got = parts.iter().find_map(|p| at(p, b));
+                assert_eq!(got, expect[b as usize], "round {round}, byte {b}");
+            }
+        }
+    }
 }

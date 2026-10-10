@@ -467,7 +467,7 @@ impl Rules for RawRules<'_> {
         }
     }
 
-    fn pointer_offsets(&self, w: &Walk<'_>, e: &Entry) -> Vec<u64> {
+    fn pointer_offsets(&self, w: &Walk<'_>, e: &Entry, max: usize) -> Vec<u64> {
         // ARW stores the SR2Private offset as BYTE[4]; both backends read it
         // as a u32 in the file's byte order.
         if e.tag == DNG_PRIVATE_DATA && e.count == 4 && matches!(e.typ, 1 | 7) {
@@ -477,9 +477,9 @@ impl Rules for RawRules<'_> {
                 .map(|v| alloc::vec![u64::from(v)])
                 .unwrap_or_default();
         }
-        // Every pointer: both backends follow them all, and `MAX_IFDS` and
-        // the visited-offset map bound the walk.
-        w.uints(e, usize::try_from(w.limit() / 4 + 1).unwrap_or(usize::MAX))
+        // Every pointer the walk can still queue: both backends follow them
+        // all.
+        w.uints(e, max)
     }
 
     fn follows(&self, w: &Walk<'_>, parent: &Ifd, kind: Kind, e: &Entry) -> bool {

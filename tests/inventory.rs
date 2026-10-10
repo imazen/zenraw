@@ -2422,3 +2422,42 @@ fn budget_stopped_walk_leaves_unknown_gaps() {
         assert!(g.detail.as_deref().unwrap().contains("may read"), "{inv}");
     }
 }
+
+/// Review round 4, R4-1: `n` SubIFDs entries each naming one shared array
+/// of `c` pointers. The walk reads only the pointers it can still queue, so
+/// the work is about `n + 4096` pointer reads, not `n * c`.
+#[test]
+fn wide_pointer_arrays_are_read_only_as_far_as_the_ifd_cap() {
+    // Tests build at opt-level 2, so the input is the reviewer's 4 MB case
+    // (39 s before the fix in a release build).
+    let (n, c) = (65_535u32, 819_200u32);
+    let arr = 8 + 2 + 12 * n + 4;
+    let target = arr + 4 * c;
+    let mut data = b"II\x2a\x00\x08\x00\x00\x00".to_vec();
+    data.extend_from_slice(&(n as u16).to_le_bytes());
+    for _ in 0..n {
+        data.extend_from_slice(&330u16.to_le_bytes());
+        data.extend_from_slice(&4u16.to_le_bytes());
+        data.extend_from_slice(&c.to_le_bytes());
+        data.extend_from_slice(&arr.to_le_bytes());
+    }
+    data.extend_from_slice(&0u32.to_le_bytes());
+    for _ in 0..c {
+        data.extend_from_slice(&target.to_le_bytes());
+    }
+    data.extend_from_slice(&[0; 6]);
+    // 4,063,240 bytes: before the fix, 65,535 x 819,200 pointer reads.
+    assert_eq!(data.len(), 4_063_240);
+    let t = std::time::Instant::now();
+    let inv = inventory(&data);
+    let took = t.elapsed();
+    inv.validate().unwrap();
+    assert!(took.as_secs_f64() < 5.0, "took {took:?}");
+    assert!(
+        inv.parts().iter().any(|p| p
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("pointers not walked: more than 4096 IFDs"))),
+        "{inv}"
+    );
+}

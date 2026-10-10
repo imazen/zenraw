@@ -12,6 +12,8 @@
 //! - `blowup <len>`: a `len`-byte file, 4 SubIFDs entries x 1,024 pointers to
 //!   IFDs two bytes apart in a 0xFF-filled region.
 //! - `overlap <n>`: `n` one-byte strips and 450 values covering all of them.
+//! - `wideptrs <n> [c]`: IFD0 with `n` SubIFDs entries, each LONG[`c`]
+//!   (default 131,072), all naming one shared array of `c` pointers.
 
 use std::time::Instant;
 
@@ -141,12 +143,28 @@ fn overlap(n: u32) -> Vec<u8> {
     b
 }
 
+fn wideptrs(n: u32, c: u32) -> Vec<u8> {
+    let arr = 8 + 2 + 12 * n + 4;
+    let target = arr + 4 * c;
+    let mut b = header();
+    b.extend_from_slice(&(n as u16).to_le_bytes());
+    for _ in 0..n {
+        entry(&mut b, 330, 4, c, arr);
+    }
+    b.extend_from_slice(&0u32.to_le_bytes());
+    for _ in 0..c {
+        b.extend_from_slice(&target.to_le_bytes());
+    }
+    b.extend_from_slice(&[0; 6]);
+    b
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (Some(mode), Some(n)) = (args.get(1), args.get(2).and_then(|s| s.parse::<u64>().ok()))
     else {
         eprintln!(
-            "usage: inventory_stress <distinct|bigdistinct|subifds|subptrs|blowup|overlap> <n>"
+            "usage: inventory_stress <distinct|bigdistinct|subifds|subptrs|blowup|overlap|wideptrs> <n> [c]"
         );
         std::process::exit(2);
     };
@@ -157,6 +175,10 @@ fn main() {
         "subptrs" => subptrs(n as u32),
         "blowup" => blowup(n as usize),
         "overlap" => overlap(n as u32),
+        "wideptrs" => wideptrs(
+            n as u32,
+            args.get(3).and_then(|s| s.parse().ok()).unwrap_or(131_072),
+        ),
         _ => {
             eprintln!("unknown mode {mode}");
             std::process::exit(2);
