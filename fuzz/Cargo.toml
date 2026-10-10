@@ -10,11 +10,16 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.9"
 enough = "0.4.3"
+zencodec = ">=0.1.26, <0.3.0"
 
 [dependencies.zenraw]
 path = ".."
 default-features = false
-features = ["std", "rawloader"]
+features = ["std", "rawloader", "zencodec", "xmp"]
+
+[patch.crates-io]
+# zencodec PR imazen/zencodec#133 (`feat/inventory`); swap for the release before merge.
+zencodec = { git = "https://github.com/imazen/zencodec", branch = "feat/inventory" }
 
 # Prevent this from interfering with workspaces
 [workspace]
@@ -31,4 +36,9 @@ doc = false
 [[bin]]
 name = "fuzz_decode"
 path = "fuzz_targets/fuzz_decode.rs"
+doc = false
+
+[[bin]]
+name = "inventory"
+path = "fuzz_targets/inventory.rs"
 doc = false
