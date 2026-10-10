@@ -38,6 +38,10 @@ use tiff_walk::{
     TILE_OFFSETS, Walk, emit_top, get, place, uncompressed_sizes, walk,
 };
 
+/// Detail for CR3 parts in builds without rawler.
+const CR3_NOT_DECODED: &str =
+    "CR3 is decoded only by the `rawler` backend; this build's decode fails";
+
 /// Whether the zencodec path decodes with rawler (`rawler` feature) instead
 /// of rawloader. rawler keeps every tag of the IFDs it walks, so those
 /// entries are all `Structure` in such builds.
@@ -96,6 +100,8 @@ enum Role {
     RafJpegExif,
     /// A RAF's CFA section.
     RafCfa,
+    /// The TIFF in a CR3 `CMT1`..`CMT4` box (IFD0, EXIF, maker notes, GPS).
+    Cr3Cmt(u8),
 }
 
 /// zenraw's zencodec decode path for one TIFF of the file.
@@ -110,6 +116,8 @@ struct RawRules {
     xmp: bool,
     /// Whether the file is a DNG (uncompressed strip sizes are then exact).
     dng: bool,
+    /// Offsets of the MakerNote values rawloader parses as IFDs.
+    parsed_notes: Vec<u64>,
 }
 
 impl RawRules {
@@ -205,6 +213,19 @@ impl Rules for RawRules {
     }
 
     fn ifd(&self, _w: &Walk<'_>, ifd: &Ifd) -> Fate {
+        if matches!(self.role, Role::Cr3Cmt(_)) && !RAWLER {
+            return Fate::because(Disposition::Skipped, CR3_NOT_DECODED);
+        }
+        if ifd.followed && ifd.kind == Kind::MakerNote {
+            return Fate::because(
+                Disposition::Structure,
+                if RAWLER {
+                    "maker-note IFD, parsed"
+                } else {
+                    "maker-note IFD rawloader parses (TiffIFD::new_makernote)"
+                },
+            );
+        }
         if ifd.followed {
             return Fate::because(Disposition::Structure, "walked by rawloader");
         }
@@ -217,15 +238,27 @@ impl Rules for RawRules {
         Fate::because(Disposition::Skipped, why)
     }
 
-    fn entry(&self, _w: &Walk<'_>, ifd: &Ifd, index: usize) -> Fate {
+    fn entry(&self, w: &Walk<'_>, ifd: &Ifd, index: usize) -> Fate {
         let Some(e) = ifd.entries.get(index) else {
             return Fate::new(Disposition::Malformed);
         };
         if !ifd.followed {
             return self.unread(ifd.kind, e.tag, "in a directory the decoder does not walk");
         }
-        if e.tag == ORIENTATION && self.orientation_ifd == Some(ifd.at) {
+        if let Role::Cr3Cmt(n) = self.role {
+            return cr3_cmt_entry(n, e.tag, ifd.kind);
+        }
+        // rawler leaves every image's orientation Normal (rawimage.rs
+        // `orientation: Orientation::Normal, // TODO fixme`), so only
+        // rawloader builds report the tag.
+        if e.tag == ORIENTATION && self.orientation_ifd == Some(ifd.at) && !RAWLER {
             return Fate::new(Disposition::Metadata(MetadataKind::Orientation));
+        }
+        if e.tag == ORIENTATION && RAWLER {
+            return Fate::because(
+                Disposition::Dropped,
+                "parsed by rawler, which reports every image as Normal orientation (zenraw#22)",
+            );
         }
         if RAWLER {
             return Fate::because(
@@ -244,10 +277,16 @@ impl Rules for RawRules {
                 Disposition::Dropped,
                 "parsed by rawloader, value unused; XMP is surfaced only with the `xmp` feature",
             ),
-            MAKER_NOTE => Fate::because(
-                Disposition::Structure,
-                "parsed by rawloader as a maker-note IFD; camera decoders read white balance, levels and keys from it; bytes it never reads inside are not split out",
-            ),
+            MAKER_NOTE => match w.loc(e) {
+                tiff_walk::Loc::At(off, _) if !self.parsed_notes.contains(&off) => Fate::because(
+                    Disposition::Dropped,
+                    "rawloader cannot parse this maker note as an IFD (signature it does not know), so nothing reads it",
+                ),
+                _ => Fate::because(
+                    Disposition::Structure,
+                    "parsed by rawloader as a maker-note IFD; camera decoders read white balance, levels and keys from it",
+                ),
+            },
             GPS_IFD => Fate::because(
                 Disposition::Skipped,
                 "GPS IFD pointer; rawloader does not follow it",
@@ -469,20 +508,298 @@ fn place_tiff(
         orientation_ifd: None,
         xmp,
         dng: false,
+        parsed_notes: Vec::new(),
     };
     let mut w = walk(data, base, limit, &rules);
     rules.dng = w.ifds.iter().any(|ifd| w.find(ifd, DNG_VERSION).is_some());
-    if role != Role::RafJpegExif {
+    if matches!(role, Role::Main | Role::RafCfa) {
         rules.raw_ifd = pick_raw_ifd(&w);
     }
-    if role != Role::RafCfa {
+    if matches!(role, Role::Main | Role::RafJpegExif) {
         rules.orientation_ifd = rawloader_order(&w)
             .into_iter()
             .find(|&i| w.find(&w.ifds[i], ORIENTATION).is_some())
             .map(|i| w.ifds[i].at);
     }
+    let notes = if matches!(role, Role::Main | Role::RafJpegExif) {
+        maker_notes(data, limit, &w, &rules)
+    } else {
+        Vec::new()
+    };
+    rules.parsed_notes = notes.iter().map(|n| n.range.start).collect();
     let p = place(&mut w, &rules, first);
-    (p.parts, p.logical_end, p.ifd0_ok, w.fatal.clone())
+    let parts = if notes.is_empty() {
+        p.parts
+    } else {
+        attach_maker_notes(p.parts, notes)
+    };
+    (parts, p.logical_end, p.ifd0_ok, w.fatal.clone())
+}
+
+/// What one CR3 `CMTn` TIFF's entries mean on the zencodec path: rawler
+/// reads Make/Model from CMT1 for the camera lookup and the quality mode
+/// (tag 1) from CMT3; the rest goes into rawler's own EXIF, which zenraw
+/// never reports (decoders/cr3.rs `new`, `raw_metadata`, `get_mode`).
+fn cr3_cmt_entry(n: u8, tag: u16, kind: Kind) -> Fate {
+    if !RAWLER {
+        return if tag_known(kind, tag) {
+            Fate::because(Disposition::Skipped, CR3_NOT_DECODED)
+        } else {
+            Fate::because(Disposition::Unknown, CR3_NOT_DECODED)
+        };
+    }
+    match (n, tag) {
+        (1, 271 | 272) => Fate::because(
+            Disposition::Structure,
+            "camera lookup (rawler cr3.rs `new`)",
+        ),
+        (3, 1) => Fate::because(
+            Disposition::Structure,
+            "quality mode (rawler cr3.rs `get_mode`)",
+        ),
+        (4, _) => Fate::because(
+            Disposition::Dropped,
+            "GPS: parsed by rawler into its EXIF; zenraw reports none",
+        ),
+        _ => Fate::because(
+            Disposition::Dropped,
+            "parsed by rawler into its EXIF and maker-note data; zenraw reports none",
+        ),
+    }
+}
+
+/// A maker note rawloader parses as an IFD, walked with its vendor rules.
+struct MakerNote {
+    /// The MakerNote value's range.
+    range: Range<u64>,
+    /// Signature and embedded-header parts.
+    header: Vec<Cand>,
+    /// Parts of the walked maker-note IFDs.
+    parts: Vec<Cand>,
+}
+
+/// Maker notes in `w` that rawloader parses (decoders/tiff.rs
+/// `TiffIFD::new_makernote`), each walked with the same base and byte-order
+/// rules rawloader uses.
+fn maker_notes(data: &[u8], limit: u64, w: &Walk<'_>, rules: &RawRules) -> Vec<MakerNote> {
+    let mut out = Vec::new();
+    for ifd in w.ifds.iter().filter(|i| i.followed && i.problem.is_none()) {
+        let Some(e) = w.find(ifd, MAKER_NOTE) else {
+            continue;
+        };
+        let tiff_walk::Loc::At(mn, size) = w.loc(e) else {
+            continue;
+        };
+        let end = mn.saturating_add(size).min(limit);
+        if mn >= end || out.iter().any(|m: &MakerNote| m.range.start == mn) {
+            continue;
+        }
+        if let Some(note) = maker_note(data, limit, w, rules, mn..end) {
+            out.push(note);
+        }
+    }
+    out
+}
+
+fn sig(data: &[u8], at: u64, s: &[u8]) -> bool {
+    get(data, at, s.len() as u64) == Some(s)
+}
+
+fn byte_order(data: &[u8], at: u64) -> Option<bool> {
+    match get(data, at, 2) {
+        Some(b"II") => Some(true),
+        Some(b"MM") => Some(false),
+        _ => None,
+    }
+}
+
+/// One maker note at `r`, or `None` when rawloader would fail to parse it
+/// as an IFD (more than 4000 entries, as with SONY/Panasonic/Fujifilm/Apple
+/// signatures it does not know).
+fn maker_note(
+    data: &[u8],
+    limit: u64,
+    w: &Walk<'_>,
+    rules: &RawRules,
+    r: Range<u64>,
+) -> Option<MakerNote> {
+    let mn = r.start;
+    let mut header = Vec::new();
+    let mut head = |range: Range<u64>, d: Disposition, what: &str| {
+        if range.start < range.end && range.end <= r.end {
+            header.push(Cand::new(
+                range,
+                PartKind::Header,
+                PartTag::None,
+                d,
+                what.into(),
+            ));
+        }
+    };
+    let le = w.lay.le;
+    let lay = |le: bool| tiff_walk::Layout { le, big: false };
+    let unread = if RAWLER {
+        Disposition::Structure
+    } else {
+        Disposition::Skipped
+    };
+    // (IFD position, offset base, byte order, extra IFD for Olympus ImgProc)
+    let (at, base, le, nested) = if sig(data, mn, b"OLYMP") {
+        let new_style = sig(data, mn, b"OLYMPUS");
+        let off = if new_style { 12 } else { 8 };
+        head(mn..mn + 5, Disposition::Structure, "maker-note signature");
+        head(
+            mn + 5..mn + off,
+            unread,
+            "rest of the Olympus header; rawloader does not read it",
+        );
+        (mn + off, w.base, le, new_style)
+    } else if sig(data, mn, b"PENTAX") {
+        let ble = byte_order(data, mn + 8)?;
+        head(mn..mn + 6, Disposition::Structure, "maker-note signature");
+        head(
+            mn + 6..mn + 8,
+            unread,
+            "Pentax header bytes rawloader does not read",
+        );
+        head(mn + 8..mn + 10, Disposition::Structure, "byte order");
+        (mn + 10, mn, ble, false)
+    } else if sig(data, mn, b"Nikon\0\x02") {
+        let ble = byte_order(data, mn + 10)?;
+        head(mn..mn + 7, Disposition::Structure, "maker-note signature");
+        head(
+            mn + 7..mn + 10,
+            unread,
+            "maker-note version; rawloader does not read it",
+        );
+        head(
+            mn + 10..mn + 12,
+            Disposition::Structure,
+            "embedded TIFF byte order",
+        );
+        head(
+            mn + 12..mn + 18,
+            unread,
+            "embedded TIFF magic and IFD offset; rawloader assumes 8",
+        );
+        (mn + 18, mn + 10, ble, false)
+    } else {
+        let mut off = 0;
+        if sig(data, mn, b"EPSON") {
+            head(mn..mn + 5, Disposition::Structure, "maker-note signature");
+            head(
+                mn + 5..mn + 8,
+                unread,
+                "rest of the Epson header; rawloader does not read it",
+            );
+            off = 8;
+        } else if sig(data, mn, b"AOC\0") {
+            head(mn..mn + 4, Disposition::Structure, "maker-note signature");
+            off = 4;
+        }
+        // rawloader checks "II" and then "MM" at the advanced offset.
+        let mut ble = le;
+        if byte_order(data, mn + off) == Some(true) {
+            head(mn + off..mn + off + 2, Disposition::Structure, "byte order");
+            off += 2;
+            ble = true;
+        }
+        if byte_order(data, mn + off) == Some(false) {
+            head(mn + off..mn + off + 2, Disposition::Structure, "byte order");
+            off += 2;
+            ble = false;
+        }
+        (mn + off, w.base, ble, false)
+    };
+    // rawloader's `TiffIFD::new` rejects more than 4000 entries.
+    let count = lay(le).u16(data, at)?;
+    if count > 4000 {
+        return None;
+    }
+    let mut mw = tiff_walk::walk_ifd(
+        data,
+        base,
+        limit,
+        lay(le),
+        at,
+        Kind::MakerNote,
+        "maker-note IFD".into(),
+        rules,
+    );
+    let mut parts = place(&mut mw, rules, Vec::new()).parts;
+    if nested {
+        // New-style Olympus: the ImgProc sub-IFD (0x2040) sits at an offset
+        // from the maker note's start, with values relative to it.
+        let ioff = mw
+            .ifds
+            .first()
+            .and_then(|i| mw.find(i, 0x2040))
+            .and_then(|e| mw.uints(e, 1).first().copied());
+        if let Some(ioff) = ioff.and_then(|o| mn.checked_add(o)) {
+            let mut iw = tiff_walk::walk_ifd(
+                data,
+                mn,
+                limit,
+                lay(le),
+                ioff,
+                Kind::MakerNote,
+                "Olympus ImgProc IFD".into(),
+                rules,
+            );
+            parts.extend(place(&mut iw, rules, Vec::new()).parts);
+        }
+    }
+    Some(MakerNote {
+        range: r,
+        header,
+        parts,
+    })
+}
+
+/// Hang each walked maker note under its MakerNote value part (a container
+/// whose unclaimed bytes become `Unreferenced`); maker-note parts outside
+/// the value are placed at the top level.
+fn attach_maker_notes(parts: Vec<Cand>, notes: Vec<MakerNote>) -> Vec<Cand> {
+    let mut parts = parts;
+    let mut outside = Vec::new();
+    for note in notes {
+        let Some(host) = parts.iter_mut().find(|c| {
+            c.kind == PartKind::Field
+                && c.tag == PartTag::Code(u32::from(MAKER_NOTE))
+                && c.range == note.range
+                && c.disp.is_consumed()
+        }) else {
+            continue;
+        };
+        let mut inner = Placed::default();
+        for c in note.header {
+            inner.insert(c);
+        }
+        for c in note.parts {
+            if c.range.start >= host.range.start && c.range.end <= host.range.end {
+                inner.insert(c);
+            } else {
+                outside.push(c);
+            }
+        }
+        host.children = inner.into_sorted();
+        host.body = Some(host.range.clone());
+        host.disp = Disposition::Structure;
+        host.detail = String::from(
+            "MakerNote value, walked as an IFD below; bytes nothing references are Unreferenced",
+        );
+    }
+    if outside.is_empty() {
+        return parts;
+    }
+    let mut placed = Placed::default();
+    for c in parts {
+        placed.insert(c);
+    }
+    for c in outside {
+        placed.insert(c);
+    }
+    placed.into_sorted()
 }
 
 /// The surfaced XMP packet, as a part to place ahead of everything else.
@@ -770,23 +1087,61 @@ fn is_container(fourcc: &[u8; 4]) -> bool {
     )
 }
 
-/// CR3 (ISOBMFF): every box, recursing into containers and Canon's `uuid`.
+/// Canon's XMP `uuid` at the top level of a CR3 (rawler `Cr3XpacketBox`).
+const CR3_XMP_UUID: [u8; 16] = [
+    0xbe, 0x7a, 0xcf, 0xcb, 0x97, 0xa9, 0x42, 0xe8, 0x9c, 0x71, 0x99, 0x94, 0x91, 0xe3, 0xaf, 0xac,
+];
+
+/// Sample tables of one `trak`, as payload ranges.
+#[derive(Default)]
+struct Trak {
+    /// Type of the first `stsd` sample entry (`CRAW`, `CTMD`, ...).
+    entry: Option<[u8; 4]>,
+    stsz: Option<Range<u64>>,
+    stsc: Option<Range<u64>>,
+    co64: Option<Range<u64>>,
+    stco: Option<Range<u64>>,
+}
+
+/// State of one CR3 walk.
+struct Cr3<'a> {
+    data: &'a [u8],
+    rawler: bool,
+    budget: usize,
+    traks: Vec<Trak>,
+    /// 0-based index of the `trak` CCTP names as the full raw image
+    /// (CCDT image type 0, rawler `Cr3ImageType::CrxBix`).
+    raw_trak: Option<usize>,
+}
+
+/// Samples mapped per file, so a crafted sample table cannot explode.
+const MAX_CR3_SAMPLES: usize = 1 << 16;
+
+/// CR3 (ISOBMFF): every box, recursing into containers and Canon's metadata
+/// `uuid`; the `CMT1`..`CMT4` TIFFs walked; `mdat` split into the samples
+/// each `trak` locates (rawler decoders/cr3.rs and formats/bmff).
 fn cr3(data: &[u8]) -> Placement {
     let len = data.len() as u64;
-    let rawler = cfg!(feature = "rawler");
-    let mut placed = Placed::default();
+    let mut walk = Cr3 {
+        data,
+        rawler: RAWLER,
+        budget: 4096,
+        traks: Vec::new(),
+        raw_trak: None,
+    };
+    let mut boxes = Vec::new();
     let mut at = 0u64;
     let mut logical_end = 0;
-    let mut depth_budget = 4096usize;
+    let mut tail = None;
     while at < len {
-        match cr3_box(data, at, len, rawler, 0, &mut depth_budget) {
+        match walk.walk_box(at, len, 0, None, true) {
             Some(c) => {
                 at = c.range.end;
                 logical_end = at;
-                placed.insert(c);
+                boxes.push(c);
             }
             None => {
-                placed.insert(Cand::new(
+                tail = Some(Cand::new(
                     at..len,
                     PartKind::Gap,
                     PartTag::None,
@@ -798,6 +1153,11 @@ fn cr3(data: &[u8]) -> Placement {
             }
         }
     }
+    walk.map_samples(&mut boxes);
+    let mut placed = Placed::default();
+    for c in boxes.into_iter().chain(tail) {
+        placed.insert(c);
+    }
     (
         placed.into_sorted(),
         logical_end,
@@ -805,90 +1165,354 @@ fn cr3(data: &[u8]) -> Placement {
     )
 }
 
-/// One box at `at` within `end`, with its children.
-fn cr3_box(
-    data: &[u8],
-    at: u64,
-    end: u64,
-    rawler: bool,
-    depth: u32,
-    budget: &mut usize,
-) -> Option<Cand> {
-    let size32 = be32(data, at)?;
-    let fourcc: [u8; 4] = get(data, at + 4, 4)?.try_into().ok()?;
-    let (header, size) = match size32 {
-        0 => (8, end - at),
-        1 => {
-            let b: [u8; 8] = get(data, at + 8, 8)?.try_into().ok()?;
-            (16, u64::from_be_bytes(b))
+impl Cr3<'_> {
+    /// One box at `at` within `end`, with its children. `trak` is the index
+    /// of the enclosing `trak`, `top` whether the box sits at file level.
+    fn walk_box(
+        &mut self,
+        at: u64,
+        end: u64,
+        depth: u32,
+        trak: Option<usize>,
+        top: bool,
+    ) -> Option<Cand> {
+        let data = self.data;
+        let size32 = be32(data, at)?;
+        let fourcc: [u8; 4] = get(data, at + 4, 4)?.try_into().ok()?;
+        let (mut header, size) = match size32 {
+            0 => (8, end - at),
+            1 => {
+                let b: [u8; 8] = get(data, at + 8, 8)?.try_into().ok()?;
+                (16, u64::from_be_bytes(b))
+            }
+            n => (8, n),
+        };
+        let uuid = if &fourcc == b"uuid" {
+            let u: [u8; 16] = get(data, at + header, 16)?.try_into().ok()?;
+            header += 16;
+            Some(u)
+        } else {
+            None
+        };
+        if size < header {
+            return None;
         }
-        n => (8, n),
-    };
-    let header = if &fourcc == b"uuid" {
-        header + 16
-    } else {
-        header
-    };
-    if size < header {
-        return None;
-    }
-    let box_end = at.saturating_add(size);
-    let cut = box_end > end;
-    let box_end = box_end.min(end);
-    *budget = budget.saturating_sub(1);
-    let (disp, note): (Disposition, &str) = match (&fourcc, rawler) {
-        (b"ftyp", _) => (
-            Disposition::Structure,
-            "brand checked by zenraw's format detection",
-        ),
-        (b"free" | b"skip", false) => (Disposition::Padding, "free space"),
-        (b"free" | b"skip", true) => (
-            Disposition::Structure,
-            "box header parsed by rawler; the payload is free space",
-        ),
-        (b"mdat", true) => (
-            Disposition::ImageData,
-            "holds the CRX raw track rawler decodes, plus preview tracks it does not; track extents are not split out",
-        ),
-        (_, true) => (Disposition::Structure, "parsed by rawler"),
-        (_, false) => (
-            Disposition::Skipped,
-            "CR3 is decoded only by the `rawler` backend; this build's decode fails",
-        ),
-    };
-    let disp = if cut { Disposition::Malformed } else { disp };
-    let mut c = Cand::new(
-        at..box_end,
-        PartKind::Box,
-        PartTag::FourCc(fourcc),
-        disp,
-        note.into(),
-    );
-    if cut {
-        c.note("box runs past the end of its parent");
-    }
-    if rawler && matches!(&fourcc, b"free" | b"skip") && at + header < box_end {
-        c.children.push(Cand::new(
-            at + header..box_end,
-            PartKind::Gap,
-            PartTag::None,
-            Disposition::Padding,
-            "free space".into(),
-        ));
-    }
-    let recurse = is_container(&fourcc)
-        || (&fourcc == b"uuid" && get(data, at + header - 16, 16) == Some(&CANON_UUID[..]));
-    if recurse && depth < 16 && *budget > 0 {
-        let mut child_at = at + header;
-        while child_at < box_end && *budget > 0 {
-            match cr3_box(data, child_at, box_end, rawler, depth + 1, budget) {
-                Some(ch) => {
-                    child_at = ch.range.end;
-                    c.children.push(ch);
+        let box_end = at.saturating_add(size);
+        let cut = box_end > end;
+        let box_end = box_end.min(end);
+        let payload = (at + header).min(box_end)..box_end;
+        self.budget = self.budget.saturating_sub(1);
+        let rawler = self.rawler;
+        let canon_meta = uuid == Some(CANON_UUID);
+        let container = is_container(&fourcc) || canon_meta;
+        let cmt = match &fourcc {
+            b"CMT1" => Some(1),
+            b"CMT2" => Some(2),
+            b"CMT3" => Some(3),
+            b"CMT4" => Some(4),
+            _ => None,
+        };
+        // (disposition, detail, split: payload disposition and detail)
+        let (disp, note, split): (Disposition, &str, Option<(Disposition, &str)>) = match (
+            &fourcc, rawler,
+        ) {
+            (b"ftyp", _) => (
+                Disposition::Structure,
+                "brand checked by zenraw's format detection",
+                None,
+            ),
+            (b"free" | b"skip", false) => (Disposition::Padding, "free space", None),
+            (b"free" | b"skip", true) => (
+                Disposition::Structure,
+                "box header parsed by rawler",
+                Some((Disposition::Padding, "free space")),
+            ),
+            (_, false) => (Disposition::Skipped, CR3_NOT_DECODED, None),
+            (b"mdat", true) => (
+                Disposition::Structure,
+                "box header; samples the tracks locate are listed below",
+                None,
+            ),
+            (b"THMB", true) => (
+                Disposition::Structure,
+                "box header parsed by rawler",
+                Some((
+                    Disposition::Dropped,
+                    "thumbnail JPEG rawler parses but does not use",
+                )),
+            ),
+            (b"uuid", true) if top && uuid == Some(CR3_XMP_UUID) => (
+                Disposition::Structure,
+                "box header parsed by rawler",
+                Some((
+                    Disposition::Dropped,
+                    "XMP packet rawler reads but zenraw does not use; zenraw's XMP comes from its own byte scan",
+                )),
+            ),
+            (b"moov", true) => (Disposition::Structure, "parsed by rawler", None),
+            (_, true) if top => (
+                Disposition::Structure,
+                "box header parsed by rawler",
+                Some((
+                    Disposition::Dropped,
+                    "vendor box rawler reads and does not use (preview data)",
+                )),
+            ),
+            (_, true) => (Disposition::Structure, "parsed by rawler", None),
+        };
+        let disp = if cut { Disposition::Malformed } else { disp };
+        let mut c = Cand::new(
+            at..box_end,
+            PartKind::Box,
+            PartTag::FourCc(fourcc),
+            disp,
+            note.into(),
+        );
+        if cut {
+            c.note("box runs past the end of its parent");
+        }
+        if let Some((d, n)) = split
+            && !cut
+            && payload.start < payload.end
+        {
+            c.body = Some(at..box_end);
+            c.children.push(Cand::new(
+                at..payload.start,
+                PartKind::Header,
+                PartTag::None,
+                Disposition::Structure,
+                "box header".into(),
+            ));
+            c.children.push(Cand::new(
+                payload.clone(),
+                PartKind::Gap,
+                PartTag::None,
+                d,
+                n.into(),
+            ));
+        }
+        let trak = if &fourcc == b"trak" && depth <= 1 {
+            self.traks.push(Trak::default());
+            Some(self.traks.len() - 1)
+        } else {
+            trak
+        };
+        if let Some(t) = trak.and_then(|t| self.traks.get_mut(t)) {
+            match &fourcc {
+                b"stsz" => t.stsz = Some(payload.clone()),
+                b"stsc" => t.stsc = Some(payload.clone()),
+                b"co64" => t.co64 = Some(payload.clone()),
+                b"stco" => t.stco = Some(payload.clone()),
+                b"stsd" => {
+                    t.entry = get(data, payload.start + 12, 4).and_then(|b| b.try_into().ok());
                 }
-                None => break,
+                _ => {}
+            }
+        }
+        if &fourcc == b"CCTP" {
+            self.read_cctp(payload.clone());
+        }
+        if let Some(n) = cmt
+            && !cut
+        {
+            let (parts, _, _, _) = place_tiff(
+                data,
+                payload.start,
+                payload.end,
+                Role::Cr3Cmt(n),
+                false,
+                Vec::new(),
+            );
+            c.children = parts;
+            c.body = Some(payload.clone());
+            if rawler {
+                c.detail = format!("CMT{n} TIFF, parsed by rawler");
+            }
+        }
+        if (container || &fourcc == b"mdat") && !cut {
+            c.body = Some(payload.clone());
+        }
+        if container && depth < 16 && self.budget > 0 {
+            let mut child_at = payload.start;
+            while child_at < box_end && self.budget > 0 {
+                match self.walk_box(child_at, box_end, depth + 1, trak, false) {
+                    Some(ch) => {
+                        child_at = ch.range.end;
+                        c.children.push(ch);
+                    }
+                    None => break,
+                }
+            }
+        }
+        Some(c)
+    }
+
+    /// CCTP: version/flags, two u32s, then CCDT boxes of
+    /// `image_type:u64 dual_pixel:u32 trak_index:u32` (rawler ext_cr3).
+    fn read_cctp(&mut self, payload: Range<u64>) {
+        let mut at = payload.start + 12;
+        while at + 24 <= payload.end {
+            let (Some(size), Some(b"CCDT")) = (be32(self.data, at), get(self.data, at + 4, 4))
+            else {
+                break;
+            };
+            let image_type = get(self.data, at + 8, 8)
+                .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                .map(u64::from_be_bytes);
+            let trak_index = be32(self.data, at + 20);
+            if image_type == Some(0)
+                && let Some(t) = trak_index.filter(|&t| t > 0)
+            {
+                self.raw_trak = Some(t as usize - 1);
+            }
+            if size < 8 {
+                break;
+            }
+            at += size;
+        }
+    }
+
+    /// The samples of `trak`: (1-based sample number, byte range), from
+    /// `stsc` runs over `co64`/`stco` chunk offsets and `stsz` sizes.
+    fn samples(&self, t: &Trak) -> Vec<(u32, Range<u64>)> {
+        let d = self.data;
+        let mut out = Vec::new();
+        let (Some(stsz), Some(stsc)) = (&t.stsz, &t.stsc) else {
+            return out;
+        };
+        let Some(fixed) = be32(d, stsz.start + 4) else {
+            return out;
+        };
+        let Some(count) = be32(d, stsz.start + 8) else {
+            return out;
+        };
+        let size_of = |n: u64| -> Option<u64> {
+            if fixed != 0 {
+                Some(fixed)
+            } else {
+                be32(d, stsz.start + 12 + 4 * (n - 1))
+            }
+        };
+        let runs = be32(d, stsc.start + 4).unwrap_or(0).min(65_536);
+        let run = |i: u64| -> Option<(u64, u64)> {
+            let at = stsc.start + 8 + 12 * i;
+            Some((be32(d, at)?, be32(d, at + 4)?))
+        };
+        let (chunks, chunk_at): (u64, Box<dyn Fn(u64) -> Option<u64> + '_>) =
+            match (&t.co64, &t.stco) {
+                (Some(co), _) => (
+                    be32(d, co.start + 4).unwrap_or(0),
+                    Box::new(move |i| {
+                        let b: [u8; 8] = get(d, co.start + 8 + 8 * i, 8)?.try_into().ok()?;
+                        Some(u64::from_be_bytes(b))
+                    }),
+                ),
+                (None, Some(co)) => (
+                    be32(d, co.start + 4).unwrap_or(0),
+                    Box::new(move |i| be32(d, co.start + 8 + 4 * i)),
+                ),
+                _ => return out,
+            };
+        let mut sample = 1u64;
+        let mut r = 0u64;
+        for chunk in 1..=chunks.min(MAX_CR3_SAMPLES as u64) {
+            while r + 1 < runs && run(r + 1).is_some_and(|(first, _)| first <= chunk) {
+                r += 1;
+            }
+            let Some((_, per_chunk)) = run(r) else { break };
+            let Some(mut off) = chunk_at(chunk - 1) else {
+                break;
+            };
+            for _ in 0..per_chunk.min(MAX_CR3_SAMPLES as u64) {
+                if sample > count || out.len() >= MAX_CR3_SAMPLES {
+                    return out;
+                }
+                let Some(n) = size_of(sample) else { return out };
+                let end = off.saturating_add(n);
+                out.push((sample as u32, off..end));
+                off = end;
+                sample += 1;
+            }
+        }
+        out
+    }
+
+    /// Hang every track's samples under the `mdat` that holds them.
+    fn map_samples(&self, boxes: &mut [Cand]) {
+        let mut extents = Vec::new();
+        for (i, t) in self.traks.iter().enumerate() {
+            let entry = t.entry.map(|e| String::from_utf8_lossy(&e).into_owned());
+            let ctmd = t.entry == Some(*b"CTMD");
+            for (n, r) in self.samples(t) {
+                if r.start >= r.end {
+                    continue;
+                }
+                let (disp, why): (Disposition, String) = if !self.rawler {
+                    (Disposition::Skipped, CR3_NOT_DECODED.into())
+                } else if self.raw_trak == Some(i) && n == 1 && t.co64.is_some() {
+                    (
+                        Disposition::ImageData,
+                        "CRX raw image rawler decodes (CCTP raw track, image 0)".into(),
+                    )
+                } else if self.raw_trak == Some(i) && t.co64.is_none() {
+                    (Disposition::Skipped, "rawler reads only co64 chunk offsets; this track uses stco, so the decode fails".into())
+                } else if self.raw_trak == Some(i) {
+                    (
+                        Disposition::Skipped,
+                        format!("image {}, not decoded (zencodec decodes image 0)", n - 1),
+                    )
+                } else if ctmd && n == 1 {
+                    (
+                        Disposition::Structure,
+                        "CTMD records rawler reads for white balance and levels".into(),
+                    )
+                } else {
+                    (
+                        Disposition::Skipped,
+                        "preview or other track sample, not decoded".into(),
+                    )
+                };
+                let mut c = Cand::new(
+                    r,
+                    PartKind::Extent,
+                    PartTag::Code(i as u32 + 1),
+                    disp,
+                    format!("trak {} sample {n}; {why}", i + 1),
+                );
+                c.label = entry.clone();
+                extents.push(c);
+            }
+        }
+        for mdat in boxes
+            .iter_mut()
+            .filter(|b| b.tag == PartTag::FourCc(*b"mdat"))
+        {
+            let Some(body) = mdat.body.clone() else {
+                continue;
+            };
+            let mut inner = Placed::default();
+            let mut outside = 0usize;
+            for c in extents.iter() {
+                if c.range.start >= body.start && c.range.end <= body.end {
+                    let mut copy = Cand::new(
+                        c.range.clone(),
+                        c.kind,
+                        c.tag.clone(),
+                        c.disp,
+                        c.detail.clone(),
+                    );
+                    copy.label = c.label.clone();
+                    inner.insert(copy);
+                } else if c.range.start < body.end && c.range.end > body.start {
+                    outside += 1;
+                }
+            }
+            mdat.children = inner.into_sorted();
+            if outside > 0 {
+                mdat.note(&format!(
+                    "{outside} sample(s) cross the mdat boundary and are not listed"
+                ));
             }
         }
     }
-    Some(c)
 }

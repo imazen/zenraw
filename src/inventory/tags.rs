@@ -24,6 +24,8 @@ fn lookup(kind: Kind, tag: u16) -> Option<&'static str> {
     let table = match kind {
         Kind::Gps => GPS_TAGS,
         Kind::Interop => INTEROP_TAGS,
+        // Maker-note tag numbers are vendor-specific; TIFF names would mislead.
+        Kind::MakerNote => return None,
         _ => TIFF_TAGS,
     };
     table

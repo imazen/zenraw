@@ -175,6 +175,10 @@ pub(super) enum Kind {
     Gps,
     /// The Interoperability IFD (40965), or chained after it.
     Interop,
+    /// A maker-note IFD inside a MakerNote (37500) value, walked by
+    /// [`walk_ifd`] with the vendor's offset base.
+    #[allow(dead_code)] // not every crate walks maker notes
+    MakerNote,
 }
 
 /// One IFD entry.
@@ -687,25 +691,68 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         w.header_ext = Some((r, fate.d, detail));
     }
 
-    /// Where a pending directory's pointer came from.
-    #[derive(Clone, Copy)]
-    enum From {
-        Header,
-        Entry(usize, usize),
-        Next(usize),
-    }
-    struct Pending {
-        at: Option<u64>,
-        kind: Kind,
-        name: String,
-        followed: bool,
-        from: From,
-    }
+    let first = w.abs(ifd0);
+    run_queue(&mut w, first, Kind::Page(0), "IFD0".into(), rules);
+    w
+}
+
+/// Walk the directories starting at the absolute offset `at`, which has no
+/// TIFF header of its own (a maker-note IFD): offsets inside are relative to
+/// `base`, and `lay` gives the byte order. Every position stays below
+/// `limit`.
+#[allow(clippy::too_many_arguments, dead_code)] // not every crate walks maker notes
+pub(super) fn walk_ifd<'a>(
+    data: &'a [u8],
+    base: u64,
+    limit: u64,
+    lay: Layout,
+    at: u64,
+    kind: Kind,
+    name: String,
+    rules: &dyn Rules,
+) -> Walk<'a> {
+    let limit = limit.min(data.len() as u64);
+    let d = &data[..usize::try_from(limit).unwrap_or(data.len())];
+    let mut w = Walk {
+        d,
+        base,
+        lay,
+        magic: 0,
+        header: at..at,
+        header_ok: true,
+        header_ext: None,
+        fatal: None,
+        ifds: Vec::new(),
+    };
+    run_queue(&mut w, Some(at), kind, name, rules);
+    w
+}
+
+/// Where a pending directory's pointer came from.
+#[derive(Clone, Copy)]
+enum From {
+    Header,
+    Entry(usize, usize),
+    Next(usize),
+}
+
+struct Pending {
+    at: Option<u64>,
+    kind: Kind,
+    name: String,
+    followed: bool,
+    from: From,
+}
+
+/// Walk every directory reachable from the first one, breadth first.
+fn run_queue(w: &mut Walk<'_>, first: Option<u64>, kind: Kind, name: String, rules: &dyn Rules) {
+    let d = w.d;
+    let lay = w.lay;
     let mut queue = VecDeque::new();
     queue.push_back(Pending {
-        at: w.abs(ifd0),
-        kind: Kind::Page(0),
-        name: "IFD0".into(),
+        at: first,
+        kind,
+        name,
         followed: true,
         from: From::Header,
     });
@@ -717,16 +764,16 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
             From::Next(i) => w.ifds[i].notes.push(text),
         };
         let Some(at) = p.at else {
-            note(&mut w, format!("{} offset overflows", p.name));
+            note(w, format!("{} offset overflows", p.name));
             continue;
         };
         if w.ifds.len() >= MAX_IFDS {
-            note(&mut w, format!("not walked: more than {MAX_IFDS} IFDs"));
+            note(w, format!("not walked: more than {MAX_IFDS} IFDs"));
             continue;
         }
         if !visited.insert(at) {
             note(
-                &mut w,
+                w,
                 format!(
                     "{} at {at} was already walked (cycle or shared IFD)",
                     p.name
@@ -736,7 +783,7 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
         }
         let Some(mut ifd) = parse_ifd(d, lay, at, p.kind, p.name.clone(), p.followed) else {
             note(
-                &mut w,
+                w,
                 format!("{} offset {at} is past the end of the data", p.name),
             );
             continue;
@@ -765,8 +812,8 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
             let Some((child_kind, label)) = rules.pointer(kind, e) else {
                 continue;
             };
-            let followed = rules.follows(&w, &w.ifds[idx], e);
-            let ptrs = rules.pointer_offsets(&w, e);
+            let followed = rules.follows(w, &w.ifds[idx], e);
+            let ptrs = rules.pointer_offsets(w, e);
             if ptrs.is_empty() {
                 let text = format!("{label} pointer of type {} not read", type_name(e.typ));
                 w.ifds[idx].entries[ei].notes.push(text);
@@ -806,7 +853,6 @@ pub(super) fn walk<'a>(data: &'a [u8], base: u64, limit: u64, rules: &dyn Rules)
             });
         }
     }
-    w
 }
 
 // ── Parts before overlap resolution ────────────────────────────────────
@@ -820,6 +866,9 @@ pub(super) struct Cand {
     pub(super) disp: Disposition,
     pub(super) detail: String,
     pub(super) children: Vec<Cand>,
+    /// For a container whose children account for its contents: the range
+    /// they tile; uncovered bytes become `Unreferenced` gaps on emission.
+    pub(super) body: Option<Range<u64>>,
     notes: usize,
 }
 
@@ -839,6 +888,7 @@ impl Cand {
             disp,
             detail,
             children: Vec::new(),
+            body: None,
             notes: 0,
         }
     }
@@ -919,6 +969,8 @@ impl Placed {
             let mut piece = Cand::new(r.clone(), c.kind, c.tag.clone(), c.disp, c.detail.clone());
             piece.label = c.label.clone();
             piece.notes = c.notes;
+            // A split container no longer holds its whole body.
+            piece.body = None;
             let (inside, rest): (Vec<Cand>, Vec<Cand>) = children
                 .into_iter()
                 .partition(|ch| ch.range.start >= r.start && ch.range.end <= r.end);
@@ -1267,6 +1319,10 @@ pub(super) fn emit(
     parent: Option<PartId>,
     c: Cand,
 ) -> Result<(), InventoryError> {
+    let body = c
+        .body
+        .clone()
+        .filter(|b| b.start >= c.range.start && b.end <= c.range.end);
     let mut p = Part::new(c.kind, c.tag, c.range, c.disp);
     if let Some(l) = c.label {
         p = p.with_label(l);
@@ -1274,11 +1330,17 @@ pub(super) fn emit(
     if !c.detail.is_empty() {
         p = p.with_detail(c.detail);
     }
+    if let Some(b) = body.clone() {
+        p = p.with_body(b);
+    }
     let id = inv.push(parent, p)?;
     let mut children = c.children;
     children.sort_by_key(|ch| ch.range.start);
     for ch in children {
         emit(inv, Some(id), ch)?;
+    }
+    if body.is_some() {
+        inv.fill_gaps(Some(id), Disposition::Unreferenced)?;
     }
     Ok(())
 }
