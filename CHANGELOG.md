@@ -7,6 +7,8 @@
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
 - `RawError`'s variant set was reshaped for the zencodec `ErrorCategory` taxonomy (see the
   `### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
+
+- Inventory: the TIFF IFD walker now comes from the shared `zenifd` crate (imazen/zenextras#30) instead of an in-crate copy of zentiff's.
   single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
   new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
 

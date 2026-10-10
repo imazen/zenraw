@@ -27,8 +27,8 @@
 //! failures raised in `raw_image` before any pixel work (its dummy image
 //! step decodes DNG pixels, so it is not run).
 
-mod tags;
-mod tiff_walk;
+use zenifd::tags;
+use zenifd::walk as tiff_walk;
 
 #[cfg(test)]
 mod pregate_tests;

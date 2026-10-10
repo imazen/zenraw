@@ -411,6 +411,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zenifd"
+version = "0.1.0"
+source = "git+https://github.com/imazen/zenextras?branch=feat%2Finventory-zentiff#601682d365d7b8d772bb045f45bb554005f41fb1"
+dependencies = [
+ "zencodec",
+]
+
+[[package]]
 name = "zenpixels"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -433,6 +441,7 @@ dependencies = [
  "thiserror",
  "whereat",
  "zencodec",
+ "zenifd",
  "zenpixels",
 ]
 
