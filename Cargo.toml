@@ -25,8 +25,8 @@ thiserror = { version = "2.0.18", default-features = false }
 whereat = { version = "0.1.5", default-features = false }
 enough = { version = "0.4.3", default-features = false }
 zenpixels = { version = ">=0.2.10, <0.4.0", default-features = false }
-zencodec = { git = "https://github.com/imazen/zencodec", rev = "a31a9b680e54d5fea555c44b0d70c65802087df3", version = ">=0.1.26, <0.3.0", optional = true }
-zenmeta = { git = "https://github.com/imazen/zencodec", rev = "a31a9b680e54d5fea555c44b0d70c65802087df3", version = "0.1.0", default-features = false, features = ["inventory"], optional = true }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "a81daf7605dc63074d4a39757e7b4399057d4a8f", version = ">=0.1.26, <0.3.0", optional = true }
+zenmeta = { git = "https://github.com/imazen/zencodec", rev = "a81daf7605dc63074d4a39757e7b4399057d4a8f", version = "0.1.0", default-features = false, features = ["inventory"], optional = true }
 archmage = { version = "0.9.30", default-features = false }
 magetypes = { version = "0.9.30", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
@@ -78,8 +78,8 @@ harness = false
 required-features = ["_dev"]
 
 [patch.crates-io]
-zencodec = { git = "https://github.com/imazen/zencodec", rev = "a31a9b680e54d5fea555c44b0d70c65802087df3" }
-zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "a31a9b680e54d5fea555c44b0d70c65802087df3" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "a81daf7605dc63074d4a39757e7b4399057d4a8f" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "a81daf7605dc63074d4a39757e7b4399057d4a8f" }
 
 [[test]]
 name = "inventory"
