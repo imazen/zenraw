@@ -2438,3 +2438,46 @@ fn configured_limits_and_cancellation_survive_dispatch() {
     );
     assert_eq!(erased.error_category(), Some(native.category()));
 }
+
+#[test]
+fn mid_walk_cancellation_preserves_the_first_reason() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use zencodec::{CategorizedError, ErrorCategory};
+    struct StopOnce(AtomicUsize);
+    impl enough::Stop for StopOnce {
+        fn check(&self) -> Result<(), enough::StopReason> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 1 {
+                Err(enough::StopReason::TimedOut)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for (name, data) in [
+        ("DNG", dng_fixture()),
+        ("RAF", raf_fixture()),
+        ("CR3", cr3_fixture()),
+    ] {
+        let config = RawDecoderConfig::new();
+        let err = config
+            .clone()
+            .job()
+            .with_stop(zencodec::StopToken::new(StopOnce(AtomicUsize::new(0))))
+            .inventory(&data)
+            .unwrap_err();
+        assert_eq!(
+            err.category(),
+            ErrorCategory::Stopped(enough::StopReason::TimedOut),
+            "{name}"
+        );
+        let dynamic: &dyn zencodec::decode::DynDecoderConfig = &config;
+        let mut job = dynamic.dyn_job();
+        job.set_stop(zencodec::StopToken::new(StopOnce(AtomicUsize::new(0))));
+        let err = job.inventory(&data).unwrap_err();
+        assert_eq!(
+            zencodec::CodecErrorExt::error_category(&*err),
+            Some(ErrorCategory::Stopped(enough::StopReason::TimedOut)),
+            "{name} dynamic"
+        );
+    }
+}

@@ -123,6 +123,29 @@ enum Role {
 /// The backend's name, for details.
 const BACKEND: &str = if RAWLER { "rawler" } else { "rawloader" };
 
+/// Retain the first cancellation reason across nested container walks.
+/// This is local traversal state, not a shareable cancellation token.
+struct InventoryStop<'a> {
+    token: &'a dyn enough::Stop,
+    reason: core::cell::Cell<Option<enough::StopReason>>,
+}
+
+impl<'a> InventoryStop<'a> {
+    fn new(token: &'a dyn enough::Stop) -> Self {
+        Self {
+            token,
+            reason: core::cell::Cell::new(None),
+        }
+    }
+
+    fn should_stop(&self) -> bool {
+        if self.reason.get().is_none() {
+            self.reason.set(self.token.check().err());
+        }
+        self.reason.get().is_some()
+    }
+}
+
 /// zenraw's zencodec decode path for one TIFF of the file.
 struct RawRules<'s> {
     role: Role,
@@ -142,7 +165,7 @@ struct RawRules<'s> {
     sony_arw: bool,
     /// Offsets of the MakerNote values the backend parses as IFDs.
     parsed_notes: Vec<u64>,
-    stop: &'s dyn enough::Stop,
+    stop: &'s InventoryStop<'s>,
     /// rawler's sub-IFD offset map for one IFD (its offset), per entry:
     /// whether the entry is the last of its map key ([`RawRules::rawler_keeps`]).
     rawler_map: RefCell<Option<(u64, Vec<bool>)>>,
@@ -1008,7 +1031,7 @@ fn place_tiff(
     limit: u64,
     role: Role,
     xmp: bool,
-    stop: &dyn enough::Stop,
+    stop: &InventoryStop<'_>,
     first: Vec<Cand>,
 ) -> TiffPlacement {
     let mut rules = RawRules {
@@ -1480,7 +1503,7 @@ pub(crate) enum Failed {
     /// The part cap.
     Parts(InventoryError),
     /// The stop token fired.
-    Stopped,
+    Stopped(enough::StopReason),
 }
 
 impl From<InventoryError> for Failed {
@@ -1541,6 +1564,8 @@ fn inventory_with(
     stop: &dyn enough::Stop,
     gate: bool,
 ) -> Result<Inventory, Failed> {
+    let captured_stop = InventoryStop::new(stop);
+    let stop = &captured_stop;
     let len = data.len() as u64;
     let xmp = cfg!(feature = "xmp");
     let mut inv = Inventory::new(format, len);
@@ -1574,9 +1599,11 @@ fn inventory_with(
             ),
         )
     };
-    if cancelled || stop.should_stop() {
-        return Err(Failed::Stopped);
+    stop.should_stop();
+    if let Some(reason) = stop.reason.get() {
+        return Err(Failed::Stopped(reason));
     }
+    debug_assert!(!cancelled, "cancelled walks must retain their stop reason");
     // BigTIFF and other containers zenraw rejects before any backend runs
     // (zencodec_impl `decoder` → `decode::is_raw_file`).
     if !crate::is_raw_file(data) {
@@ -1620,7 +1647,7 @@ fn section(off: u64, n: u64, len: u64) -> Option<(Range<u64>, bool)> {
 
 /// RAF: header, JPEG preview, CFA header records, CFA section
 /// (rawloader `TiffIFD::new_file`).
-fn raf(data: &[u8], xmp: bool, stop: &dyn enough::Stop, cancelled: &mut bool) -> Placement {
+fn raf(data: &[u8], xmp: bool, stop: &InventoryStop<'_>, cancelled: &mut bool) -> Placement {
     let len = data.len() as u64;
     let mut placed = Placed::default();
     if let Some(c) = xmp_cand(data) {
@@ -1981,7 +2008,7 @@ struct Cr3<'a> {
     xmp: Option<Range<u64>>,
     /// Whether it was placed inside the XMP `uuid`.
     xmp_placed: bool,
-    stop: &'a dyn enough::Stop,
+    stop: &'a InventoryStop<'a>,
     cancelled: bool,
     /// The box budget or depth cap stopped part of the walk.
     stopped: bool,
@@ -2078,7 +2105,7 @@ fn xmp_range(_data: &[u8]) -> Option<Range<u64>> {
 /// CR3 (ISOBMFF): every box, recursing into containers and Canon's metadata
 /// `uuid`; the `CMT1`..`CMT4` TIFFs walked; `mdat` split into the samples
 /// each `trak` locates (rawler decoders/cr3.rs and formats/bmff).
-fn cr3(data: &[u8], stop: &dyn enough::Stop, cancelled: &mut bool) -> Placement {
+fn cr3(data: &[u8], stop: &InventoryStop<'_>, cancelled: &mut bool) -> Placement {
     let len = data.len() as u64;
     let mut walk = Cr3 {
         data,
@@ -2622,7 +2649,7 @@ mod tests {
             data.len() as u64,
             Role::Main,
             false,
-            &enough::Unstoppable,
+            &InventoryStop::new(&enough::Unstoppable),
             Vec::new(),
         );
         let bound = u64::from(n) + 4096 + 1;

@@ -425,12 +425,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             })?;
         match crate::inventory::inventory(data, detect_format(data), stop) {
             Ok(inv) => Ok(inv),
-            Err(crate::inventory::Failed::Stopped) => {
-                Err(zencodec::CodecError::of(at!(RawError::from(
-                    enough::Stop::check(stop)
-                        .err()
-                        .unwrap_or(enough::StopReason::Cancelled)
-                ))))
+            Err(crate::inventory::Failed::Stopped(reason)) => {
+                Err(zencodec::CodecError::of(at!(RawError::from(reason))))
             }
             Err(crate::inventory::Failed::Parts(e)) => Err(zencodec::CodecError::of(at!(
                 RawError::LimitExceeded(RawLimitKind::Memory, alloc::format!("inventory: {e}"))

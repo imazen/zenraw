@@ -2,6 +2,13 @@
 
 ## Known Bugs
 
+### Fixed: inventory lost transient timeout reasons
+
+Inventory retained only a cancellation boolean and re-polled the token while
+constructing the error. A token reporting a timeout once became generic
+cancellation. Traversal now captures the first reason across all nested RAW
+containers, and the adapter returns that reason directly.
+
 ### Fixed: allocation-error fixture could succeed on i686
 
 The fallible-allocation tests requested `usize::MAX / 8` f32 elements, which

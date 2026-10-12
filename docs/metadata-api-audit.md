@@ -47,3 +47,8 @@ This inventory is not a deletion recipe.
 same configured input-limit and cancellation details through dynamic dispatch.
 `just metadata-minimal-check` checks inventory with no backend and without std.
 CI covers the enabled/disabled contract and both backends, including i686.
+
+The inventory traversal captures the first cancellation reason across TIFF,
+RAF and CR3 subcontainers. Error construction does not sample the token again.
+The stop-once timeout regression exercises this independently of persistent
+cancellation tokens on both RAW backends.

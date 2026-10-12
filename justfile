@@ -144,3 +144,7 @@ metadata-i686-check runner="env":
 metadata-minimal-check:
     cargo check --no-default-features --features inventory
     cargo check --no-default-features --features std,inventory
+
+metadata-cancellation:
+    cargo test --features inventory --test inventory mid_walk_cancellation_preserves_the_first_reason
+    cargo test --no-default-features --features rawler,zencodec,xmp,inventory --test inventory mid_walk_cancellation_preserves_the_first_reason
