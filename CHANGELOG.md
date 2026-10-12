@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Shared checked-policy and inventory tests reuse the existing decodable DNG fixture across rawloader and rawler, with inventory enabled and disabled. Dependencies are pinned to the unreleased testkit.
+
 ### Fixed
 - Inventory part-cap and invariant failures retain the typed `InventoryError`
   and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
