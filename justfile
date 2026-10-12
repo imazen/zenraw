@@ -136,3 +136,11 @@ inventory-test raw features="inventory,xmp":
 
 inventory-oracle files features="inventory":
     INVENTORY_ORACLE_EXIFTOOL=exiftool INVENTORY_ORACLE_FILES="{{files}}" cargo test --features {{features}} --test inventory exiftool_oracle -- --nocapture
+
+metadata-i686-check runner="env":
+    CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER="{{runner}}" cargo test --target i686-unknown-linux-gnu --no-default-features --features std,rawloader,inventory --lib --test inventory --test inventory_feature --test fuzz_regression
+    CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER="{{runner}}" cargo test --target i686-unknown-linux-gnu --no-default-features --features std,rawler,inventory,xmp --lib --test inventory --test inventory_feature --test fuzz_regression
+
+metadata-minimal-check:
+    cargo check --no-default-features --features inventory
+    cargo check --no-default-features --features std,inventory

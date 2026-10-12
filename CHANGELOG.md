@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+- Fallible-allocation test inputs now exceed the address space on both pointer
+  widths; the old count could successfully allocate on i686. Assertions and
+  production allocation behavior are unchanged.
+
 ### Added
 - Default-off `inventory` feature reusing zenmeta's shared IFD walker and the
   RAW-specific container rules, fixtures, oracle checks and regressions from

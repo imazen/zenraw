@@ -42,3 +42,8 @@ isolation. rawler failures that occur in `raw_image` before pixel work are not
 covered: calling that method with its dummy flag still decodes DNG pixels.
 Budget exhaustion leaves unknown ranges; it does not certify them unused.
 This inventory is not a deletion recipe.
+
+`just metadata-i686-check` passes both backend suites on i686, including the
+same configured input-limit and cancellation details through dynamic dispatch.
+`just metadata-minimal-check` checks inventory with no backend and without std.
+CI covers the enabled/disabled contract and both backends, including i686.

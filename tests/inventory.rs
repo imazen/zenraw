@@ -2391,3 +2391,50 @@ fn the_gate_rejects_undecodable_fixtures() {
         );
     }
 }
+
+#[test]
+fn configured_limits_and_cancellation_survive_dispatch() {
+    use zencodec::decode::DynDecoderConfig;
+    use zencodec::{CategorizedError, CodecErrorExt, ErrorCategory, LimitExceeded, ResourceLimits};
+    let data = dng_fixture();
+    let config = RawDecoderConfig::new();
+    let limits = ResourceLimits::none().with_max_input_bytes(1);
+    let native = config
+        .clone()
+        .job()
+        .with_limits(limits)
+        .inventory(&data)
+        .unwrap_err();
+    let dynamic: &dyn DynDecoderConfig = &config;
+    let mut erased_job = dynamic.dyn_job();
+    erased_job.set_limits(limits);
+    let erased = erased_job.inventory(&data).unwrap_err();
+    let expected = LimitExceeded::InputSize {
+        actual: data.len() as u64,
+        max: 1,
+    };
+    assert_eq!(native.limit_exceeded(), Some(&expected));
+    assert_eq!(erased.limit_exceeded(), Some(&expected));
+
+    struct Cancelled;
+    impl enough::Stop for Cancelled {
+        fn check(&self) -> Result<(), enough::StopReason> {
+            Err(enough::StopReason::Cancelled)
+        }
+    }
+    let stop = zencodec::StopToken::new(Cancelled);
+    let native = config
+        .clone()
+        .job()
+        .with_stop(stop.clone())
+        .inventory(&data)
+        .unwrap_err();
+    let mut erased_job = dynamic.dyn_job();
+    erased_job.set_stop(stop);
+    let erased = erased_job.inventory(&data).unwrap_err();
+    assert_eq!(
+        native.category(),
+        ErrorCategory::Stopped(enough::StopReason::Cancelled)
+    );
+    assert_eq!(erased.error_category(), Some(native.category()));
+}
