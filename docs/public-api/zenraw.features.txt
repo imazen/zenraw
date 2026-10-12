@@ -1,5 +1,5 @@
 # zenraw public API — additions from non-default features
-# features: apple,darktable,exif,rawler,rawloader,std,ultrahdr,xmp,zencodec
+# features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec
 # (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
 # Encodings: crate-name prefix stripped; auto traits collapse to a
 # count + exceptions; trait impls collapse to one roster line per

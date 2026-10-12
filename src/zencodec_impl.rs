@@ -428,9 +428,14 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             Err(crate::inventory::Failed::Stopped(reason)) => {
                 Err(zencodec::CodecError::of(at!(RawError::from(reason))))
             }
-            Err(crate::inventory::Failed::Parts(e)) => Err(zencodec::CodecError::of(at!(
-                RawError::LimitExceeded(RawLimitKind::Memory, alloc::format!("inventory: {e}"))
-            ))),
+            Err(crate::inventory::Failed::Parts(e)) => {
+                use zencodec::CategorizedError;
+                Err(at!(zencodec::CodecError::from_parts(
+                    Some("zenraw"),
+                    e.category(),
+                    alloc::boxed::Box::new(e)
+                )))
+            }
         }
     }
 

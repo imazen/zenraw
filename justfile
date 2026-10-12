@@ -148,3 +148,9 @@ metadata-minimal-check:
 metadata-cancellation:
     cargo test --features inventory --test inventory mid_walk_cancellation_preserves_the_first_reason
     cargo test --no-default-features --features rawler,zencodec,xmp,inventory --test inventory mid_walk_cancellation_preserves_the_first_reason
+
+metadata-contract-check:
+    just metadata-check
+    just metadata-lint
+    just metadata-fuzz-check
+    just api-doc

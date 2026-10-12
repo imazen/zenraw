@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Inventory part-cap and invariant failures retain the typed `InventoryError`
+  and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
 - Inventory retains the first cancellation reason across nested TIFF, RAF and
   CR3 traversal; generic and dynamic errors no longer re-query the token.
 - Fallible-allocation test inputs now exceed the address space on both pointer
