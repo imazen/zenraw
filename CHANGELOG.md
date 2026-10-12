@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+- Inventory part-cap and invariant failures retain the typed `InventoryError`
+  and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
+- Inventory retains the first cancellation reason across nested TIFF, RAF and
+  CR3 traversal; generic and dynamic errors no longer re-query the token.
+- Fallible-allocation test inputs now exceed the address space on both pointer
+  widths; the old count could successfully allocate on i686. Assertions and
+  production allocation behavior are unchanged.
+
+### Added
+- Default-off `inventory` feature reusing zenmeta's shared IFD walker and the
+  RAW-specific container rules, fixtures, oracle checks and regressions from
+  PR 20 (`3f8bc711`). Neither zenpipe nor zencodecs is required. Disabled calls
+  return the zencodec-owned unsupported-inventory error. Existing associated
+  `At<RawError>` types remain unchanged; no public signature exposes zenmeta.
+- Temporary pinned zencodec/zenmeta review dependencies for integration; replace
+  with released versions before publishing.
+
 ### QUEUED BREAKING CHANGES
 <!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->

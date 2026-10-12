@@ -114,3 +114,43 @@ arm-decode-audit fixture features="_dev":
 arm-sample-decode fixture output features="rawloader":
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n19 cargo build --release --example heaptrack_decode --features {{features}}
     RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" python3 -c 'import subprocess; f=open("{{output}}.run.log","w"); p=subprocess.Popen(["nice","-n19","./target/release/examples/heaptrack_decode","{{fixture}}","200"],stdout=f,stderr=f); subprocess.run(["sample",str(p.pid),"5","1","-file","{{output}}.sample.txt"],check=True); raise SystemExit(p.wait())'
+
+# Reused structural tests against each decoder backend; inventory stays optional.
+metadata-check:
+    cargo test --no-default-features --features std,rawloader,inventory --lib --test inventory --test fuzz_regression --test inventory_feature
+    cargo test --no-default-features --features std,rawler,inventory,xmp --lib --test inventory --test fuzz_regression --test inventory_feature
+    cargo test --features zencodec --test inventory_feature
+
+metadata-lint:
+    cargo clippy --all-targets --all-features -- -D warnings
+
+metadata-fuzz-check:
+    cargo check --manifest-path fuzz/Cargo.toml --features inventory --bins
+
+metadata-semver:
+    cargo semver-checks check-release --baseline-version 0.2.0 --default-features --features zencodec --current-features inventory
+
+# Explicit corpus and independent-reader inputs: missing requested files fail.
+inventory-test raw features="inventory,xmp":
+    ZENRAW_RAW_CONFORMANCE_DIR="{{raw}}" cargo test --features {{features}} --test inventory -- --nocapture
+
+inventory-oracle files features="inventory":
+    INVENTORY_ORACLE_EXIFTOOL=exiftool INVENTORY_ORACLE_FILES="{{files}}" cargo test --features {{features}} --test inventory exiftool_oracle -- --nocapture
+
+metadata-i686-check runner="env":
+    CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER="{{runner}}" cargo test --target i686-unknown-linux-gnu --no-default-features --features std,rawloader,inventory --lib --test inventory --test inventory_feature --test fuzz_regression
+    CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER="{{runner}}" cargo test --target i686-unknown-linux-gnu --no-default-features --features std,rawler,inventory,xmp --lib --test inventory --test inventory_feature --test fuzz_regression
+
+metadata-minimal-check:
+    cargo check --no-default-features --features inventory
+    cargo check --no-default-features --features std,inventory
+
+metadata-cancellation:
+    cargo test --features inventory --test inventory mid_walk_cancellation_preserves_the_first_reason
+    cargo test --no-default-features --features rawler,zencodec,xmp,inventory --test inventory mid_walk_cancellation_preserves_the_first_reason
+
+metadata-contract-check:
+    just metadata-check
+    just metadata-lint
+    just metadata-fuzz-check
+    just api-doc

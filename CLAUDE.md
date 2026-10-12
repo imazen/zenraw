@@ -2,6 +2,21 @@
 
 ## Known Bugs
 
+### Fixed: inventory lost transient timeout reasons
+
+Inventory retained only a cancellation boolean and re-polled the token while
+constructing the error. A token reporting a timeout once became generic
+cancellation. Traversal now captures the first reason across all nested RAW
+containers, and the adapter returns that reason directly.
+
+### Fixed: allocation-error fixture could succeed on i686
+
+The fallible-allocation tests requested `usize::MAX / 8` f32 elements, which
+fits within the 32-bit address space and can succeed. Both fixtures now request
+`usize::MAX` elements, keeping the same required `RawError::OutOfMemory` result
+while guaranteeing capacity overflow on either pointer width. No production
+allocation behavior changed.
+
 ### Fixed in the current ARM audit: normalization changed floating-point bits
 
 `src/simd.rs::normalize_uniform_into` used vector min/max but scalar

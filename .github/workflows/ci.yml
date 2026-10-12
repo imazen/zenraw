@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -46,7 +47,10 @@ jobs:
         run: cargo test --features _dev --lib normalization_matches_scalar_bits_for_special_values -- --nocapture
 
       - name: Test (all features)
-        run: cargo test --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr"
+        run: cargo test --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr,inventory"
+
+      - name: Disabled inventory contract
+        run: cargo test --features zencodec --test inventory_feature
 
       - name: Check (no-default-features, std only)
         run: cargo check --no-default-features --features std
@@ -60,7 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test (rawloader without rawler)
-        run: cargo test --no-default-features --features "std,rawloader"
+        run: cargo test --no-default-features --features "std,rawloader,inventory"
 
   rawler-only:
     name: Test rawler backend
@@ -73,7 +77,7 @@ jobs:
       # Regression gate for imazen/zenraw#10: the rawler backend must build
       # and test WITHOUT the rawloader crate in the graph.
       - name: Test (rawler without rawloader)
-        run: cargo test --no-default-features --features "std,rawler"
+        run: cargo test --no-default-features --features "std,rawler,inventory"
 
   feature-perms:
     name: Feature permutations
@@ -92,7 +96,7 @@ jobs:
       # `--features rawler` above still pulls in default `rawloader`; these
       # two are the combos from imazen/zenraw#10 that used to fail to compile.
       - name: Check (no-default-features, std,rawler)
-        run: cargo check --no-default-features --features "std,rawler"
+        run: cargo check --no-default-features --features "std,rawler,inventory"
 
       - name: Check (no-default-features, std,rawler,ultrahdr)
         run: cargo check --no-default-features --features "std,rawler,ultrahdr"
@@ -120,7 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy (all features)
-        run: cargo clippy --all-targets --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr" -- -D warnings
+        run: cargo clippy --all-targets --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr,inventory" -- -D warnings
 
   fmt:
     name: Format
@@ -145,3 +149,20 @@ jobs:
 
       - name: Check MSRV
         run: cargo hack check --rust-version
+
+  test-i686:
+    name: Inventory (i686)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-gnu
+      - uses: taiki-e/install-action@cross
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-i686
+      - name: rawloader inventory
+        run: cross test --target i686-unknown-linux-gnu --no-default-features --features std,rawloader,inventory --lib --test inventory --test inventory_feature --test fuzz_regression
+      - name: rawler inventory
+        run: cross test --target i686-unknown-linux-gnu --no-default-features --features std,rawler,inventory,xmp --lib --test inventory --test inventory_feature --test fuzz_regression
