@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- Default-off `inventory` feature reusing zenmeta's shared IFD walker and the
+  RAW-specific container rules, fixtures, oracle checks and regressions from
+  PR 20 (`3f8bc711`). Neither zenpipe nor zencodecs is required. Disabled calls
+  return the zencodec-owned unsupported-inventory error. Existing associated
+  `At<RawError>` types remain unchanged; no public signature exposes zenmeta.
+- Temporary pinned zencodec/zenmeta review dependencies for integration; replace
+  with released versions before publishing.
+
 ### QUEUED BREAKING CHANGES
 <!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->

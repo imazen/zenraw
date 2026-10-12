@@ -321,6 +321,7 @@ Plus many more via rawler. Detection works on file content, not extension.
 | `xmp` | no | XMP metadata extraction |
 | `apple` | no | Apple APPLEDNG/AMPF metadata (implies `exif` + `xmp`) |
 | `zencodec` | no | zencodec trait integration (DecoderConfig, ImageInfo) |
+| `inventory` | no | Structural byte inventory using zenmeta; includes `zencodec` |
 
 ## Configuration
 

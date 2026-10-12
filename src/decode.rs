@@ -385,6 +385,25 @@ pub struct RawInfo {
     pub sensor_layout: SensorLayout,
 }
 
+/// The decode path's checks before any pixel decode, for the structural
+/// inventory: the input-length check, then rawloader's container parse and
+/// metadata (`decode_dummy`: `get_decoder`, then `image(dummy = true)`,
+/// which returns before allocating or decoding pixels), under the same
+/// panic guard. `Err` says why the decode fails.
+#[cfg(all(feature = "rawloader", feature = "inventory"))]
+pub(crate) fn container_check(data: &[u8]) -> core::result::Result<(), alloc::string::String> {
+    if data.len() < 64 {
+        return Err("input too short to be a valid RAW file".into());
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawloader::decode_dummy(&mut std::io::Cursor::new(data))
+    })) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(alloc::format!("{e}")),
+        Err(_) => Err("rawloader panicked on malformed input".into()),
+    }
+}
+
 /// Probe a RAW/DNG file for metadata without decoding pixels.
 ///
 /// Returns metadata about the image (dimensions, camera info, etc.).

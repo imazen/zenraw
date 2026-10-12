@@ -80,7 +80,7 @@ fn is_dng_header(data: &[u8]) -> bool {
 }
 
 /// Detect the image format (DNG vs generic RAW) from file bytes.
-fn detect_format(data: &[u8]) -> ImageFormat {
+pub(crate) fn detect_format(data: &[u8]) -> ImageFormat {
     if crate::is_raw_file(data) && crate::decode::is_dng_data(data) {
         ImageFormat::Custom(&DNG_FORMAT)
     } else {
@@ -260,7 +260,8 @@ static RAW_DECODE_CAPABILITIES: DecodeCapabilities = DecodeCapabilities::EMPTY
     .with_stop(true)
     .with_enforces_max_pixels(true)
     .with_enforces_max_memory(true)
-    .with_enforces_max_input_bytes(true);
+    .with_enforces_max_input_bytes(true)
+    .with_inventory(cfg!(feature = "inventory"));
 
 // ── DecoderConfig ──────────────────────────────────────────────────────
 
@@ -397,6 +398,44 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn with_orientation(mut self, hint: OrientationHint) -> Self {
         self.orientation = hint;
         self
+    }
+
+    /// Map every byte of `data` without decoding pixels; see
+    /// [`crate::inventory`] for the walk and the dispositions.
+    #[cfg(feature = "inventory")]
+    fn inventory(
+        &self,
+        data: &[u8],
+    ) -> Result<zencodec::inventory::Inventory, At<zencodec::CodecError>> {
+        let stop: &dyn enough::Stop = self
+            .stop
+            .as_ref()
+            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        enough::Stop::check(stop).map_err(|r| zencodec::CodecError::of(at!(RawError::from(r))))?;
+        // The same input-size limit `decoder()` enforces.
+        self.limits
+            .check_input_size(data.len() as u64)
+            .map_err(|e| {
+                use zencodec::CategorizedError;
+                at!(zencodec::CodecError::from_parts(
+                    Some("zenraw"),
+                    e.category(),
+                    alloc::boxed::Box::new(e)
+                ))
+            })?;
+        match crate::inventory::inventory(data, detect_format(data), stop) {
+            Ok(inv) => Ok(inv),
+            Err(crate::inventory::Failed::Stopped) => {
+                Err(zencodec::CodecError::of(at!(RawError::from(
+                    enough::Stop::check(stop)
+                        .err()
+                        .unwrap_or(enough::StopReason::Cancelled)
+                ))))
+            }
+            Err(crate::inventory::Failed::Parts(e)) => Err(zencodec::CodecError::of(at!(
+                RawError::LimitExceeded(RawLimitKind::Memory, alloc::format!("inventory: {e}"))
+            ))),
+        }
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
