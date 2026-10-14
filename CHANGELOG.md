@@ -9,6 +9,7 @@
 
 ### Added
 
+- Incremental decode: `dyn_incremental_decoder` returns zencodec's `WholeFileIncremental` and the decode capabilities declare `incremental`, so the zencodec-io drivers (files, streams, async sources) serve RAW/DNG. `HeaderReady` comes as soon as a prefix probes; rows come from `push_decoder` once the whole file is offered. `tests/synthetic_dng.rs` runs the testkit's incremental contract on synthetic Bayer and X-Trans DNGs (CI zencodec step). Pins zencodec/testkit/zenmeta `fa49f7ce`.
 - Shared checked-policy and inventory tests reuse the existing decodable DNG fixture across rawloader and rawler, with inventory enabled and disabled. Dependencies are pinned to the unreleased testkit.
 
 ### Fixed
