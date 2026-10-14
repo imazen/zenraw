@@ -256,6 +256,7 @@ static DECODE_DESCRIPTORS: &[PixelDescriptor] =
 // ── Capabilities ───────────────────────────────────────────────────────
 
 static RAW_DECODE_CAPABILITIES: DecodeCapabilities = DecodeCapabilities::EMPTY
+    .with_incremental(true)
     .with_exif(true)
     .with_stop(true)
     .with_enforces_max_pixels(true)
@@ -585,6 +586,22 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         Err(at!(RawError::UnsupportedOperation(
             zencodec::UnsupportedOperation::AnimationDecode
         )))
+    }
+
+    /// Incremental (sans-I/O) decode: the header is reported as soon as it
+    /// probes, and the image decodes through `push_decoder` once the whole
+    /// file is offered. RAW decoders read the container and sensor data from
+    /// a complete buffer.
+    fn dyn_incremental_decoder(
+        self,
+        preferred: &[PixelDescriptor],
+    ) -> Result<
+        alloc::boxed::Box<zencodec::decode::DynIncrementalDecoder>,
+        zencodec::decode::BoxedError,
+    > {
+        Ok(zencodec::decode::erase_incremental(
+            zencodec::helpers::WholeFileIncremental::new(self, preferred),
+        ))
     }
 }
 

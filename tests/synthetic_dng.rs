@@ -522,3 +522,22 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         }
     }
 }
+
+/// Incremental (sans-I/O) decode through `dyn_incremental_decoder`: the
+/// testkit's incremental contract on synthetic Bayer and X-Trans DNGs.
+#[cfg(feature = "zencodec")]
+#[test]
+fn incremental_contract_holds() {
+    use zencodec::decode::DecoderConfig as _;
+    use zenraw::RawDecoderConfig;
+
+    assert!(RawDecoderConfig::capabilities().incremental());
+    for (name, data) in [
+        ("full_range", dng_full_range()),
+        ("bayer", dng_with_cfa_tile(&[0, 1, 1, 2], 2).0),
+        ("xtrans", dng_with_cfa_tile(&XTRANS_TILE, 6).0),
+    ] {
+        zencodec_testkit::check_incremental_capability_honesty(RawDecoderConfig::new(), &data)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    }
+}
