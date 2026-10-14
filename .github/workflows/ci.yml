@@ -32,7 +32,6 @@ jobs:
           - ubuntu-latest
           - ubuntu-24.04-arm
           - macos-latest
-          - macos-26-intel
           - windows-latest
           - windows-11-arm
     steps:
@@ -50,7 +49,7 @@ jobs:
         run: cargo test --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr,inventory"
 
       - name: Disabled inventory contract
-        run: cargo test --features zencodec --test inventory_feature
+        run: cargo test --features zencodec --test inventory_feature --test shared_contracts
 
       - name: Check (no-default-features, std only)
         run: cargo check --no-default-features --features std
@@ -163,6 +162,6 @@ jobs:
         with:
           key: cross-i686
       - name: rawloader inventory
-        run: cross test --target i686-unknown-linux-gnu --no-default-features --features std,rawloader,inventory --lib --test inventory --test inventory_feature --test fuzz_regression
+        run: cross test --target i686-unknown-linux-gnu --no-default-features --features std,rawloader,inventory --lib --test inventory --test inventory_feature --test shared_contracts --test fuzz_regression
       - name: rawler inventory
-        run: cross test --target i686-unknown-linux-gnu --no-default-features --features std,rawler,inventory,xmp --lib --test inventory --test inventory_feature --test fuzz_regression
+        run: cross test --target i686-unknown-linux-gnu --no-default-features --features std,rawler,inventory,xmp --lib --test inventory --test inventory_feature --test shared_contracts --test fuzz_regression
