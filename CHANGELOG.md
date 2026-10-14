@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Dependency integration
+
+- Align temporary zencodec/zenmeta/testkit pins with the checked fidelity and operation-matrix contracts (`4fda4391`). Replace coordinated git pins with released versions before publication.
+
+
 ### Added
 
 - Shared checked-policy and inventory tests reuse the existing decodable DNG fixture across rawloader and rawler, with inventory enabled and disabled. Dependencies are pinned to the unreleased testkit.
