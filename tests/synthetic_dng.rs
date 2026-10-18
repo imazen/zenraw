@@ -469,20 +469,22 @@ impl CountdownStop {
 
 impl enough::Stop for CountdownStop {
     fn check(&self) -> Result<(), enough::StopReason> {
-        let prev = self
-            .remaining
-            .fetch_update(
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-                |n| n.checked_sub(1),
-            )
-            .unwrap_or(0);
-        if prev == 0 {
-            Err(enough::StopReason::Cancelled)
-        } else {
-            Ok(())
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut remaining = self.remaining.load(Relaxed);
+        loop {
+            if remaining == 0 {
+                return Err(enough::StopReason::Cancelled);
+            }
+            match self
+                .remaining
+                .compare_exchange_weak(remaining, remaining - 1, Relaxed, Relaxed)
+            {
+                Ok(_) => return Ok(()),
+                Err(current) => remaining = current,
+            }
         }
     }
+
     fn should_stop(&self) -> bool {
         self.remaining.load(std::sync::atomic::Ordering::Relaxed) == 0
     }

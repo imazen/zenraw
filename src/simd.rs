@@ -220,6 +220,35 @@ pub(crate) fn linear_to_srgb(x: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "rawler")]
+    #[test]
+    fn observed_channel_extraction_matches_reference_across_batches_and_padding() {
+        use how_far::{Complete, Outcome, Total};
+        use how_far_along::{Phase, PulseTree};
+        let pixels = (1 << 18) + 3;
+        for cpp in [3, 4, 6] {
+            for missing in [0, 2] {
+                let data: Vec<f32> = (0..pixels * cpp - missing).map(|n| n as f32).collect();
+                let expected = extract_rgb_from_cpp(&data, pixels, cpp);
+                let pulse = PulseTree::new(
+                    Phase::new("extract", Total::Exact(pixels as u64)),
+                    how_far::Unstoppable,
+                );
+                let actual = extract_rgb_from_cpp_fallible(
+                    &data,
+                    pixels,
+                    cpp,
+                    crate::alloc_util::AllocPref::CodecDefault,
+                    &pulse,
+                )
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(pulse.observer().snapshot().completed, pixels as u64);
+                pulse.complete_as(Outcome::Succeeded);
+            }
+        }
+    }
+
     use super::*;
 
     #[cfg(all(
