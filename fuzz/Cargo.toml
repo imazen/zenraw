@@ -32,3 +32,17 @@ doc = false
 name = "fuzz_decode"
 path = "fuzz_targets/fuzz_decode.rs"
 doc = false
+
+[features]
+inventory = ["zenraw/inventory", "dep:zencodec"]
+
+[dependencies.zencodec]
+git = "https://github.com/imazen/zencodec"
+rev = "fa49f7ce0fc75e65b88da1a0eb90b17378297ceb"
+optional = true
+
+[[bin]]
+name = "inventory"
+path = "fuzz_targets/inventory.rs"
+doc = false
+required-features = ["inventory"]

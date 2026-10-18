@@ -11,6 +11,7 @@ repository = "https://github.com/imazen/zenraw"
 readme = "README.crates.md"
 include = [
     "/src/**",
+    "/tests/support/inventory_fixtures.rs",
     "/examples/**",
     "/README.crates.md",
     "/CHANGELOG.md",
@@ -24,9 +25,10 @@ thiserror = { version = "2.0.18", default-features = false }
 whereat = { version = "0.1.5", default-features = false }
 enough = { version = "0.4.3", default-features = false }
 zenpixels = { version = ">=0.2.10, <0.4.0", default-features = false }
-zencodec = { version = ">=0.1.26, <0.3.0", optional = true }
-archmage = { version = "0.9.28", default-features = false }
-magetypes = { version = "0.9.28", default-features = false }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "fa49f7ce0fc75e65b88da1a0eb90b17378297ceb", version = ">=0.1.26, <0.3.0", optional = true }
+zenmeta = { git = "https://github.com/imazen/zencodec", rev = "fa49f7ce0fc75e65b88da1a0eb90b17378297ceb", version = "0.1.0", default-features = false, features = ["inventory"], optional = true }
+archmage = { version = "0.9.30", default-features = false }
+magetypes = { version = "0.9.30", default-features = false }
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
 memchr = { version = "2.8.0", default-features = false }
 ultrahdr-core = { version = "0.3.0", default-features = false, features = ["transfer"], optional = true }
@@ -40,15 +42,7 @@ zensim = { version = "0.2.4"}
 bytemuck = "1.25.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 zenbench = { version = "0.1.2", features = ["criterion-compat"] }
-# zencodec conformance harness. NOT currently wired into a test: every
-# zencodec-testkit check requires an `EncoderConfig` (zenraw is decode-only —
-# there is no RAW encoder), and the two decoder-only checks
-# (`check_decode_error_envelope` / `check_decode_truncation_series`) are
-# explicitly designed to fail unless the decoder's `type Error` is
-# `At<zencodec::CodecError>` (zenraw's zencodec trait impls keep
-# `type Error = At<RawError>` — a native-enum "Pattern A" binding, deliberately
-# unchanged since switching it is itself a public API signature change). Kept
-# as a placeholder for if/when that switch happens.
+# Decoder-only inventory conformance checks preserve the native error type.
 zencodec-testkit = ">=0.1.0, <0.3.0"
 
 [[bench]]
@@ -66,6 +60,7 @@ std = ["enough/std", "whereat/std"]
 rawloader = ["dep:rawloader"]
 rawler = ["dep:rawler", "std"]
 zencodec = ["dep:zencodec"]
+inventory = ["zencodec", "dep:zenmeta"]
 darktable = ["std"]
 ultrahdr = ["dep:ultrahdr-core"]
 exif = ["dep:kamadak-exif"]
@@ -81,3 +76,19 @@ opt-level = 2
 name = "kernel_tiers"
 harness = false
 required-features = ["_dev"]
+
+[patch.crates-io]
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "fa49f7ce0fc75e65b88da1a0eb90b17378297ceb" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "fa49f7ce0fc75e65b88da1a0eb90b17378297ceb" }
+
+[[test]]
+name = "inventory"
+required-features = ["inventory"]
+
+[[example]]
+name = "inventory_dump"
+required-features = ["inventory"]
+
+[[example]]
+name = "inventory_stress"
+required-features = ["inventory"]

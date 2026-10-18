@@ -224,9 +224,10 @@ mod tests {
 
     #[test]
     fn alloc_filled_fallible_oom_returns_err() {
-        // Request an impossibly large allocation; the fallible path must
-        // return Err (mapped to OutOfMemory) rather than abort.
-        let r = alloc_filled(AllocPref::Fallible, true, 0.0f32, usize::MAX / 8);
+        // Exceed the address space on every pointer width. MAX / 8 f32s
+        // can actually allocate on i686; the fallible path must return
+        // Err (mapped to OutOfMemory) for this impossible count.
+        let r = alloc_filled(AllocPref::Fallible, true, 0.0f32, usize::MAX);
         assert!(r.is_err());
         assert!(matches!(
             r.unwrap_err().decompose().0,
@@ -236,7 +237,7 @@ mod tests {
 
     #[test]
     fn vec_with_capacity_fallible_oom_returns_err() {
-        let r: Result<Vec<f32>, _> = vec_with_capacity(AllocPref::Fallible, true, usize::MAX / 8);
+        let r: Result<Vec<f32>, _> = vec_with_capacity(AllocPref::Fallible, true, usize::MAX);
         assert!(r.is_err());
         assert!(matches!(
             r.unwrap_err().decompose().0,

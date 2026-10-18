@@ -98,6 +98,8 @@ pub mod xmp;
 #[allow(dead_code)]
 pub mod apple;
 
+#[cfg(feature = "inventory")]
+mod inventory;
 #[cfg(feature = "zencodec")]
 mod zencodec_impl;
 #[cfg(feature = "zencodec")]

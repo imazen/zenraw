@@ -58,6 +58,26 @@ fn extract_xyz_to_cam(raw: &rawler::RawImage) -> [[f32; 3]; 4] {
     ]
 }
 
+/// The decode path's checks before any pixel decode, for the structural
+/// inventory: the input-length check, then rawler's container parse and
+/// decoder selection (`get_decoder`), under the same panic guard. Not
+/// `raw_image(dummy = true)`: rawler's DNG path decodes every pixel even
+/// then (decoders/mod.rs:598). `Err` says why the decode fails.
+#[cfg(feature = "inventory")]
+pub(crate) fn container_check(data: &[u8]) -> core::result::Result<(), String> {
+    if data.len() < 64 {
+        return Err("input too short to be a valid RAW file".into());
+    }
+    let source = RawSource::new_from_slice(data);
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawler::get_decoder(&source).map(|_| ())
+    })) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!("{e}")),
+        Err(_) => Err("rawler panicked on malformed input".into()),
+    }
+}
+
 /// Probe a RAW/DNG file for metadata without decoding pixels.
 pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
     stop.check().map_err(|r| at!(RawError::from(r)))?;

@@ -57,22 +57,68 @@ fn assert_corpus_present() {
 #[test]
 fn fuzz_regression() {
     assert_corpus_present();
-    RegressionSuite::new("fuzz/regression")
-        .target("classify", |input| {
-            let _ = classify(input);
-        })
-        .target("decode", |input| {
-            // Mirrors fuzz_targets/fuzz_decode.rs: aggressive input filtering
-            // before touching rawloader (known panic paths upstream).
-            if input.len() < 4096 {
-                return;
-            }
-            let format = classify(input);
-            if format == FileFormat::Unknown || format == FileFormat::Jpeg {
-                return;
-            }
-            let config = RawDecodeConfig::default();
-            let _ = zenraw::decode(input, &config, &Unstoppable);
-        })
-        .run();
+    let suite = RegressionSuite::new("fuzz/regression")
+        .target("classify", replay_classify)
+        .target("decode", replay_decode);
+    #[cfg(feature = "inventory")]
+    let suite = suite.target("inventory", replay_inventory);
+    suite.run();
+}
+
+fn replay_classify(input: &[u8]) {
+    let _ = classify(input);
+}
+
+fn replay_decode(input: &[u8]) {
+    // Same caller-side filter as fuzz_targets/fuzz_decode.rs.
+    if input.len() < 4096 {
+        return;
+    }
+    let format = classify(input);
+    if format == FileFormat::Unknown || format == FileFormat::Jpeg {
+        return;
+    }
+    let config = RawDecodeConfig::default();
+    let _ = zenraw::decode(input, &config, &Unstoppable);
+}
+
+#[cfg(feature = "inventory")]
+fn replay_inventory(input: &[u8]) {
+    use zencodec::decode::{DecodeJob, DecoderConfig};
+    let inv = zenraw::RawDecoderConfig::new()
+        .job()
+        .inventory(input)
+        .unwrap();
+    assert_eq!(inv.input_len(), input.len() as u64);
+    inv.validate().unwrap();
+}
+
+// Exact minimized bytes from PR 20 (3f8bc711), stored as text. Each saved
+// input exercises every fuzz entry point under the target's own filters.
+#[cfg(feature = "inventory")]
+#[test]
+fn saved_inventory_regressions() {
+    for (text, len) in [
+        (
+            include_str!("support/inventory-regressions/rawloader-panic-inside-the-gate.hex"),
+            64,
+        ),
+        (
+            include_str!("support/inventory-regressions/table-overlap-wrap.hex"),
+            644,
+        ),
+    ] {
+        let hex: String = text.split_whitespace().collect();
+        assert_eq!(hex.len(), len * 2);
+        let input: Vec<u8> = hex
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        replay_classify(&input);
+        replay_decode(&input);
+        replay_inventory(&input);
+    }
 }

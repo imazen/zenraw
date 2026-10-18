@@ -10,7 +10,8 @@ use alloc::borrow::Cow;
 use whereat::{At, at};
 use zencodec::Unsupported;
 use zencodec::decode::{
-    Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, OutputInfo, SinkError,
+    Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, Event, IncrementalDecode, Input,
+    OutputInfo, Progress, Request, SinkError, StepError,
 };
 use zencodec::{
     ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, OrientationHint,
@@ -80,7 +81,7 @@ fn is_dng_header(data: &[u8]) -> bool {
 }
 
 /// Detect the image format (DNG vs generic RAW) from file bytes.
-fn detect_format(data: &[u8]) -> ImageFormat {
+pub(crate) fn detect_format(data: &[u8]) -> ImageFormat {
     if crate::is_raw_file(data) && crate::decode::is_dng_data(data) {
         ImageFormat::Custom(&DNG_FORMAT)
     } else {
@@ -256,11 +257,13 @@ static DECODE_DESCRIPTORS: &[PixelDescriptor] =
 // ── Capabilities ───────────────────────────────────────────────────────
 
 static RAW_DECODE_CAPABILITIES: DecodeCapabilities = DecodeCapabilities::EMPTY
+    .with_incremental(true)
     .with_exif(true)
     .with_stop(true)
     .with_enforces_max_pixels(true)
     .with_enforces_max_memory(true)
-    .with_enforces_max_input_bytes(true);
+    .with_enforces_max_input_bytes(true)
+    .with_inventory(cfg!(feature = "inventory"));
 
 // ── DecoderConfig ──────────────────────────────────────────────────────
 
@@ -356,6 +359,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
             stop: None,
             limits: ResourceLimits::default(),
             orientation: OrientationHint::Preserve,
+            incremental_probe: None,
         }
     }
 }
@@ -376,6 +380,9 @@ pub struct RawDecodeJob {
     /// (`apply_orientation = true`); the adapter follows zencodec's `Preserve`
     /// default and bakes itself on the non-`Preserve` hints.
     orientation: OrientationHint,
+    /// Private incremental preflight handoff. The helper's header probe uses
+    /// this successful result instead of invoking the native parser twice.
+    incremental_probe: Option<alloc::sync::Arc<std::sync::OnceLock<ImageInfo>>>,
 }
 
 impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
@@ -399,7 +406,51 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         self
     }
 
+    /// Map every byte of `data` without decoding pixels; see
+    /// [`crate::inventory`] for the walk and the dispositions.
+    #[cfg(feature = "inventory")]
+    fn inventory(
+        &self,
+        data: &[u8],
+    ) -> Result<zencodec::inventory::Inventory, At<zencodec::CodecError>> {
+        let stop: &dyn enough::Stop = self
+            .stop
+            .as_ref()
+            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        enough::Stop::check(stop).map_err(|r| zencodec::CodecError::of(at!(RawError::from(r))))?;
+        // The same input-size limit `decoder()` enforces.
+        self.limits
+            .check_input_size(data.len() as u64)
+            .map_err(|e| {
+                use zencodec::CategorizedError;
+                at!(zencodec::CodecError::from_parts(
+                    Some("zenraw"),
+                    e.category(),
+                    alloc::boxed::Box::new(e)
+                ))
+            })?;
+        match crate::inventory::inventory(data, detect_format(data), stop) {
+            Ok(inv) => Ok(inv),
+            Err(crate::inventory::Failed::Stopped(reason)) => {
+                Err(zencodec::CodecError::of(at!(RawError::from(reason))))
+            }
+            Err(crate::inventory::Failed::Parts(e)) => {
+                use zencodec::CategorizedError;
+                Err(at!(zencodec::CodecError::from_parts(
+                    Some("zenraw"),
+                    e.category(),
+                    alloc::boxed::Box::new(e)
+                )))
+            }
+        }
+    }
+
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
+        if let Some(cache) = &self.incremental_probe
+            && let Some(info) = cache.get()
+        {
+            return Ok(info.clone());
+        }
         let stop: &dyn enough::Stop = self
             .stop
             .as_ref()
@@ -410,7 +461,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         // `Preserve` (default) keeps the stored dims + intrinsic EXIF tag that
         // `build_image_info` already set; the bake hints report the display
         // (post-orientation) dims + `Identity`.
-        Ok(report_probe_for_hint(info, self.orientation))
+        let info = report_probe_for_hint(info, self.orientation);
+        if let Some(cache) = &self.incremental_probe {
+            let _ = cache.set(info.clone());
+        }
+        Ok(info)
     }
 
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
@@ -545,6 +600,240 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         Err(at!(RawError::UnsupportedOperation(
             zencodec::UnsupportedOperation::AnimationDecode
         )))
+    }
+
+    /// Incremental (sans-I/O) decode: the header is reported as soon as it
+    /// probes, and the image decodes through `push_decoder` once the whole
+    /// file is offered. RAW decoders read the container and sensor data from
+    /// a complete buffer.
+    fn dyn_incremental_decoder(
+        self,
+        preferred: &[PixelDescriptor],
+    ) -> Result<
+        alloc::boxed::Box<zencodec::decode::DynIncrementalDecoder>,
+        zencodec::decode::BoxedError,
+    > {
+        Ok(zencodec::decode::erase_incremental(RawIncremental::new(
+            self, preferred,
+        )))
+    }
+}
+
+/// Admission around the shared whole-file driver adapter. Header availability
+/// does not imply pixel availability: every pixel still waits for the complete
+/// compressed source, retained by the driver rather than this decoder.
+struct RawIncremental {
+    inner: zencodec::helpers::WholeFileIncremental<RawDecodeJob>,
+    probe_job: RawDecodeJob,
+    output_bytes_per_pixel: u64,
+    estimated_output: u64,
+    need: [Request; 1],
+    needs_input: bool,
+    header_ready: bool,
+}
+
+impl RawIncremental {
+    fn new(mut job: RawDecodeJob, preferred: &[PixelDescriptor]) -> Self {
+        job.incremental_probe = Some(alloc::sync::Arc::new(std::sync::OnceLock::new()));
+        let output_bytes_per_pixel = if job.config.output == OutputMode::Develop
+            && !preferred
+                .iter()
+                .any(|p| p.format == zenpixels::PixelFormat::RgbF32)
+        {
+            6
+        } else {
+            12
+        };
+        let probe_job = RawDecodeJob {
+            config: job.config.clone(),
+            stop: job.stop.clone(),
+            limits: job.limits,
+            orientation: job.orientation,
+            incremental_probe: job.incremental_probe.clone(),
+        };
+        Self {
+            inner: zencodec::helpers::WholeFileIncremental::new(job, preferred),
+            probe_job,
+            output_bytes_per_pixel,
+            estimated_output: 0,
+            need: [Request::at_least(0, 1)],
+            needs_input: false,
+            header_ready: false,
+        }
+    }
+
+    fn admit_size(&self, bytes: u64) -> Result<(), At<RawError>> {
+        self.probe_job
+            .limits
+            .check_input_size(bytes)
+            .map_err(|e| at!(wrap_limit(e)))?;
+        // Input and decoded output coexist. This is a preflight estimate of
+        // their sum, not an accounting of every native backend allocation.
+        let retained = bytes.checked_add(self.estimated_output).ok_or_else(|| {
+            at!(RawError::OutOfMemory(
+                "RAW input/output size overflows".into()
+            ))
+        })?;
+        self.probe_job
+            .limits
+            .check_memory(retained)
+            .map_err(|e| at!(wrap_limit(e)))?;
+        if bytes > isize::MAX as u64 {
+            return Err(at!(RawError::OutOfMemory(
+                "whole RAW input exceeds the addressable buffer size".into(),
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl IncrementalDecode for RawIncremental {
+    type Error = At<RawError>;
+
+    fn step(
+        &mut self,
+        input: Input<'_>,
+        sink: &mut dyn DecodeRowSink,
+        stop: &dyn enough::Stop,
+    ) -> Result<Progress, StepError<Self::Error>> {
+        stop.check()?;
+        // Length describes the source even when this window starts elsewhere.
+        if let Some(total) = input.total_len {
+            self.admit_size(total).map_err(StepError::Codec)?;
+        }
+        if !input.bytes.is_empty() {
+            let end = input
+                .offset
+                .checked_add(input.bytes.len() as u64)
+                .ok_or_else(|| {
+                    StepError::Codec(at!(RawError::OutOfMemory(
+                        "RAW input window end overflows".into(),
+                    )))
+                })?;
+            self.admit_size(end).map_err(StepError::Codec)?;
+        }
+        let mut incomplete_probe = self.inner.info().is_none() && input.offset != 0;
+        if self.inner.info().is_none() && input.offset == 0 {
+            match zencodec::decode::DecodeJob::probe(&self.probe_job, input.bytes) {
+                Ok(info) => {
+                    self.probe_job
+                        .limits
+                        .check_dimensions(info.width, info.height)
+                        .map_err(|e| StepError::Codec(at!(wrap_limit(e))))?;
+                    let bytes = u64::from(info.width)
+                        .checked_mul(u64::from(info.height))
+                        .and_then(|n| n.checked_mul(self.output_bytes_per_pixel))
+                        .ok_or_else(|| {
+                            StepError::Codec(at!(RawError::OutOfMemory(
+                                "RAW output size overflows".into(),
+                            )))
+                        })?;
+                    self.probe_job
+                        .limits
+                        .check_memory(bytes)
+                        .map_err(|e| StepError::Codec(at!(wrap_limit(e))))?;
+                    self.estimated_output = bytes;
+                    self.admit_size(input.total_len.unwrap_or(input.end()))
+                        .map_err(StepError::Codec)?;
+                }
+                // The shared helper treats probe errors as incomplete headers.
+                // Resource and lifecycle errors must remain terminal instead.
+                Err(e)
+                    if matches!(
+                        e.error(),
+                        RawError::LimitExceeded(..)
+                            | RawError::OutOfMemory(_)
+                            | RawError::Stopped(_)
+                            | RawError::Buffer(_)
+                    ) =>
+                {
+                    return Err(StepError::Codec(e));
+                }
+                Err(e) if input.reaches_end() => return Err(StepError::Codec(e)),
+                Err(_) => incomplete_probe = true,
+            }
+        }
+        // Do not let the helper repeat an unsuccessful native probe: an error
+        // from that second parse could otherwise be mistaken for a short prefix.
+        let progress = if incomplete_probe {
+            Progress::need(0)
+        } else {
+            self.inner.step(input, sink, stop)?
+        };
+        stop.check()?;
+        if let Some(job_stop) = &self.probe_job.stop {
+            enough::Stop::check(job_stop)
+                .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
+        }
+        self.header_ready = self.inner.info().is_some();
+        self.needs_input = matches!(progress.event, Event::Need);
+        if self.needs_input {
+            let input_cap = self.probe_job.limits.max_input_bytes.unwrap_or(u64::MAX);
+            // Unknown-length sources need one byte of lookahead to distinguish
+            // exact-cap EOF from oversized input. Never request unbounded prefix
+            // doubling beyond that byte; driver read-ahead is its own policy.
+            let input_ceiling = if input.total_len.is_none() {
+                input_cap.saturating_add(1)
+            } else {
+                input_cap
+            };
+            // EOF lookahead is a driver allowance beyond the input cap, never
+            // beyond the memory budget or the platform's slice-size ceiling.
+            let memory_ceiling = self
+                .probe_job
+                .limits
+                .max_memory_bytes
+                .unwrap_or(u64::MAX)
+                .saturating_sub(self.estimated_output);
+            let ceiling = input_ceiling.min(memory_ceiling).min(isize::MAX as u64);
+            let wanted = if incomplete_probe {
+                input
+                    .total_len
+                    .unwrap_or_else(|| {
+                        let held = if input.offset == 0 {
+                            input.bytes.len() as u64
+                        } else {
+                            0
+                        };
+                        held.saturating_mul(2).max(4096).max(held.saturating_add(1))
+                    })
+                    .min(ceiling)
+            } else {
+                match self.inner.requested().first() {
+                    Some(Request::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
+                    _ => ceiling,
+                }
+            };
+            if input.offset == 0 && wanted <= input.bytes.len() as u64 {
+                if self.probe_job.limits.max_memory_bytes.is_some() && ceiling == memory_ceiling {
+                    return Err(StepError::Codec(at!(RawError::LimitExceeded(
+                        RawLimitKind::Memory,
+                        "RAW input needs EOF confirmation within the memory budget".into(),
+                    ))));
+                }
+                return Err(StepError::Codec(at!(RawError::OutOfMemory(
+                    "whole RAW input leaves no addressable EOF lookahead".into(),
+                ))));
+            }
+            self.need = [Request::at_least(0, wanted as usize)];
+        }
+        Ok(progress)
+    }
+
+    fn requested(&self) -> &[Request] {
+        if self.needs_input { &self.need } else { &[] }
+    }
+
+    fn info(&self) -> Option<&ImageInfo> {
+        if self.header_ready {
+            self.inner.info()
+        } else {
+            None
+        }
+    }
+
+    fn output_descriptor(&self) -> Option<PixelDescriptor> {
+        self.inner.output_descriptor()
     }
 }
 

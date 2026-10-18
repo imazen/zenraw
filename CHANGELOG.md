@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### Dependency integration
+
+- Align temporary zencodec/zenmeta/testkit pins with the checked fidelity and operation-matrix contracts (`4fda4391`). Replace coordinated git pins with released versions before publication.
+
+
+### Added
+
+- Incremental decode: `dyn_incremental_decoder` returns zencodec's `WholeFileIncremental` and the decode capabilities declare `incremental`, so the zencodec-io drivers (files, streams, async sources) serve RAW/DNG. `HeaderReady` comes as soon as a prefix probes; rows come from `push_decoder` once the whole file is offered. `tests/synthetic_dng.rs` runs the testkit's incremental contract on synthetic Bayer and X-Trans DNGs (CI zencodec step). Pins zencodec/testkit/zenmeta `fa49f7ce`.
+- Shared checked-policy and inventory tests reuse the existing decodable DNG fixture across rawloader and rawler, with inventory enabled and disabled. Dependencies are pinned to the unreleased testkit.
+
+### Fixed
+
+- Incremental RAW admission rejects announced oversized sources before requesting
+  more bytes, including nonzero windows. Unknown prefix growth is bounded to an
+  input-cap EOF lookahead within the memory budget. Resource failures and stops
+  are terminal; preflight memory includes compressed input and decoded output.
+  Header availability remains separate from whole-file pixel availability
+  (`6f2f9f60`, `a33a47fa`).
+- Inventory part-cap and invariant failures retain the typed `InventoryError`
+  and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
+- Inventory retains the first cancellation reason across nested TIFF, RAF and
+  CR3 traversal; generic and dynamic errors no longer re-query the token.
+- Fallible-allocation test inputs now exceed the address space on both pointer
+  widths; the old count could successfully allocate on i686. Assertions and
+  production allocation behavior are unchanged.
+
+### Added
+- Default-off `inventory` feature reusing zenmeta's shared IFD walker and the
+  RAW-specific container rules, fixtures, oracle checks and regressions from
+  PR 20 (`3f8bc711`). Neither zenpipe nor zencodecs is required. Disabled calls
+  return the zencodec-owned unsupported-inventory error. Existing associated
+  `At<RawError>` types remain unchanged; no public signature exposes zenmeta.
+- Temporary pinned zencodec/zenmeta review dependencies for integration; replace
+  with released versions before publishing.
+
 ### QUEUED BREAKING CHANGES
 <!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
