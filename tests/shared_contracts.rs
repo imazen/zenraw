@@ -324,6 +324,73 @@ mod incremental_admission {
     }
 
     #[test]
+    fn transient_job_stop_after_preflight_cannot_be_swallowed_by_a_second_probe() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct CountStops {
+            calls: Arc<AtomicUsize>,
+            stop_at: usize,
+        }
+        impl Stop for CountStops {
+            fn check(&self) -> Result<(), StopReason> {
+                if self.calls.fetch_add(1, Ordering::Relaxed) == self.stop_at {
+                    Err(StopReason::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let bytes = fixture::bytes();
+        let prefix = &bytes[..bytes.len() - 1];
+        let calls = Arc::new(AtomicUsize::new(0));
+        RawDecoderConfig::new()
+            .job()
+            .with_stop(zencodec::StopToken::new(CountStops {
+                calls: calls.clone(),
+                stop_at: usize::MAX,
+            }))
+            .probe(prefix)
+            .unwrap();
+        let native_probe_calls = calls.swap(0, Ordering::Relaxed);
+        assert!(native_probe_calls > 0);
+        let mut dec = RawDecoderConfig::new()
+            .job()
+            .with_stop(zencodec::StopToken::new(CountStops {
+                calls: calls.clone(),
+                stop_at: native_probe_calls,
+            }))
+            .dyn_incremental_decoder(&[])
+            .unwrap();
+        let mut sink = Sink::default();
+        let error = dec
+            .step(Input::new(0, prefix), &mut sink, &Unstoppable)
+            .unwrap_err();
+        let StepError::Codec(error) = error else {
+            panic!("unexpected error: {error:?}")
+        };
+        let native = error
+            .get_ref()
+            .downcast_ref::<whereat::At<RawError>>()
+            .unwrap();
+        assert!(matches!(
+            native.error(),
+            RawError::Stopped(StopReason::Cancelled)
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), native_probe_calls + 1);
+        assert!(
+            dec.info().is_none(),
+            "unreported helper header must stay private on denial"
+        );
+        assert_eq!(sink.begins, 0);
+        assert!(matches!(
+            dec.step(Input::empty(), &mut sink, &Unstoppable),
+            Err(StepError::Finished)
+        ));
+    }
+
+    #[test]
     fn truncated_eof_is_not_reported_as_need_or_header() {
         let bytes = fixture::bytes();
         for end in [0, 7] {

@@ -359,6 +359,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
             stop: None,
             limits: ResourceLimits::default(),
             orientation: OrientationHint::Preserve,
+            incremental_probe: None,
         }
     }
 }
@@ -379,6 +380,9 @@ pub struct RawDecodeJob {
     /// (`apply_orientation = true`); the adapter follows zencodec's `Preserve`
     /// default and bakes itself on the non-`Preserve` hints.
     orientation: OrientationHint,
+    /// Private incremental preflight handoff. The helper's header probe uses
+    /// this successful result instead of invoking the native parser twice.
+    incremental_probe: Option<alloc::sync::Arc<std::sync::OnceLock<ImageInfo>>>,
 }
 
 impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
@@ -442,6 +446,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
+        if let Some(cache) = &self.incremental_probe
+            && let Some(info) = cache.get()
+        {
+            return Ok(info.clone());
+        }
         let stop: &dyn enough::Stop = self
             .stop
             .as_ref()
@@ -452,7 +461,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         // `Preserve` (default) keeps the stored dims + intrinsic EXIF tag that
         // `build_image_info` already set; the bake hints report the display
         // (post-orientation) dims + `Identity`.
-        Ok(report_probe_for_hint(info, self.orientation))
+        let info = report_probe_for_hint(info, self.orientation);
+        if let Some(cache) = &self.incremental_probe {
+            let _ = cache.set(info.clone());
+        }
+        Ok(info)
     }
 
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
@@ -616,10 +629,12 @@ struct RawIncremental {
     estimated_output: u64,
     need: [Request; 1],
     needs_input: bool,
+    header_ready: bool,
 }
 
 impl RawIncremental {
-    fn new(job: RawDecodeJob, preferred: &[PixelDescriptor]) -> Self {
+    fn new(mut job: RawDecodeJob, preferred: &[PixelDescriptor]) -> Self {
+        job.incremental_probe = Some(alloc::sync::Arc::new(std::sync::OnceLock::new()));
         let output_bytes_per_pixel = if job.config.output == OutputMode::Develop
             && !preferred
                 .iter()
@@ -634,6 +649,7 @@ impl RawIncremental {
             stop: job.stop.clone(),
             limits: job.limits.clone(),
             orientation: job.orientation,
+            incremental_probe: job.incremental_probe.clone(),
         };
         Self {
             inner: zencodec::helpers::WholeFileIncremental::new(job, preferred),
@@ -642,6 +658,7 @@ impl RawIncremental {
             estimated_output: 0,
             need: [Request::at_least(0, 1)],
             needs_input: false,
+            header_ready: false,
         }
     }
 
@@ -695,6 +712,7 @@ impl IncrementalDecode for RawIncremental {
                 })?;
             self.admit_size(end).map_err(StepError::Codec)?;
         }
+        let mut incomplete_probe = self.inner.info().is_none() && input.offset != 0;
         if self.inner.info().is_none() && input.offset == 0 {
             match zencodec::decode::DecodeJob::probe(&self.probe_job, input.bytes) {
                 Ok(info) => {
@@ -731,10 +749,23 @@ impl IncrementalDecode for RawIncremental {
                 {
                     return Err(StepError::Codec(e));
                 }
-                _ => {}
+                Err(e) if input.reaches_end() => return Err(StepError::Codec(e)),
+                Err(_) => incomplete_probe = true,
             }
         }
-        let progress = self.inner.step(input, sink, stop)?;
+        // Do not let the helper repeat an unsuccessful native probe: an error
+        // from that second parse could otherwise be mistaken for a short prefix.
+        let progress = if incomplete_probe {
+            Progress::need(0)
+        } else {
+            self.inner.step(input, sink, stop)?
+        };
+        stop.check()?;
+        if let Some(job_stop) = &self.probe_job.stop {
+            enough::Stop::check(job_stop)
+                .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
+        }
+        self.header_ready = self.inner.info().is_some();
         self.needs_input = matches!(progress.event, Event::Need);
         if self.needs_input {
             let input_cap = self.probe_job.limits.max_input_bytes.unwrap_or(u64::MAX);
@@ -755,9 +786,23 @@ impl IncrementalDecode for RawIncremental {
                 .unwrap_or(u64::MAX)
                 .saturating_sub(self.estimated_output);
             let ceiling = input_ceiling.min(memory_ceiling).min(isize::MAX as u64);
-            let wanted = match self.inner.requested().first() {
-                Some(Request::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
-                _ => ceiling,
+            let wanted = if incomplete_probe {
+                input
+                    .total_len
+                    .unwrap_or_else(|| {
+                        let held = if input.offset == 0 {
+                            input.bytes.len() as u64
+                        } else {
+                            0
+                        };
+                        held.saturating_mul(2).max(4096).max(held.saturating_add(1))
+                    })
+                    .min(ceiling)
+            } else {
+                match self.inner.requested().first() {
+                    Some(Request::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
+                    _ => ceiling,
+                }
             };
             if input.offset == 0 && wanted <= input.bytes.len() as u64 {
                 if self.probe_job.limits.max_memory_bytes.is_some() && ceiling == memory_ceiling {
@@ -780,7 +825,11 @@ impl IncrementalDecode for RawIncremental {
     }
 
     fn info(&self) -> Option<&ImageInfo> {
-        self.inner.info()
+        if self.header_ready {
+            self.inner.info()
+        } else {
+            None
+        }
     }
 
     fn output_descriptor(&self) -> Option<PixelDescriptor> {
