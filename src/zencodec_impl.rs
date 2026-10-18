@@ -647,7 +647,7 @@ impl RawIncremental {
         let probe_job = RawDecodeJob {
             config: job.config.clone(),
             stop: job.stop.clone(),
-            limits: job.limits.clone(),
+            limits: job.limits,
             orientation: job.orientation,
             incremental_probe: job.incremental_probe.clone(),
         };
