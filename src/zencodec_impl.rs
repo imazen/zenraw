@@ -29,6 +29,16 @@ fn wrap_limit(e: zencodec::LimitExceeded) -> RawError {
     RawError::LimitExceeded(RawLimitKind::from_zencodec(e.kind()), e.to_string())
 }
 
+fn observation<'a>(
+    pulse: Option<&'a how_far::SharedPulse>,
+    stop: Option<&'a zencodec::StopToken>,
+) -> how_far::WithStop<'a> {
+    how_far::WithStop::borrowed(
+        pulse.map_or(&how_far::NoPulse as &dyn how_far::Pulse, |p| p),
+        stop.map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s),
+    )
+}
+
 // ── Format definition ──────────────────────────────────────────────────
 
 /// ImageFormatDefinition for DNG files.
@@ -188,9 +198,25 @@ fn resolve_orientation(hint: OrientationHint, intrinsic: Orientation) -> Orienta
 /// [`Orientation::Identity`] (the pixels are final — no orientation remains to
 /// apply). The intrinsic EXIF orientation is read from the `ImageInfo` the decode
 /// path already computed, so it matches what `probe()` reports.
+#[cfg(test)]
 fn apply_orientation_to_output(output: DecodeOutput, hint: OrientationHint) -> DecodeOutput {
+    apply_orientation_to_output_pulse(
+        output,
+        hint,
+        crate::alloc_util::AllocPref::CodecDefault,
+        &how_far::NoPulse,
+    )
+    .expect("NoPulse cannot cancel")
+}
+
+fn apply_orientation_to_output_pulse(
+    output: DecodeOutput,
+    hint: OrientationHint,
+    alloc_pref: crate::alloc_util::AllocPref,
+    pulse: &dyn how_far::Pulse,
+) -> crate::Result<DecodeOutput> {
     if !hint_bakes(hint) {
-        return output;
+        return Ok(output);
     }
     let mut info = output.info().clone();
     let intrinsic = info.orientation;
@@ -204,20 +230,17 @@ fn apply_orientation_to_output(output: DecodeOutput, hint: OrientationHint) -> D
     // skipped in that case.
     if resolved.is_identity() {
         info = info.with_orientation(Orientation::Identity);
-        return DecodeOutput::new(buf, info);
+        crate::progress::total(pulse, 0);
+        return Ok(DecodeOutput::new(buf, info));
     }
 
     let descriptor = buf.descriptor();
-    let bpp = descriptor.bytes_per_pixel();
-    let w = buf.width() as usize;
-    let h = buf.height() as usize;
-    // `copy_to_contiguous_bytes` returns exactly `w * h * bpp` tight bytes,
-    // stripping any alignment offset / stride padding — so the byte baker (which
-    // assumes a tight `w * h * bpp` layout) is always fed clean pixel data.
-    let bytes = buf.copy_to_contiguous_bytes();
-
-    let (baked, nw, nh) =
-        crate::orient::apply_orientation_bytes(&bytes, w, h, bpp, resolved.to_exif() as u16);
+    let (baked, nw, nh) = crate::orient::apply_orientation_pixels(
+        &buf.as_slice(),
+        resolved.to_exif() as u16,
+        alloc_pref,
+        pulse,
+    )?;
 
     let baked_buf = zenpixels::PixelBuffer::from_vec(baked, nw as u32, nh as u32, descriptor)
         .expect("apply_orientation_to_output: baked buffer matches output geometry");
@@ -228,11 +251,11 @@ fn apply_orientation_to_output(output: DecodeOutput, hint: OrientationHint) -> D
     info.height = nh as u32;
     info = info.with_orientation(Orientation::Identity);
 
-    DecodeOutput::new(baked_buf, info)
+    Ok(DecodeOutput::new(baked_buf, info))
 }
 
 /// Rewrite a probe [`ImageInfo`] (stored dims + intrinsic EXIF tag, as produced
-/// by [`build_image_info`]) to match what [`apply_orientation_to_output`] reports
+/// by [`build_image_info`]) to match what [`apply_orientation_to_output_pulse`] reports
 /// for `hint`.
 ///
 /// On the [`Preserve`](OrientationHint::Preserve) path the info is returned
@@ -357,6 +380,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         RawDecodeJob {
             config: self.inner,
             stop: None,
+            pulse: None,
             limits: ResourceLimits::default(),
             orientation: OrientationHint::Preserve,
             incremental_probe: None,
@@ -370,6 +394,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
 pub struct RawDecodeJob {
     config: RawDecodeConfig,
     stop: Option<zencodec::StopToken>,
+    pulse: Option<how_far::SharedPulse>,
     limits: ResourceLimits,
     /// How to resolve the EXIF orientation during decode. Default
     /// [`OrientationHint::Preserve`] — pixels stay in stored sensor orientation
@@ -396,6 +421,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         self
     }
 
+    fn with_pulse(mut self, pulse: how_far::SharedPulse) -> Self {
+        self.pulse = Some(pulse);
+        self
+    }
+
     fn with_limits(mut self, limits: ResourceLimits) -> Self {
         self.limits = limits;
         self
@@ -413,10 +443,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         &self,
         data: &[u8],
     ) -> Result<zencodec::inventory::Inventory, At<zencodec::CodecError>> {
-        let stop: &dyn enough::Stop = self
-            .stop
-            .as_ref()
-            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let stop: &dyn enough::Stop = &observation;
         enough::Stop::check(stop).map_err(|r| zencodec::CodecError::of(at!(RawError::from(r))))?;
         // The same input-size limit `decoder()` enforces.
         self.limits
@@ -451,10 +479,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         {
             return Ok(info.clone());
         }
-        let stop: &dyn enough::Stop = self
-            .stop
-            .as_ref()
-            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let stop: &dyn enough::Stop = &observation;
         let info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
         let info = build_image_info(data, &info);
         // Report consistently with what `decode()` produces under this hint.
@@ -470,10 +496,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
 
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         // Probe for stored dims + intrinsic orientation (independent of hint).
-        let stop: &dyn enough::Stop = self
-            .stop
-            .as_ref()
-            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let stop: &dyn enough::Stop = &observation;
         let raw_info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
         let info = build_image_info(data, &raw_info);
 
@@ -535,10 +559,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         config.apply_orientation = false;
 
         // Probe header for dimensions to check width/height/memory limits
-        let stop: &dyn enough::Stop = self
-            .stop
-            .as_ref()
-            .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let stop: &dyn enough::Stop = &observation;
         let info = crate::probe(&data, Some(&how_far::StopOnly::borrowed(stop)))?;
 
         // Check dimension limits (max_width, max_height, max_pixels)
@@ -561,10 +583,12 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             config.max_pixels = max_px;
         }
 
+        drop(observation);
         Ok(RawDecoder {
             data,
             config,
             stop: self.stop,
+            pulse: self.pulse,
             orientation: self.orientation,
         })
     }
@@ -647,6 +671,7 @@ impl RawIncremental {
         let probe_job = RawDecodeJob {
             config: job.config.clone(),
             stop: job.stop.clone(),
+            pulse: job.pulse.clone(),
             limits: job.limits,
             orientation: job.orientation,
             incremental_probe: job.incremental_probe.clone(),
@@ -844,6 +869,7 @@ pub struct RawDecoder<'a> {
     data: Cow<'a, [u8]>,
     config: RawDecodeConfig,
     stop: Option<zencodec::StopToken>,
+    pulse: Option<how_far::SharedPulse>,
     /// Resolved from [`RawDecodeJob::orientation`]; drives the bake path in
     /// [`Decode::decode`](zencodec::decode::Decode::decode). The native decode
     /// runs with `apply_orientation = false`, so the buffer here is always in
@@ -855,21 +881,29 @@ impl<'a> Decode for RawDecoder<'a> {
     type Error = At<RawError>;
 
     fn decode(self) -> Result<DecodeOutput, Self::Error> {
-        let stop: &dyn enough::Stop = match &self.stop {
-            Some(s) => s,
-            None => &enough::Unstoppable,
-        };
-        let output = crate::decode(
-            &self.data,
-            &self.config,
-            Some(&how_far::StopOnly::borrowed(stop)),
-        )?;
-        let info = build_image_info(&self.data, &output.info);
-        let decoded = DecodeOutput::new(output.pixels, info);
-        // `Preserve` (default) returns the decoded output unchanged: stored
-        // pixels + stored dims + intrinsic EXIF tag. A bake hint physically
-        // rotates the buffer and rewrites the reported dims/tag to match.
-        Ok(apply_orientation_to_output(decoded, self.orientation))
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let mut progress =
+            crate::progress::Sequence::new(&observation, &["Decode RAW", "Output orientation"]);
+        let result = (|| {
+            let output =
+                progress.run(|pulse| crate::decode(&self.data, &self.config, Some(pulse)))?;
+            let info = build_image_info(&self.data, &output.info);
+            let decoded = DecodeOutput::new(output.pixels, info);
+            if hint_bakes(self.orientation) {
+                progress.run(|pulse| {
+                    apply_orientation_to_output_pulse(
+                        decoded,
+                        self.orientation,
+                        self.config.alloc_pref,
+                        pulse,
+                    )
+                })
+            } else {
+                progress.skip();
+                Ok(decoded)
+            }
+        })();
+        progress.complete(result)
     }
 }
 

@@ -63,3 +63,9 @@ interior progress/cancellation hook. `tests/pulse_progress.rs` exercises both
 backends, exact completed counts (including tails), pixel identity, cancellation
 outcomes, final-report cancellation, and non-sticky stop errors. The rawler
 non-Bayer extraction now also checks and reports between batches.
+
+The zencodec `with_pulse` override retains the shared observation through
+one-shot and whole-file incremental decode. Metadata probing uses its stop
+policy without planning progress children; decode reserves native processing
+and output-orientation phases. The adapter's orientation kernel accepts strided
+`PixelSlice` rows and matches the existing byte permutations for RGB16/RGBF32.
