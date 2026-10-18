@@ -59,7 +59,7 @@ fn main() {
 
     // Decode once up front to report the dimensions the alloc count is relative to.
     {
-        let probe = zenraw::decode(&data, &config, &enough::Unstoppable).unwrap_or_else(|e| {
+        let probe = zenraw::decode(&data, &config, None).unwrap_or_else(|e| {
             eprintln!("probe decode failed for {}: {e}", path.display());
             std::process::exit(1);
         });
@@ -78,7 +78,7 @@ fn main() {
 
     let mut total_pixels: u64 = 0;
     for i in 0..iters {
-        let out = zenraw::decode(&data, &config, &enough::Unstoppable).unwrap_or_else(|e| {
+        let out = zenraw::decode(&data, &config, None).unwrap_or_else(|e| {
             eprintln!("decode iteration {i} failed: {e}");
             std::process::exit(1);
         });

@@ -1,6 +1,5 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use enough::Unstoppable;
 use zenraw::{RawDecodeConfig, classify, FileFormat};
 
 fuzz_target!(|data: &[u8]| {
@@ -23,5 +22,5 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let config = RawDecodeConfig::default();
-    let _ = zenraw::decode(data, &config, &Unstoppable);
+    let _ = zenraw::decode(data, &config, None);
 });

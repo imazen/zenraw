@@ -13,7 +13,7 @@ fn main() {
     eprintln!("loaded {} bytes from {}", data.len(), path);
 
     let config = zenraw::RawDecodeConfig::default();
-    let out = zenraw::decode(&data, &config, &enough::Unstoppable).expect("decode failed");
+    let out = zenraw::decode(&data, &config, None).expect("decode failed");
     eprintln!(
         "decoded {}x{} {} ({})",
         out.info.width, out.info.height, out.info.model, out.info.cfa_pattern

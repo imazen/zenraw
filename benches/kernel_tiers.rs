@@ -93,9 +93,9 @@ fn bench_decode(suite: &mut Suite) {
     ] {
         let config = zenraw::RawDecodeConfig::default().with_output(mode);
         assert!(set_simd(false));
-        let scalar = zenraw::decode(data, &config, &enough::Unstoppable).unwrap();
+        let scalar = zenraw::decode(data, &config, None).unwrap();
         assert!(set_simd(true));
-        let simd = zenraw::decode(data, &config, &enough::Unstoppable).unwrap();
+        let simd = zenraw::decode(data, &config, None).unwrap();
         assert_eq!(scalar.pixels.width(), simd.pixels.width());
         assert_eq!(scalar.pixels.height(), simd.pixels.height());
         assert_eq!(
@@ -116,7 +116,7 @@ fn bench_decode(suite: &mut Suite) {
                 g.bench(arm, move |b| {
                     let config = config.clone();
                     b.with_input(move || assert!(set_simd(simd)))
-                        .run(move |_| zenraw::decode(data, &config, &enough::Unstoppable).unwrap())
+                        .run(move |_| zenraw::decode(data, &config, None).unwrap())
                 });
             }
         });

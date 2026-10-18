@@ -66,11 +66,11 @@ Raw file bytes (&[u8])
 
 ```rust
 // Full decode
-pub fn decode(data: &[u8], config: &RawDecodeConfig, stop: &dyn Stop)
+pub fn decode(data: &[u8], config: &RawDecodeConfig, pulse: Option<&dyn how_far::Pulse>)
     -> Result<RawDecodeOutput>;
 
 // Metadata only (fast)
-pub fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo>;
+pub fn probe(data: &[u8], pulse: Option<&dyn how_far::Pulse>) -> Result<RawInfo>;
 
 // Format detection
 pub fn is_raw_file(data: &[u8]) -> bool;
@@ -155,7 +155,7 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 
 1. **`#![forbid(unsafe_code)]`** — no exceptions
 2. **`no_std + alloc`** — std opt-in for I/O (rawloader requires std)
-3. **Cooperative cancellation** — `Stop` tokens throughout for responsive cancellation
+3. **Progress and cancellation** — optional `how_far::Pulse` with completed batches and child phases
 4. **Non-exhaustive types** — future-proof public API
 5. **Display-ready default, scene-referred opt-in** — `OutputMode::Develop` (u16 sRGB) by default; `OutputMode::Linear` for linear f32 (no tone curve or gamma, but clamped to `[0,1]` by the colour matrix); `OutputMode::CameraRaw` when the demosaic overshoot above `1.0` must survive
 
@@ -171,7 +171,7 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 | ultrahdr-core 0.2.0 | UltraHDR gain map support (optional) | Apache-2.0 |
 | kamadak-exif 0.6.1 | EXIF/DNG metadata reading (feature: exif) | BSD-2-Clause |
 | zenpixels 0.2.0 | PixelBuffer, PixelDescriptor | Apache-2.0 OR MIT |
-| enough | Cooperative cancellation | Local |
+| how-far / enough | Progress phases and cooperative cancellation | crates.io |
 | whereat 0.1.4 | Location-aware errors | MIT OR Apache-2.0 |
 | thiserror 2.0.18 | Error derives | MIT OR Apache-2.0 |
 

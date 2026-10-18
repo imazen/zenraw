@@ -36,118 +36,11 @@
 
 #![cfg(all(feature = "rawloader", not(feature = "rawler")))]
 
-use enough::Unstoppable;
 use zenraw::{OutputMode, RawDecodeConfig};
 
-// TIFF field types.
-const BYTE: u16 = 1;
-const ASCII: u16 = 2;
-const SHORT: u16 = 3;
-const LONG: u16 = 4;
-
-/// One IFD entry, with its value either inline (≤ 4 bytes) or in the heap blob.
-struct Entry {
-    tag: u16,
-    kind: u16,
-    count: u32,
-    /// Raw value bytes, already little-endian.
-    value: Vec<u8>,
-}
-
-fn short(tag: u16, v: u16) -> Entry {
-    Entry {
-        tag,
-        kind: SHORT,
-        count: 1,
-        value: v.to_le_bytes().to_vec(),
-    }
-}
-
-fn long(tag: u16, v: u32) -> Entry {
-    Entry {
-        tag,
-        kind: LONG,
-        count: 1,
-        value: v.to_le_bytes().to_vec(),
-    }
-}
-
-fn ascii(tag: u16, s: &str) -> Entry {
-    let mut value = s.as_bytes().to_vec();
-    value.push(0);
-    Entry {
-        tag,
-        kind: ASCII,
-        count: value.len() as u32,
-        value,
-    }
-}
-
-fn bytes(tag: u16, v: &[u8]) -> Entry {
-    Entry {
-        tag,
-        kind: BYTE,
-        count: v.len() as u32,
-        value: v.to_vec(),
-    }
-}
-
-/// Serialise a little-endian, single-IFD TIFF.
-///
-/// Layout: 8-byte header, IFD at offset 8, then the heap (out-of-line entry
-/// values), then `strip` (the pixel data `StripOffsets` points at).
-fn build_tiff(mut entries: Vec<Entry>, strip: &[u8], strip_offset_tag: u16) -> Vec<u8> {
-    entries.sort_by_key(|e| e.tag);
-
-    let ifd_start = 8usize;
-    let ifd_len = 2 + entries.len() * 12 + 4;
-    let heap_start = ifd_start + ifd_len;
-
-    // Lay the heap out first so we know where the strip lands.
-    let mut heap = Vec::new();
-    let mut placements = Vec::with_capacity(entries.len());
-    for e in &entries {
-        if e.value.len() <= 4 {
-            placements.push(None);
-        } else {
-            if heap.len() % 2 == 1 {
-                heap.push(0); // keep values word-aligned
-            }
-            placements.push(Some(heap_start + heap.len()));
-            heap.extend_from_slice(&e.value);
-        }
-    }
-    let strip_offset = (heap_start + heap.len()) as u32;
-
-    let mut out = Vec::new();
-    out.extend_from_slice(b"II");
-    out.extend_from_slice(&42u16.to_le_bytes());
-    out.extend_from_slice(&(ifd_start as u32).to_le_bytes());
-
-    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-    for (e, place) in entries.iter().zip(&placements) {
-        out.extend_from_slice(&e.tag.to_le_bytes());
-        out.extend_from_slice(&e.kind.to_le_bytes());
-        out.extend_from_slice(&e.count.to_le_bytes());
-        let field: [u8; 4] = match place {
-            Some(off) => (*off as u32).to_le_bytes(),
-            None if e.tag == strip_offset_tag => strip_offset.to_le_bytes(),
-            None => {
-                let mut f = [0u8; 4];
-                f[..e.value.len()].copy_from_slice(&e.value);
-                f
-            }
-        };
-        out.extend_from_slice(&field);
-    }
-    out.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
-
-    assert_eq!(out.len(), heap_start, "IFD length miscomputed");
-    out.extend_from_slice(&heap);
-    assert_eq!(out.len(), strip_offset as usize, "strip offset miscomputed");
-    out.extend_from_slice(strip);
-    out
-}
+#[path = "support/dng_builder.rs"]
+mod dng_builder;
+use dng_builder::*;
 
 /// A 4×4, 16-bit, uncompressed DNG whose `CFAPattern` has `pattern_len`
 /// entries. Five is not a CFA size rawloader knows, so it panics.
@@ -191,7 +84,7 @@ fn synthetic_dng_is_recognised_as_raw() {
     );
     // A 4-entry CFAPattern is a size rawloader accepts, so this one gets all
     // the way through metadata extraction.
-    let info = zenraw::probe(&data, &Unstoppable).expect("4-entry CFAPattern must probe cleanly");
+    let info = zenraw::probe(&data, None).expect("4-entry CFAPattern must probe cleanly");
     assert_eq!(info.width, 4);
     assert_eq!(info.height, 4);
     assert_eq!(info.cfa_pattern, "RGBR");
@@ -202,7 +95,7 @@ fn synthetic_dng_is_recognised_as_raw() {
 #[test]
 fn probe_contains_rawloader_panic() {
     let data = dng_with_cfa_pattern_len(5);
-    let err = zenraw::probe(&data, &Unstoppable)
+    let err = zenraw::probe(&data, None)
         .expect_err("a CFA size rawloader cannot parse must not probe successfully");
     assert!(
         matches!(err.error(), zenraw::RawError::Malformed(_)),
@@ -215,7 +108,7 @@ fn probe_contains_rawloader_panic() {
 #[test]
 fn decode_contains_rawloader_panic() {
     let data = dng_with_cfa_pattern_len(5);
-    let err = zenraw::decode(&data, &RawDecodeConfig::default(), &Unstoppable)
+    let err = zenraw::decode(&data, &RawDecodeConfig::default(), None)
         .expect_err("a CFA size rawloader cannot parse must not decode successfully");
     assert!(
         matches!(err.error(), zenraw::RawError::Malformed(_)),
@@ -228,7 +121,7 @@ fn decode_contains_rawloader_panic() {
 fn probe_contains_panic_for_several_bad_cfa_sizes() {
     for len in [1usize, 2, 3, 5, 7, 9, 35, 37] {
         let data = dng_with_cfa_pattern_len(len);
-        let result = zenraw::probe(&data, &Unstoppable);
+        let result = zenraw::probe(&data, None);
         assert!(
             result.is_err(),
             "CFAPattern of length {len} should not probe successfully"
@@ -279,7 +172,7 @@ fn dng_full_range() -> Vec<u8> {
 fn decode_f32(mode: zenraw::OutputMode) -> Vec<f32> {
     let data = dng_full_range();
     let config = RawDecodeConfig::new().with_output(mode);
-    let out = zenraw::decode(&data, &config, &Unstoppable).expect("synthetic DNG should decode");
+    let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
     let bytes = out.pixels.copy_to_contiguous_bytes();
     bytes
         .as_chunks::<4>()
@@ -334,7 +227,7 @@ fn exposure_ev_multiplies_after_the_clamp() {
     let config = RawDecodeConfig::new()
         .with_output(zenraw::OutputMode::Linear)
         .with_exposure_ev(3.0);
-    let out = zenraw::decode(&data, &config, &Unstoppable).expect("synthetic DNG should decode");
+    let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
     let bytes = out.pixels.copy_to_contiguous_bytes();
     let values: Vec<f32> = bytes
         .as_chunks::<4>()
@@ -355,10 +248,10 @@ fn exposure_ev_multiplies_after_the_clamp() {
 /// as Bayer to callers.
 #[test]
 fn sensor_layout_distinguishes_bayer_from_xtrans() {
-    let bayer = zenraw::probe(&dng_with_cfa_pattern_len(4), &Unstoppable).expect("probe 2x2");
+    let bayer = zenraw::probe(&dng_with_cfa_pattern_len(4), None).expect("probe 2x2");
     assert_eq!(bayer.sensor_layout, zenraw::SensorLayout::Bayer);
 
-    let xtrans = zenraw::probe(&dng_with_cfa_pattern_len(36), &Unstoppable).expect("probe 6x6");
+    let xtrans = zenraw::probe(&dng_with_cfa_pattern_len(36), None).expect("probe 6x6");
     assert_eq!(
         xtrans.sensor_layout,
         zenraw::SensorLayout::XTrans,
@@ -445,7 +338,7 @@ const XTRANS_TILE: [u8; 36] = [
 fn decode_preserves_measured_channel_for_xtrans_cfa() {
     let (data, expected) = dng_with_cfa_tile(&XTRANS_TILE, 6);
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe 6x6 DNG");
+    let info = zenraw::probe(&data, None).expect("probe 6x6 DNG");
     assert_eq!(info.sensor_layout, zenraw::SensorLayout::XTrans);
 
     for method in [
@@ -455,7 +348,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
         let config = RawDecodeConfig::new()
             .with_output(OutputMode::CameraRaw)
             .with_demosaic(method);
-        let out = zenraw::decode(&data, &config, &Unstoppable).expect("decode 6x6 DNG");
+        let out = zenraw::decode(&data, &config, None).expect("decode 6x6 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
         let bytes = out.pixels.copy_to_contiguous_bytes();
@@ -489,7 +382,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
     let tile: [u8; 4] = [0, 1, 1, 2]; // RGGB
     let (data, expected) = dng_with_cfa_tile(&tile, 2);
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe 2x2 DNG");
+    let info = zenraw::probe(&data, None).expect("probe 2x2 DNG");
     assert_eq!(info.sensor_layout, zenraw::SensorLayout::Bayer);
 
     for method in [
@@ -499,7 +392,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         let config = RawDecodeConfig::new()
             .with_output(OutputMode::CameraRaw)
             .with_demosaic(method);
-        let out = zenraw::decode(&data, &config, &Unstoppable).expect("decode 2x2 DNG");
+        let out = zenraw::decode(&data, &config, None).expect("decode 2x2 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
         let bytes = out.pixels.copy_to_contiguous_bytes();
@@ -520,6 +413,171 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
                 );
             }
         }
+    }
+}
+
+// ── Cancellation ──────────────────────────────────────────────────────────
+//
+// The O(pixels) passes (normalize → demosaic → crop → orient → colour →
+// quantise) all poll `stop` at bounded intervals. A 1 MP synthetic frame is
+// big enough to cross every interior check cadence (per-32-row in the
+// demosaic kernels, per-256-row in crop, per-256K elements elsewhere), so a
+// counting token can prove the checks are actually reached mid-pipeline —
+// not only at the pre-existing phase boundaries.
+
+/// A DNG with a plain ascending gradient at `w`×`h`, Bayer RGGB.
+fn dng_sized(w: u16, h: u16) -> Vec<u8> {
+    let entries = vec![
+        short(0x0100, w),
+        short(0x0101, h),
+        short(0x0102, 16),
+        short(0x0103, 1),
+        short(0x0106, 32803),
+        ascii(0x010F, "ZenRaw"),
+        ascii(0x0110, "SyntheticDng"),
+        long(0x0111, 0),
+        short(0x0115, 1),
+        long(0x0117, w as u32 * h as u32 * 2),
+        bytes(0x828E, &[0, 1, 1, 2]), // RGGB
+        bytes(0xC612, &[1, 4, 0, 0]),
+        short(0xC61D, u16::MAX),
+    ];
+    let mut strip = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        strip.extend_from_slice(&((i * 61 % u16::MAX as usize) as u16).to_le_bytes());
+    }
+    strip.extend_from_slice(&[0u8; 64]);
+    build_tiff(entries, &strip, 0x0111)
+}
+
+/// `Stop` that cancels once `check()` has been called `budget` times.
+/// `budget = u64::MAX` records calls without ever firing.
+struct CountdownStop {
+    remaining: std::sync::atomic::AtomicU64,
+}
+
+impl CountdownStop {
+    fn new(budget: u64) -> Self {
+        Self {
+            remaining: std::sync::atomic::AtomicU64::new(budget),
+        }
+    }
+    fn calls(&self) -> u64 {
+        u64::MAX - self.remaining.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl enough::Stop for CountdownStop {
+    fn check(&self) -> Result<(), enough::StopReason> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut remaining = self.remaining.load(Relaxed);
+        loop {
+            if remaining == 0 {
+                return Err(enough::StopReason::Cancelled);
+            }
+            match self
+                .remaining
+                .compare_exchange_weak(remaining, remaining - 1, Relaxed, Relaxed)
+            {
+                Ok(_) => return Ok(()),
+                Err(current) => remaining = current,
+            }
+        }
+    }
+
+    fn should_stop(&self) -> bool {
+        self.remaining.load(std::sync::atomic::Ordering::Relaxed) == 0
+    }
+    fn may_stop(&self) -> bool {
+        true
+    }
+}
+
+/// A token that never fires must not perturb output bytes anywhere in the
+/// pipeline — the checks are a pure observation point.
+#[test]
+fn decode_with_non_firing_stop_is_byte_identical() {
+    let data = dng_sized(1024, 1024);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
+
+    let base = zenraw::decode(&data, &config, None)
+        .expect("baseline decode")
+        .pixels
+        .copy_to_contiguous_bytes();
+
+    let metered = CountdownStop::new(u64::MAX);
+    let out = zenraw::decode(&data, &config, Some(&how_far::StopOnly::borrowed(&metered)))
+        .expect("decode with non-firing stop")
+        .pixels
+        .copy_to_contiguous_bytes();
+
+    assert_eq!(base, out, "stop checks changed the output bytes");
+    assert!(
+        metered.calls() > 10,
+        "only {} interior checks fired on a 1 MP decode — the pipeline polls \
+         far more often than that",
+        metered.calls()
+    );
+}
+
+/// A token that fires mid-pipeline must surface `RawError::Stopped`, not a
+/// partial image. Small budgets land inside normalize/demosaic — the spans
+/// that were unpolled before this work.
+#[test]
+fn decode_cancelled_mid_pipeline_returns_stopped() {
+    let data = dng_sized(1024, 1024);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
+
+    for budget in [0u64, 2, 6, 20] {
+        let stop = CountdownStop::new(budget);
+        let err = zenraw::decode(&data, &config, Some(&how_far::StopOnly::borrowed(&stop)))
+            .expect_err("decode should report cancellation");
+        assert!(
+            matches!(
+                err.error(),
+                zenraw::RawError::Stopped(enough::StopReason::Cancelled)
+            ),
+            "budget {budget}: expected Stopped(Cancelled), got {err:?}"
+        );
+    }
+}
+
+/// Cancellation is an error even when the token only reports it once.
+#[test]
+fn single_poll_cancellation_is_never_lost() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct FireOnce {
+        calls: AtomicUsize,
+        fire_at: usize,
+    }
+    impl enough::Stop for FireOnce {
+        fn check(&self) -> Result<(), enough::StopReason> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == self.fire_at {
+                Err(enough::StopReason::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let data = dng_sized(128, 96);
+    let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
+    let count = FireOnce {
+        calls: AtomicUsize::new(0),
+        fire_at: usize::MAX,
+    };
+    zenraw::decode(&data, &config, Some(&how_far::StopOnly::borrowed(&count)))
+        .expect("uncancelled decode");
+    for fire_at in 0..count.calls.load(Ordering::Relaxed) {
+        let stop = FireOnce {
+            calls: AtomicUsize::new(0),
+            fire_at,
+        };
+        let err = zenraw::decode(&data, &config, Some(&how_far::StopOnly::borrowed(&stop)))
+            .expect_err("each observed cancellation must terminate decoding");
+        assert!(
+            matches!(err.error(), zenraw::RawError::Stopped(_)),
+            "poll {fire_at}: {err}"
+        );
     }
 }
 

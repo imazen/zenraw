@@ -22,51 +22,77 @@ use alloc::vec::Vec;
 /// - 7: Transverse
 /// - 8: Rotate 270° CW
 pub(crate) fn apply_orientation(
-    mut rgb: Vec<f32>,
+    rgb: Vec<f32>,
     width: usize,
     height: usize,
     orientation: u16,
 ) -> (Vec<f32>, usize, usize) {
+    apply_orientation_stop(rgb, width, height, orientation, &how_far::NoPulse)
+        .expect("NoPulse cannot cancel")
+}
+
+/// [`apply_orientation`] with cooperative cancellation — each O(pixels)
+/// permutation checks `pulse` between row or pixel batches. Cancellation is
+/// returned directly so a partially-permuted buffer cannot escape as success.
+pub(crate) fn apply_orientation_stop(
+    mut rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    orientation: u16,
+    pulse: &dyn how_far::Pulse,
+) -> Result<(Vec<f32>, usize, usize), enough::StopReason> {
+    crate::progress::total(
+        pulse,
+        match orientation {
+            2 => height,
+            3 => width * height / 2,
+            4 => height / 2,
+            5..=8 => width,
+            _ => 0,
+        },
+    );
+    // Entry check: bounds the gap attributed to the first in-helper check.
+    pulse.check()?;
     let w = width;
     let h = height;
-    match orientation {
+    Ok(match orientation {
         0 | 1 => (rgb, w, h),
         2 => {
-            flip_horizontal(&mut rgb, w, h);
+            flip_horizontal(&mut rgb, w, h, pulse)?;
             (rgb, w, h)
         }
         3 => {
-            rotate_180(&mut rgb, w, h);
+            rotate_180(&mut rgb, w, h, pulse)?;
             (rgb, w, h)
         }
         4 => {
-            flip_vertical(&mut rgb, w, h);
+            flip_vertical(&mut rgb, w, h, pulse)?;
             (rgb, w, h)
         }
         // Orientations 5-8 swap width and height.
         // Display image: new_width = h, new_height = w.
         5 => {
             // Transpose: display(dr,dc) ← src(dc, dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (dc, dr));
+            let out = remap(&rgb, w, h, w, pulse, |dr, dc| (dc, dr))?;
             (out, h, w)
         }
         6 => {
             // Rotate 90° CW: display(dr,dc) ← src(h-1-dc, dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (h - 1 - dc, dr));
+            let out = remap(&rgb, w, h, w, pulse, |dr, dc| (h - 1 - dc, dr))?;
             (out, h, w)
         }
         7 => {
             // Transverse: display(dr,dc) ← src(h-1-dc, w-1-dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (h - 1 - dc, w - 1 - dr));
+            let out = remap(&rgb, w, h, w, pulse, |dr, dc| (h - 1 - dc, w - 1 - dr))?;
             (out, h, w)
         }
         8 => {
             // Rotate 270° CW: display(dr,dc) ← src(dc, w-1-dr)
-            let out = remap(&rgb, w, h, w, |dr, dc| (dc, w - 1 - dr));
+            let out = remap(&rgb, w, h, w, pulse, |dr, dc| (dc, w - 1 - dr))?;
             (out, h, w)
         }
         _ => (rgb, w, h),
-    }
+    })
 }
 
 /// Apply an EXIF orientation to a tightly-packed pixel buffer of arbitrary
@@ -79,11 +105,8 @@ pub(crate) fn apply_orientation(
 /// four axis-swapping orientations (5–8), matching [`apply_orientation`].
 ///
 /// This is the byte-level analogue of [`apply_orientation`] (which is f32-RGB
-/// only). The zencodec adapter uses it to bake arbitrary resolved orientations
-/// (`OrientationHint::ExactTransform` / `CorrectAndTransform`) onto the decoded
-/// `RGB16` / `RGBF32` buffer, where the transform is not the image's intrinsic
-/// EXIF orientation and so cannot be produced by the native decode's
-/// `apply_orientation` path.
+/// only). The adapter's strided equivalent is `apply_orientation_pixels`.
+/// This tightly-packed helper also provides a reference for permutation tests.
 ///
 /// Because orientation is a pure pixel permutation (no resampling, no
 /// arithmetic), baking on the final integer/float buffer is identical to
@@ -178,7 +201,13 @@ fn remap_bytes(
 }
 
 /// Flip horizontally (mirror left↔right) in place.
-fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize) {
+fn flip_horizontal(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    pulse: &dyn how_far::Pulse,
+) -> Result<(), enough::StopReason> {
+    let mut pace = pulse.paced(64);
     for r in 0..height {
         for c in 0..width / 2 {
             let l = (r * width + c) * 3;
@@ -187,24 +216,43 @@ fn flip_horizontal(rgb: &mut [f32], width: usize, height: usize) {
                 rgb.swap(l + ch, ri + ch);
             }
         }
+        pace.step(1)?;
     }
+    pace.finish()?;
+    Ok(())
 }
 
 /// Rotate 180° in place (reverse pixel order).
-fn rotate_180(rgb: &mut [f32], width: usize, height: usize) {
+fn rotate_180(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    pulse: &dyn how_far::Pulse,
+) -> Result<(), enough::StopReason> {
     let n = width * height;
-    for i in 0..n / 2 {
-        let j = n - 1 - i;
-        let a = i * 3;
-        let b = j * 3;
-        for ch in 0..3 {
-            rgb.swap(a + ch, b + ch);
+    for batch_start in (0..n / 2).step_by(1 << 18) {
+        pulse.check()?;
+        for i in batch_start..(n / 2).min(batch_start + (1 << 18)) {
+            let j = n - 1 - i;
+            let a = i * 3;
+            let b = j * 3;
+            for ch in 0..3 {
+                rgb.swap(a + ch, b + ch);
+            }
         }
+        pulse.advance((n / 2 - batch_start).min(1 << 18) as u64);
     }
+    Ok(())
 }
 
 /// Flip vertically (mirror top↔bottom) in place.
-fn flip_vertical(rgb: &mut [f32], width: usize, height: usize) {
+fn flip_vertical(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    pulse: &dyn how_far::Pulse,
+) -> Result<(), enough::StopReason> {
+    let mut pace = pulse.paced(64);
     let row_len = width * 3;
     for r in 0..height / 2 {
         let top = r * row_len;
@@ -212,7 +260,10 @@ fn flip_vertical(rgb: &mut [f32], width: usize, height: usize) {
         for i in 0..row_len {
             rgb.swap(top + i, bot + i);
         }
+        pace.step(1)?;
     }
+    pace.finish()?;
+    Ok(())
 }
 
 /// Remap pixels from source to a new buffer with different dimensions.
@@ -225,8 +276,10 @@ fn remap(
     src_w: usize,
     new_w: usize,
     new_h: usize,
+    pulse: &dyn how_far::Pulse,
     map: impl Fn(usize, usize) -> (usize, usize),
-) -> Vec<f32> {
+) -> Result<Vec<f32>, enough::StopReason> {
+    let mut pace = pulse.paced(64);
     let mut out = vec![0.0f32; new_w * new_h * 3];
     for dr in 0..new_h {
         for dc in 0..new_w {
@@ -237,12 +290,113 @@ fn remap(
             out[di + 1] = rgb[si + 1];
             out[di + 2] = rgb[si + 2];
         }
+        pace.step(1)?;
     }
-    out
+    pace.finish()?;
+    Ok(out)
+}
+
+/// Apply an adapter orientation directly to rows, preserving padding in the
+/// source and avoiding an intermediate contiguous full-image copy.
+#[cfg(feature = "zencodec")]
+pub(crate) fn apply_orientation_pixels(
+    src: &zenpixels::PixelSlice<'_>,
+    orientation: u16,
+    alloc_pref: crate::alloc_util::AllocPref,
+    pulse: &dyn how_far::Pulse,
+) -> crate::Result<(Vec<u8>, usize, usize)> {
+    let w = src.width() as usize;
+    let h = src.rows() as usize;
+    let dims = if (5..=8).contains(&orientation) {
+        (h, w)
+    } else {
+        (w, h)
+    };
+    crate::progress::total(pulse, dims.1);
+    match orientation {
+        2 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (r, w - 1 - c)),
+        3 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - r, w - 1 - c)),
+        4 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - r, c)),
+        5 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (c, r)),
+        6 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - c, r)),
+        7 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - c, w - 1 - r)),
+        8 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (c, w - 1 - r)),
+        _ => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (r, c)),
+    }
+}
+
+#[cfg(feature = "zencodec")]
+fn remap_pixels(
+    src: &zenpixels::PixelSlice<'_>,
+    (width, height): (usize, usize),
+    alloc_pref: crate::alloc_util::AllocPref,
+    pulse: &dyn how_far::Pulse,
+    map: impl Fn(usize, usize) -> (usize, usize),
+) -> crate::Result<(Vec<u8>, usize, usize)> {
+    let bpp = src.descriptor().bytes_per_pixel();
+    let mut out = crate::alloc_util::alloc_filled(alloc_pref, true, 0u8, width * height * bpp)?;
+    let mut pace = pulse.paced(64);
+    for r in 0..height {
+        for c in 0..width {
+            let (sr, sc) = map(r, c);
+            let row = src.row(sr as u32);
+            let dst = (r * width + c) * bpp;
+            out[dst..dst + bpp].copy_from_slice(&row[sc * bpp..(sc + 1) * bpp]);
+        }
+        pace.step(1)
+            .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
+    }
+    pace.finish()
+        .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
+    Ok((out, width, height))
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "zencodec")]
+    #[test]
+    fn observed_orientation_matches_byte_permutations_for_strided_rows() {
+        use how_far::{Complete, Outcome, Total};
+        use how_far_along::{Phase, PulseTree};
+        for descriptor in [
+            zenpixels::PixelDescriptor::RGB16_SRGB,
+            zenpixels::PixelDescriptor::RGBF32_LINEAR,
+        ] {
+            let (w, h) = (5usize, 3usize);
+            let bpp = descriptor.bytes_per_pixel();
+            let stride = 8 * bpp;
+            let mut storage = vec![0xa5a5_a5a5u32; stride * h / 4];
+            let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut storage);
+            let mut tight = Vec::new();
+            for r in 0..h {
+                for c in 0..w * bpp {
+                    let v = (r * w * bpp + c) as u8;
+                    bytes[r * stride + c] = v;
+                    tight.push(v);
+                }
+            }
+            let src =
+                zenpixels::PixelSlice::new(bytes, w as u32, h as u32, stride, descriptor).unwrap();
+            for orientation in 1..=8 {
+                let pulse =
+                    PulseTree::new(Phase::new("orient", Total::Unknown), how_far::Unstoppable);
+                let expected = super::apply_orientation_bytes(&tight, w, h, bpp, orientation);
+                let actual = super::apply_orientation_pixels(
+                    &src,
+                    orientation,
+                    crate::alloc_util::AllocPref::CodecDefault,
+                    &pulse,
+                )
+                .unwrap();
+                assert_eq!(actual, expected);
+                let snap = pulse.observer().snapshot();
+                assert_eq!(snap.total, Total::Exact(actual.2 as u64));
+                assert_eq!(snap.completed, actual.2 as u64);
+                pulse.complete_as(Outcome::Succeeded);
+            }
+        }
+    }
+
     extern crate std;
 
     use super::*;

@@ -3,7 +3,6 @@
 //! Tests the full decode pipeline using synthetic sensor data and,
 //! when available, real DNG/RAW files.
 
-use enough::Unstoppable;
 #[cfg(feature = "rawloader")]
 use zenraw::demosaic::demosaic_to_rgb_f32;
 use zenraw::{
@@ -48,7 +47,7 @@ fn is_raw_file_detection() {
 #[test]
 fn decode_empty_input_fails() {
     let config = RawDecodeConfig::default();
-    let result = zenraw::decode(&[], &config, &Unstoppable);
+    let result = zenraw::decode(&[], &config, None);
     assert!(result.is_err());
 }
 
@@ -56,7 +55,7 @@ fn decode_empty_input_fails() {
 fn decode_garbage_input_fails() {
     let config = RawDecodeConfig::default();
     let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00];
-    let result = zenraw::decode(&garbage, &config, &Unstoppable);
+    let result = zenraw::decode(&garbage, &config, None);
     assert!(result.is_err());
 }
 
@@ -64,13 +63,13 @@ fn decode_garbage_input_fails() {
 fn decode_jpeg_input_fails() {
     let config = RawDecodeConfig::default();
     let jpeg_header = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
-    let result = zenraw::decode(&jpeg_header, &config, &Unstoppable);
+    let result = zenraw::decode(&jpeg_header, &config, None);
     assert!(result.is_err());
 }
 
 #[test]
 fn probe_empty_input_fails() {
-    let result = zenraw::probe(&[], &Unstoppable);
+    let result = zenraw::probe(&[], None);
     assert!(result.is_err());
 }
 
@@ -233,7 +232,7 @@ fn find_working_raw_file() -> Option<(std::path::PathBuf, Vec<u8>)> {
             if let Ok(data) = std::fs::read(&path) {
                 // Backend-agnostic: whichever backend is compiled in
                 // (rawloader by default, rawler when enabled) must decode it.
-                if zenraw::decode(&data, &RawDecodeConfig::default(), &Unstoppable).is_ok() {
+                if zenraw::decode(&data, &RawDecodeConfig::default(), None).is_ok() {
                     return Some((path, data));
                 }
             }
@@ -252,7 +251,7 @@ fn decode_real_raw_file() {
     eprintln!("Testing with: {}", path.display());
 
     // Test probe
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe should succeed");
+    let info = zenraw::probe(&data, None).expect("probe should succeed");
     assert!(info.width > 0);
     assert!(info.height > 0);
     eprintln!(
@@ -262,7 +261,7 @@ fn decode_real_raw_file() {
 
     // Test decode with default settings (display-ready u16 sRGB)
     let config = RawDecodeConfig::default();
-    let output = zenraw::decode(&data, &config, &Unstoppable).expect("decode should succeed");
+    let output = zenraw::decode(&data, &config, None).expect("decode should succeed");
     assert_eq!(
         output.pixels.descriptor(),
         zenpixels::PixelDescriptor::RGB16_SRGB
@@ -272,7 +271,7 @@ fn decode_real_raw_file() {
 
     // Test decode with linear f32
     let config_linear = RawDecodeConfig::new().with_output(OutputMode::Linear);
-    let output_linear = zenraw::decode(&data, &config_linear, &Unstoppable).expect("linear decode");
+    let output_linear = zenraw::decode(&data, &config_linear, None).expect("linear decode");
     assert_eq!(
         output_linear.pixels.descriptor(),
         zenpixels::PixelDescriptor::RGBF32_LINEAR
@@ -280,13 +279,12 @@ fn decode_real_raw_file() {
 
     // Test decode with bilinear demosaic
     let config_bilinear = RawDecodeConfig::new().with_demosaic(DemosaicMethod::Bilinear);
-    let output_bilinear =
-        zenraw::decode(&data, &config_bilinear, &Unstoppable).expect("bilinear decode");
+    let output_bilinear = zenraw::decode(&data, &config_bilinear, None).expect("bilinear decode");
     assert!(output_bilinear.info.width > 0);
 
     // Test decode with Display P3 target
     let config_p3 = RawDecodeConfig::new().with_target(OutputPrimaries::DisplayP3);
-    let output_p3 = zenraw::decode(&data, &config_p3, &Unstoppable).expect("P3 decode");
+    let output_p3 = zenraw::decode(&data, &config_p3, None).expect("P3 decode");
     assert_eq!(
         output_p3.pixels.descriptor().primaries,
         zenpixels::ColorPrimaries::DisplayP3
@@ -296,8 +294,7 @@ fn decode_real_raw_file() {
     let config_bt2020 = RawDecodeConfig::new()
         .with_target(OutputPrimaries::Bt2020)
         .with_output(OutputMode::Linear);
-    let output_bt2020 =
-        zenraw::decode(&data, &config_bt2020, &Unstoppable).expect("BT.2020 decode");
+    let output_bt2020 = zenraw::decode(&data, &config_bt2020, None).expect("BT.2020 decode");
     assert_eq!(
         output_bt2020.pixels.descriptor().primaries,
         zenpixels::ColorPrimaries::Bt2020
@@ -305,7 +302,7 @@ fn decode_real_raw_file() {
 
     // Test CameraRaw reports Unknown primaries
     let config_raw = RawDecodeConfig::new().with_output(OutputMode::CameraRaw);
-    let output_raw = zenraw::decode(&data, &config_raw, &Unstoppable).expect("CameraRaw decode");
+    let output_raw = zenraw::decode(&data, &config_raw, None).expect("CameraRaw decode");
     assert_eq!(
         output_raw.pixels.descriptor().primaries,
         zenpixels::ColorPrimaries::Unknown
@@ -322,7 +319,7 @@ fn pixel_limit_with_real_file() {
     };
 
     let config = RawDecodeConfig::new().with_max_pixels(100);
-    let result = zenraw::decode(&data, &config, &Unstoppable);
+    let result = zenraw::decode(&data, &config, None);
     assert!(result.is_err());
 
     let err = result.unwrap_err();

@@ -1,7 +1,6 @@
 //! Replay seed inputs from `fuzz/regression/` through every fuzz target
 //! entry point. Shared scaffolding lives in `zen-fuzz-regress`.
 
-use enough::Unstoppable;
 use std::path::Path;
 use zenraw::{FileFormat, RawDecodeConfig, classify};
 use zenutils_fuzz::RegressionSuite;
@@ -79,7 +78,7 @@ fn replay_decode(input: &[u8]) {
         return;
     }
     let config = RawDecodeConfig::default();
-    let _ = zenraw::decode(input, &config, &Unstoppable);
+    let _ = zenraw::decode(input, &config, None);
 }
 
 #[cfg(feature = "inventory")]

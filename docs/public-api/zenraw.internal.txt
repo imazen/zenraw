@@ -11,26 +11,15 @@
 #
 #   pub modules                                 1
 #   free functions                              3
-#   inherent methods                            6
 #   trait roster entries (type × trait)         6
 #
 # per-module pub lines:
-#   (root)                            3
-#   classify                          1
-#   decode                            2
-#   demosaic                          1
-#   dng_render                        1
+#   (root)                            2
 #   simd                              2
 
-## items (10 lines)
+## items (4 lines)
 
-pub fn RawLimitKind::assert_fields_are_eq(&self)
 pub fn __test_linear_to_srgb_u8(&[f32]) -> alloc::vec::Vec<u8>
-pub fn classify::FileFormat::assert_fields_are_eq(&self)
-pub fn decode::OutputMode::assert_fields_are_eq(&self)
-pub fn decode::SensorLayout::assert_fields_are_eq(&self)
-pub fn demosaic::DemosaicMethod::assert_fields_are_eq(&self)
-pub fn dng_render::OutputPrimaries::assert_fields_are_eq(&self)
 pub fn simd::extract_rgb_from_cpp(&[f32], usize, usize) -> alloc::vec::Vec<f32>
 pub fn simd::normalize_uniform(&[f32], f32, f32) -> alloc::vec::Vec<f32>
 pub mod simd

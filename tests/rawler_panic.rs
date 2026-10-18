@@ -30,7 +30,6 @@
 
 #![cfg(feature = "rawler")]
 
-use enough::Unstoppable;
 use zenraw::RawDecodeConfig;
 
 /// Build an input that is long enough to clear the backend's `len() < 64`
@@ -79,7 +78,7 @@ fn rawler_truncated_garbage_returns_err_not_panic() {
         // The key assertion is simply that this call RETURNS (any Result) — if
         // the rawler path panicked without the catch_unwind wrapper, the test
         // thread would unwind here and the case would be reported as a panic.
-        let result = zenraw::decode(&input, &config, &Unstoppable);
+        let result = zenraw::decode(&input, &config, None);
         assert!(
             result.is_err(),
             "case {name:?}: expected Err from malformed rawler input, got Ok"
@@ -96,7 +95,7 @@ fn rawler_x3f_oob_panic_seed_returns_err_not_panic() {
     const X3F_OOB: &[u8] =
         include_bytes!("../fuzz/regression/fuzz_decode/x3f-oob-panic-issue12.bin");
     let config = RawDecodeConfig::default();
-    let result = zenraw::decode(X3F_OOB, &config, &Unstoppable);
+    let result = zenraw::decode(X3F_OOB, &config, None);
     assert!(
         result.is_err(),
         "expected Err from the X3F OOB-panic seed, got Ok"
@@ -119,7 +118,7 @@ fn rawler_truncated_dng_prefix_returns_err_not_panic() {
     input.extend_from_slice(&0x10000u32.to_le_bytes()); // IFD offset way past EOF
     input.resize(256, 0u8); // body never reaches the claimed IFD offset
 
-    let result = zenraw::decode(&input, &config, &Unstoppable);
+    let result = zenraw::decode(&input, &config, None);
     assert!(
         result.is_err(),
         "expected Err from truncated DNG-prefix input, got Ok"
@@ -148,7 +147,7 @@ fn rawler_normal_decode_succeeds_through_wrapper() {
     });
 
     let config = RawDecodeConfig::default();
-    let result = zenraw::decode(&data, &config, &Unstoppable);
+    let result = zenraw::decode(&data, &config, None);
     let out = result.unwrap_or_else(|e| {
         panic!("ZENRAW_RAW_CORPUS={path:?} failed to decode through rawler wrapper: {e}");
     });

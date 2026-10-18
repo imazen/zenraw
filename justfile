@@ -41,7 +41,8 @@ check:
 
 # Clippy all features
 lint:
-    cargo clippy --features rawler,darktable,exif,xmp,apple
+    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets --no-default-features --features std,rawloader,zencodec -- -D warnings
 
 # Format (also regenerates the public-API surface snapshots).
 # The snapshot runner lives in the self-contained apidoc/ package, so it is
@@ -123,6 +124,7 @@ metadata-check:
 
 metadata-lint:
     cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets --no-default-features --features std,rawloader,zencodec -- -D warnings
 
 metadata-fuzz-check:
     cargo check --manifest-path fuzz/Cargo.toml --features inventory --bins
@@ -172,3 +174,14 @@ shared-contract-check:
     cargo test --no-default-features --features std,rawloader,zencodec --test shared_contracts
     cargo test --no-default-features --features std,rawler,zencodec --test shared_contracts
     cargo clippy --no-default-features --features std,rawloader,inventory --test shared_contracts -- -D warnings
+
+# Exercise progress and cancellation against both native RAW backends.
+pulse-test features="std,rawloader":
+    cargo test --no-default-features --features {{features}} --test pulse_progress --test synthetic_dng -- --nocapture
+
+# Native API migration: both decode paths, runtime tiers, and backend-free builds.
+pulse-validate:
+    cargo test
+    cargo test --all-features
+    cargo check --no-default-features
+    cargo check --no-default-features --features std

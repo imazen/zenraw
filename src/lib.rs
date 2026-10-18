@@ -30,10 +30,9 @@
 //!
 //! ```no_run
 //! use zenraw::{decode, RawDecodeConfig};
-//! use enough::Unstoppable;
 //!
 //! let data: &[u8] = &[]; // your RAW file bytes
-//! let output = decode(data, &RawDecodeConfig::default(), &Unstoppable)?;
+//! let output = decode(data, &RawDecodeConfig::default(), None)?;
 //! println!("{}x{} {}", output.info.width, output.info.height, output.info.model);
 //! # Ok::<(), whereat::At<zenraw::RawError>>(())
 //! ```
@@ -71,6 +70,8 @@ pub(crate) mod dt_sigmoid;
 mod error;
 #[allow(dead_code)]
 mod orient;
+#[allow(dead_code)]
+mod progress;
 /// SIMD kernels. Public only under `_dev` so `benches/kernel_tiers.rs` can
 /// measure each tier against the scalar one; NOT public API and not
 /// semver-covered.
@@ -117,23 +118,28 @@ pub use error::{RawError, RawLimitKind};
 ///
 /// Uses the best available backend: rawler > rawloader.
 /// Default output is display-ready u16 sRGB ([`OutputMode::Develop`]).
+/// Pass `None` to disable observation, or `Some(pulse)` for cancellation and
+/// approximate progress through [`how_far::Pulse`]. Equal-weight child phases
+/// count completed batches; they do not predict elapsed time. The caller owns
+/// completion of the borrowed pulse. The external parser cannot report or
+/// observe cancellation until its call returns.
 #[allow(clippy::needless_return)]
 pub fn decode(
     data: &[u8],
     config: &decode::RawDecodeConfig,
-    stop: &dyn enough::Stop,
+    pulse: Option<&dyn how_far::Pulse>,
 ) -> crate::error::Result<decode::RawDecodeOutput> {
     #[cfg(feature = "rawler")]
     {
-        return rawler_backend::decode(data, config, stop);
+        return rawler_backend::decode(data, config, pulse.unwrap_or(&how_far::NoPulse));
     }
     #[cfg(all(feature = "rawloader", not(feature = "rawler")))]
     {
-        return decode::decode(data, config, stop);
+        return decode::decode(data, config, pulse.unwrap_or(&how_far::NoPulse));
     }
     #[cfg(not(any(feature = "rawloader", feature = "rawler")))]
     {
-        let _ = (data, config, stop);
+        let _ = (data, config, pulse);
         Err(whereat::at!(RawError::Dependency(
             "no decode backend enabled — enable `rawloader` or `rawler` feature".into()
         )))
@@ -141,19 +147,38 @@ pub fn decode(
 }
 
 /// Probe a RAW/DNG file for metadata without decoding pixels.
+///
+/// Pass `None` or a borrowed [`how_far::Pulse`]. Probing reports one completed
+/// operation; the external parser has no interior progress/cancellation hook.
+/// The caller owns completion of the borrowed pulse.
 #[allow(clippy::needless_return)]
-pub fn probe(data: &[u8], stop: &dyn enough::Stop) -> crate::error::Result<decode::RawInfo> {
+pub fn probe(
+    data: &[u8],
+    pulse: Option<&dyn how_far::Pulse>,
+) -> crate::error::Result<decode::RawInfo> {
+    let mut progress = progress::Sequence::new(pulse.unwrap_or(&how_far::NoPulse), &["Probe RAW"]);
+    let result = progress.run(|pulse| {
+        progress::total(pulse, 1);
+        let info = probe_inner(data, pulse)?;
+        pulse.advance(1);
+        Ok(info)
+    });
+    progress.complete(result)
+}
+
+#[allow(clippy::needless_return)]
+fn probe_inner(data: &[u8], pulse: &dyn how_far::Pulse) -> crate::error::Result<decode::RawInfo> {
     #[cfg(feature = "rawler")]
     {
-        return rawler_backend::probe(data, stop);
+        return rawler_backend::probe(data, pulse);
     }
     #[cfg(all(feature = "rawloader", not(feature = "rawler")))]
     {
-        return decode::probe(data, stop);
+        return decode::probe(data, pulse);
     }
     #[cfg(not(any(feature = "rawloader", feature = "rawler")))]
     {
-        let _ = (data, stop);
+        let _ = (data, pulse);
         Err(whereat::at!(RawError::Dependency(
             "no decode backend enabled — enable `rawloader` or `rawler` feature".into()
         )))

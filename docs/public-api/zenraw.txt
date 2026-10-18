@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenraw.txt 205 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 16 lines (13 hidden + 3 excluded-feature)
+# files: zenraw.txt 205 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
 
 ## summary
 #
@@ -218,9 +218,9 @@ pub RawInfo::wb_coeffs: [f32; 4]
 pub RawInfo::white_levels: [f32; 4]
 pub RawInfo::width: u32
 pub fn classify(&[u8]) -> classify::FileFormat [also: classify]
-pub fn decode(&[u8], &decode::RawDecodeConfig, &dyn enough::Stop) -> core::result::Result<decode::RawDecodeOutput, whereat::at::At<RawError>>
+pub fn decode(&[u8], &decode::RawDecodeConfig, core::option::Option<&dyn how_far::pulse::Pulse>) -> core::result::Result<decode::RawDecodeOutput, whereat::at::At<RawError>>
 pub fn is_raw_file(&[u8]) -> bool
-pub fn probe(&[u8], &dyn enough::Stop) -> core::result::Result<decode::RawInfo, whereat::at::At<RawError>>
+pub fn probe(&[u8], core::option::Option<&dyn how_far::pulse::Pulse>) -> core::result::Result<decode::RawInfo, whereat::at::At<RawError>>
 pub type Result<T> = core::result::Result<T, whereat::at::At<RawError>>
 
 ## trait impls (11 types)

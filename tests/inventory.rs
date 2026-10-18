@@ -68,12 +68,8 @@ fn rows(inv: &Inventory) -> Vec<Row> {
 #[test]
 fn dng_fixture_decodes_and_passes_check_inventory() {
     let data = dng_fixture();
-    let out = zenraw::decode(
-        &data,
-        &zenraw::RawDecodeConfig::default(),
-        &enough::Unstoppable,
-    )
-    .expect("fixture decodes");
+    let out =
+        zenraw::decode(&data, &zenraw::RawDecodeConfig::default(), None).expect("fixture decodes");
     assert_eq!((out.info.sensor_width, out.info.sensor_height), (4, 4));
     zencodec_testkit::check_inventory(RawDecoderConfig::new(), &data).unwrap();
 }

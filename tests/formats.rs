@@ -4,7 +4,6 @@
 //! optional EXIF extraction. Tests are skipped if the sample file is
 //! not present (run `just fetch-samples` first).
 
-use enough::Unstoppable;
 use zenraw::{OutputMode, RawDecodeConfig, RawDecodeOutput};
 
 const SAMPLES_DIR: &str = "/mnt/v/input/raw-samples";
@@ -18,13 +17,13 @@ fn load_sample(name: &str) -> Option<Vec<u8>> {
 /// Decode with linear f32 config (scene-referred linear f32).
 fn decode_linear(data: &[u8]) -> RawDecodeOutput {
     let config = RawDecodeConfig::new().with_output(OutputMode::Linear);
-    zenraw::decode(data, &config, &Unstoppable).expect("decode should succeed")
+    zenraw::decode(data, &config, None).expect("decode should succeed")
 }
 
 /// Decode with sRGB (display-referred u16).
 fn decode_srgb(data: &[u8]) -> RawDecodeOutput {
     let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
-    zenraw::decode(data, &config, &Unstoppable).expect("sRGB decode should succeed")
+    zenraw::decode(data, &config, None).expect("sRGB decode should succeed")
 }
 
 /// Verify basic output sanity: non-zero dimensions, reasonable pixel values.
@@ -130,7 +129,7 @@ fn format_nikon_nef() {
     };
 
     // Probe
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe NEF");
+    let info = zenraw::probe(&data, None).expect("probe NEF");
     assert!(info.width > 0);
     assert!(info.height > 0);
     assert!(!info.is_dng);
@@ -156,7 +155,7 @@ fn format_canon_cr2() {
         return;
     };
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe CR2");
+    let info = zenraw::probe(&data, None).expect("probe CR2");
     assert!(!info.is_dng);
     eprintln!(
         "CR2 probe: {}x{} {} {}",
@@ -178,7 +177,7 @@ fn format_sony_arw() {
         return;
     };
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe ARW");
+    let info = zenraw::probe(&data, None).expect("probe ARW");
     assert!(!info.is_dng);
     eprintln!(
         "ARW probe: {}x{} {} {}",
@@ -200,7 +199,7 @@ fn format_olympus_orf() {
         return;
     };
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe ORF");
+    let info = zenraw::probe(&data, None).expect("probe ORF");
     assert!(!info.is_dng);
     eprintln!(
         "ORF probe: {}x{} {} {}",
@@ -222,7 +221,7 @@ fn format_panasonic_rw2() {
         return;
     };
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe RW2");
+    let info = zenraw::probe(&data, None).expect("probe RW2");
     assert!(!info.is_dng);
     eprintln!(
         "RW2 probe: {}x{} {} {}",
@@ -246,7 +245,7 @@ fn format_dng_iphone() {
 
     // iPhone ProRAW DNGs use LJPEG predictor 7 which rawloader doesn't support.
     // This test verifies we return a clean error rather than panicking.
-    match zenraw::probe(&data, &Unstoppable) {
+    match zenraw::probe(&data, None) {
         Ok(info) => {
             assert!(info.is_dng);
             eprintln!(
@@ -304,7 +303,7 @@ fn format_apple_proraw_batch() {
         }
 
         // Probe
-        match zenraw::probe(&data, &Unstoppable) {
+        match zenraw::probe(&data, None) {
             Ok(info) => {
                 assert!(info.is_dng, "{name}: expected DNG");
                 eprintln!(
@@ -355,7 +354,7 @@ fn format_android_dng() {
         return;
     }
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe Android DNG");
+    let info = zenraw::probe(&data, None).expect("probe Android DNG");
     assert!(info.is_dng);
     eprintln!(
         "Android DNG: {}x{} {} {}",
@@ -396,7 +395,7 @@ fn format_fivek_dng() {
         return;
     };
 
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe FiveK DNG");
+    let info = zenraw::probe(&data, None).expect("probe FiveK DNG");
     assert!(info.is_dng);
     eprintln!(
         "FiveK DNG probe: {} {}x{} {} {}",
@@ -422,7 +421,7 @@ fn format_fuji_raf_xtrans() {
     };
 
     // X-Trans sensor — both probe and decode should work
-    let info = zenraw::probe(&data, &Unstoppable).expect("probe RAF");
+    let info = zenraw::probe(&data, None).expect("probe RAF");
     assert!(!info.is_dng);
     eprintln!(
         "RAF probe: {}x{} {} {} CFA={}",
@@ -431,7 +430,7 @@ fn format_fuji_raf_xtrans() {
 
     // Decode X-Trans with bilinear demosaic
     let config = RawDecodeConfig::default();
-    let output = zenraw::decode(&data, &config, &Unstoppable).expect("decode RAF X-Trans");
+    let output = zenraw::decode(&data, &config, None).expect("decode RAF X-Trans");
     eprintln!(
         "RAF decoded: {}x{} orient={}",
         output.info.width, output.info.height, output.info.orientation
@@ -447,7 +446,7 @@ fn format_canon_cr3() {
 
     // CR3 requires rawler (rawloader doesn't support it)
     // Probe may or may not work depending on backend
-    match zenraw::probe(&data, &Unstoppable) {
+    match zenraw::probe(&data, None) {
         Ok(info) => {
             eprintln!(
                 "CR3 probe: {}x{} {} {}",
@@ -486,7 +485,7 @@ fn all_formats_probe_consistency() {
             continue;
         };
 
-        let info = match zenraw::probe(&data, &Unstoppable) {
+        let info = match zenraw::probe(&data, None) {
             Ok(info) => info,
             Err(e) => {
                 // Some formats (e.g., iPhone DNG with LJPEG predictor 7)
@@ -555,10 +554,10 @@ fn all_formats_bilinear_vs_malvar() {
         let config_bilinear =
             RawDecodeConfig::new().with_demosaic(zenraw::DemosaicMethod::Bilinear);
 
-        let Ok(malvar) = zenraw::decode(&data, &config_malvar, &Unstoppable) else {
+        let Ok(malvar) = zenraw::decode(&data, &config_malvar, None) else {
             continue;
         };
-        let Ok(bilinear) = zenraw::decode(&data, &config_bilinear, &Unstoppable) else {
+        let Ok(bilinear) = zenraw::decode(&data, &config_bilinear, None) else {
             continue;
         };
 

@@ -44,3 +44,28 @@ mismatch before the fix. Ordered comparisons and blends now use the same
 clamping decisions in every lane, preserving NaNs and signed zero.
 
 See `benchmarks/arm_audit_2026-09-06/README.md` for measurements and limits.
+
+### Cancellation propagation (PR #18 review)
+
+Private demosaic, orientation, normalization, and sigmoid kernels return their
+cancellation error directly. Re-polling a caller-supplied `enough::Stop` cannot
+recover a discarded error: the trait does not require errors to remain sticky.
+`single_poll_cancellation_is_never_lost` exercises each observed decode poll
+with a token that fails exactly once, on both rawloader and rawler builds.
+Flat sample passes poll between batches, outside their pixel loops.
+
+### Progress integration (PR #18 revision)
+
+The native decode/probe hook is `Option<&dyn how_far::Pulse>`. `None` disables
+observation; existing stop tokens work through `StopOnly::borrowed`. Decode
+owns and completes only child phases. The external RAW parser calls have no
+interior progress/cancellation hook. `tests/pulse_progress.rs` exercises both
+backends, exact completed counts (including tails), pixel identity, cancellation
+outcomes, final-report cancellation, and non-sticky stop errors. The rawler
+non-Bayer extraction now also checks and reports between batches.
+
+The zencodec `with_pulse` override retains the shared observation through
+one-shot and whole-file incremental decode. Metadata probing uses its stop
+policy without planning progress children; decode reserves native processing
+and output-orientation phases. The adapter's orientation kernel accepts strided
+`PixelSlice` rows and matches the existing byte permutations for RGB16/RGBF32.
