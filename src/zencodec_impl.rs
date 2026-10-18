@@ -455,7 +455,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             .stop
             .as_ref()
             .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
-        let info = crate::probe(data, stop)?;
+        let info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
         let info = build_image_info(data, &info);
         // Report consistently with what `decode()` produces under this hint.
         // `Preserve` (default) keeps the stored dims + intrinsic EXIF tag that
@@ -474,7 +474,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             .stop
             .as_ref()
             .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
-        let raw_info = crate::probe(data, stop)?;
+        let raw_info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
         let info = build_image_info(data, &raw_info);
 
         let descriptor =
@@ -539,7 +539,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             .stop
             .as_ref()
             .map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s);
-        let info = crate::probe(&data, stop)?;
+        let info = crate::probe(&data, Some(&how_far::StopOnly::borrowed(stop)))?;
 
         // Check dimension limits (max_width, max_height, max_pixels)
         self.limits
@@ -859,7 +859,11 @@ impl<'a> Decode for RawDecoder<'a> {
             Some(s) => s,
             None => &enough::Unstoppable,
         };
-        let output = crate::decode(&self.data, &self.config, stop)?;
+        let output = crate::decode(
+            &self.data,
+            &self.config,
+            Some(&how_far::StopOnly::borrowed(stop)),
+        )?;
         let info = build_image_info(&self.data, &output.info);
         let decoded = DecodeOutput::new(output.pixels, info);
         // `Preserve` (default) returns the decoded output unchanged: stored

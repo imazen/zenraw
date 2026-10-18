@@ -160,7 +160,7 @@ fn zenraw_decode_srgb(data: &[u8]) -> Option<(Vec<[u8; 3]>, u32, u32)> {
     let result = std::panic::catch_unwind(|| {
         // Develop mode outputs u16 sRGB — convert to u8 for comparison
         let config = RawDecodeConfig::new();
-        let output = zenraw::decode(&data, &config, &enough::Unstoppable).ok()?;
+        let output = zenraw::decode(&data, &config, None).ok()?;
         let w = output.info.width;
         let h = output.info.height;
         let bytes = output.pixels.copy_to_contiguous_bytes();

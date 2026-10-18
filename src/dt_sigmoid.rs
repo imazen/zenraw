@@ -153,15 +153,15 @@ pub(crate) fn default_params() -> DtSigmoidParams {
 /// This applies the log-logistic sigmoid to each RGB channel independently,
 /// with optional hue preservation (interpolating the middle channel).
 ///
-/// Checks `stop` between 64K-pixel batches and returns cancellation directly.
+/// Checks `pulse` between 64K-pixel batches and returns cancellation directly.
 pub(crate) fn apply_dt_sigmoid(
     data: &mut [f32],
     params: &DtSigmoidParams,
-    stop: &dyn enough::Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<(), enough::StopReason> {
     let n = data.len() / 3;
     for batch_start in (0..n).step_by(1 << 16) {
-        stop.check()?;
+        pulse.check()?;
         for i in batch_start..n.min(batch_start + (1 << 16)) {
             let base = i * 3;
             let r = data[base];
@@ -265,6 +265,7 @@ pub(crate) fn apply_dt_sigmoid(
                 data[base + 2] = sb;
             }
         }
+        pulse.advance(((n - batch_start).min(1 << 16) * 3) as u64);
     }
     Ok(())
 }

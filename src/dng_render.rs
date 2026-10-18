@@ -359,8 +359,8 @@ pub(crate) fn compute_camera_to_srgb(color_matrix: &Mat3, white_xy: (f64, f64)) 
 
 /// Apply a 3×3 color matrix to interleaved RGB f32 pixel data.
 pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
-    // `Unstoppable` never fires, so the Result is structurally `Ok`.
-    let _ = apply_matrix_rgb_stop(pixels, matrix, &enough::Unstoppable);
+    // `NoPulse` never fires, so the Result is structurally `Ok`.
+    let _ = apply_matrix_rgb_stop(pixels, matrix, &how_far::NoPulse);
 }
 
 /// [`apply_matrix_rgb`] with cooperative cancellation — checked every 64K
@@ -369,7 +369,7 @@ pub(crate) fn apply_matrix_rgb(pixels: &mut [f32], matrix: &Mat3) {
 pub(crate) fn apply_matrix_rgb_stop(
     pixels: &mut [f32],
     matrix: &Mat3,
-    stop: &dyn enough::Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> core::result::Result<(), enough::StopReason> {
     let m = [
         [
@@ -391,7 +391,7 @@ pub(crate) fn apply_matrix_rgb_stop(
 
     let npix = pixels.len() / 3;
     for batch_start in (0..npix).step_by(65536) {
-        stop.check()?;
+        pulse.check()?;
         for i in batch_start..(npix).min(batch_start + 65536) {
             let base = i * 3;
             let r = pixels[base];
@@ -401,6 +401,7 @@ pub(crate) fn apply_matrix_rgb_stop(
             pixels[base + 1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
             pixels[base + 2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
         }
+        pulse.advance(((npix - batch_start).min(1 << 16) * 3) as u64);
     }
     Ok(())
 }
@@ -470,11 +471,11 @@ pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
 /// Convert linear f32 \[0,1\] RGB data to sRGB-gamma u16 \[0,65535\] byte data.
 pub(crate) fn linear_to_srgb_u16(
     linear: &[f32],
-    stop: &dyn enough::Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> core::result::Result<Vec<u8>, enough::StopReason> {
     let mut output = Vec::with_capacity(linear.len() * 2);
     for batch in linear.chunks(1 << 18) {
-        stop.check()?;
+        pulse.check()?;
         for &v in batch {
             let v = v.clamp(0.0, 1.0);
             let srgb = if v <= 0.003_130_8 {
@@ -485,6 +486,7 @@ pub(crate) fn linear_to_srgb_u16(
             let val = (srgb * 65535.0 + 0.5) as u16;
             output.extend_from_slice(&val.to_ne_bytes());
         }
+        pulse.advance(batch.len() as u64);
     }
     Ok(output)
 }
@@ -1261,7 +1263,7 @@ mod tests {
             output: crate::decode::OutputMode::CameraRaw,
             ..Default::default()
         };
-        let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) else {
+        let Ok(output) = crate::decode(&data, &config, None) else {
             eprintln!("Skipping: rawloader cannot decode this DNG (10-bit LJPEG)");
             return;
         };
@@ -1404,7 +1406,7 @@ mod tests {
             output: crate::decode::OutputMode::CameraRaw,
             ..Default::default()
         };
-        if let Ok(output) = crate::decode(&data, &config, &enough::Unstoppable) {
+        if let Ok(output) = crate::decode(&data, &config, None) {
             let w = output.pixels.width();
             let h = output.pixels.height();
             let bytes = output.pixels.copy_to_contiguous_bytes();

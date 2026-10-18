@@ -4,7 +4,6 @@
 //! actual decode capability: if we detect a format, we can decode it,
 //! and if we can decode it, our detectors correctly identify it.
 
-use enough::Unstoppable;
 use zenraw::{FileFormat, OutputMode, RawDecodeConfig, classify};
 
 /// Env var that points at the non-DNG RAW sample corpus.
@@ -103,15 +102,14 @@ fn dng_classify_agrees_with_probe_and_decode() {
     );
 
     // probe should succeed and report is_dng
-    let info = zenraw::probe(&data, &Unstoppable)
-        .unwrap_or_else(|e| panic!("{name}: probe() failed: {e}"));
+    let info = zenraw::probe(&data, None).unwrap_or_else(|e| panic!("{name}: probe() failed: {e}"));
     assert!(info.is_dng, "{name}: probe().is_dng should be true");
     assert!(info.width > 0, "{name}: probe width should be > 0");
     assert!(info.height > 0, "{name}: probe height should be > 0");
 
     // decode should succeed
     let config = RawDecodeConfig::new().with_output(OutputMode::Linear);
-    let output = zenraw::decode(&data, &config, &Unstoppable)
+    let output = zenraw::decode(&data, &config, None)
         .unwrap_or_else(|e| panic!("{name}: decode() failed: {e}"));
 
     // Probe / decode dimension parity.
@@ -127,7 +125,7 @@ fn dng_classify_agrees_with_probe_and_decode() {
         .with_output(OutputMode::Linear)
         .with_crop(true)
         .with_orientation(false);
-    let output_match = zenraw::decode(&data, &config_match, &Unstoppable)
+    let output_match = zenraw::decode(&data, &config_match, None)
         .unwrap_or_else(|e| panic!("{name}: decode(crop,no_orient) failed: {e}"));
     assert_eq!(
         info.width, output_match.info.width,
@@ -203,7 +201,7 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
         );
 
         // probe should succeed and report NOT DNG
-        let info = match zenraw::probe(&data, &Unstoppable) {
+        let info = match zenraw::probe(&data, None) {
             Ok(info) => info,
             Err(e) => {
                 eprintln!("{name}: probe() failed (backend limitation): {e}");
@@ -214,7 +212,7 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
 
         // decode should succeed
         let config = RawDecodeConfig::new().with_output(OutputMode::Linear);
-        let output = match zenraw::decode(&data, &config, &Unstoppable) {
+        let output = match zenraw::decode(&data, &config, None) {
             Ok(out) => out,
             Err(e) => {
                 eprintln!("{name}: decode() failed (backend limitation): {e}");
@@ -229,7 +227,7 @@ fn non_dng_raw_classify_agrees_with_probe_and_decode() {
             .with_output(OutputMode::Linear)
             .with_crop(true)
             .with_orientation(false);
-        let output_match = match zenraw::decode(&data, &config_match, &Unstoppable) {
+        let output_match = match zenraw::decode(&data, &config_match, None) {
             Ok(out) => out,
             Err(e) => {
                 eprintln!("{name}: decode(crop,no_orient) failed: {e}");
@@ -291,8 +289,8 @@ fn non_raw_correctly_rejected() {
     assert!(!zenraw::is_raw_file(&[0xDE, 0xAD, 0xBE, 0xEF]));
 
     // Probe should fail on non-RAW
-    assert!(zenraw::probe(&jpeg, &Unstoppable).is_err());
-    assert!(zenraw::probe(&[], &Unstoppable).is_err());
+    assert!(zenraw::probe(&jpeg, None).is_err());
+    assert!(zenraw::probe(&[], None).is_err());
 
     eprintln!("Non-RAW rejection: all formats correctly rejected");
 }

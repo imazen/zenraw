@@ -18,7 +18,6 @@ extern crate std;
 use alloc::vec::Vec;
 
 #[cfg(feature = "rawloader")]
-use enough::Stop;
 #[cfg(feature = "rawloader")]
 use whereat::ResultAtExt;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
@@ -412,8 +411,8 @@ pub(crate) fn container_check(data: &[u8]) -> core::result::Result<(), alloc::st
 /// per-pixel sensor buffers internally — so we still bound the dimensions
 /// against [`RawDecodeConfig::max_pixels`].
 #[cfg(feature = "rawloader")]
-pub(crate) fn probe(data: &[u8], stop: &dyn Stop) -> Result<RawInfo> {
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+pub(crate) fn probe(data: &[u8], pulse: &dyn how_far::Pulse) -> Result<RawInfo> {
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Decoder code can panic on malformed inputs — `CFA::new` alone panics on
     // any CFAPattern tag whose length is not 0/4/16/36/144, and on unknown
@@ -548,9 +547,32 @@ fn rawloader_sensor_layout(raw: &rawloader::RawImage) -> SensorLayout {
 pub(crate) fn decode(
     data: &[u8],
     config: &RawDecodeConfig,
-    stop: &dyn Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<RawDecodeOutput> {
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    let mut progress = crate::progress::Sequence::new(
+        pulse,
+        &[
+            "Parse RAW",
+            "Normalize",
+            "Reconstruct RGB",
+            "Color",
+            "Crop",
+            "Orient",
+            "Render output",
+        ],
+    );
+    let result = decode_inner(data, config, pulse, &mut progress);
+    progress.complete(result)
+}
+
+#[cfg(feature = "rawloader")]
+fn decode_inner(
+    data: &[u8],
+    config: &RawDecodeConfig,
+    pulse: &dyn how_far::Pulse,
+    progress: &mut crate::progress::Sequence<'_>,
+) -> Result<RawDecodeOutput> {
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     // RAW files have substantial headers; reject obviously-too-short inputs
     // before passing to rawloader, which can panic on very short data.
@@ -560,86 +582,112 @@ pub(crate) fn decode(
         )));
     }
 
-    // Step 1: Parse
-    // rawloader can panic on malformed inputs, so catch those and convert to errors
-    let data_vec = data.to_vec();
-    let raw =
-        std::panic::catch_unwind(move || rawloader::decode(&mut std::io::Cursor::new(&data_vec)))
-            .map_err(|_| {
-                at!(RawError::Malformed(
-                    "rawloader panicked on malformed input".into()
-                ))
-            })?
-            .map_err(|e| at!(RawError::from(e)))?;
+    let raw = progress.run(|pulse| {
+        crate::progress::total(pulse, 1);
+        // Step 1: Parse
+        // rawloader can panic on malformed inputs, so catch those and convert to errors
+        let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rawloader::decode(&mut std::io::Cursor::new(data))
+        }))
+        .map_err(|_| {
+            at!(RawError::Malformed(
+                "rawloader panicked on malformed input".into()
+            ))
+        })?
+        .map_err(|e| at!(RawError::from(e)))?;
 
+        let width = raw.width;
+        let height = raw.height;
+
+        // Check limits
+        enforce_decode_limits(width as u64, height as u64, config)?;
+
+        pulse.check().map_err(|r| at!(RawError::from(r)))?;
+
+        pulse.advance(1);
+        Ok(raw)
+    })?;
     let width = raw.width;
     let height = raw.height;
-
-    // Check limits
-    enforce_decode_limits(width as u64, height as u64, config)?;
-
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
-
     // Step 2: Extract and normalize sensor data to f32 [0, 1]
-    let normalized = normalize_raw_data(&raw, config.alloc_pref, stop).map_err(|e| at!(e))?;
+    let normalized = progress.run(|pulse| {
+        crate::progress::total(pulse, width * height * raw.cpp);
+        normalize_raw_data(&raw, config.alloc_pref, pulse).map_err(|e| at!(e))
+    })?;
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     // For non-Bayer data (cpp > 1), skip demosaicing
     if raw.cpp > 1 {
-        return decode_non_bayer(raw, normalized, config, stop);
+        return decode_non_bayer(raw, normalized, config, pulse, progress);
     }
 
     // Step 3: Demosaic (honors AllocPreference for the large RGB-f32 buffer).
-    let mut rgb = demosaic_to_rgb_f32_fallible(
-        &normalized,
-        width,
-        height,
-        &raw.cfa,
-        config.demosaic,
-        config.alloc_pref,
-        stop,
-    )?;
+    let mut rgb = progress.run(|pulse| {
+        crate::progress::total(pulse, width * height);
+        demosaic_to_rgb_f32_fallible(
+            &normalized,
+            width,
+            height,
+            &raw.cfa,
+            config.demosaic,
+            config.alloc_pref,
+            pulse,
+        )
+    })?;
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 4: Color pipeline (WB + camera→sRGB) — skipped for CameraRaw
     if config.output != OutputMode::CameraRaw {
-        let wb = if let Some(override_wb) = config.wb_override {
-            [
-                override_wb[0],
-                override_wb[1],
-                override_wb[2],
-                override_wb[1],
-            ]
-        } else {
-            raw.wb_coeffs
-        };
-        color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, stop)
-            .map_err(|r| at!(RawError::from(r)))?;
+        progress.run(|pulse| {
+            crate::progress::total(
+                pulse,
+                rgb.len() * (1 + usize::from(config.exposure_ev.abs() > 1e-6)),
+            );
 
-        // Apply exposure_ev if nonzero
-        if config.exposure_ev.abs() > 1e-6 {
-            let mult = 2.0f32.powf(config.exposure_ev);
-            for chunk in rgb.chunks_mut(1 << 20) {
-                stop.check().map_err(|r| at!(RawError::from(r)))?;
-                for v in chunk {
-                    *v *= mult;
+            let wb = if let Some(override_wb) = config.wb_override {
+                [
+                    override_wb[0],
+                    override_wb[1],
+                    override_wb[2],
+                    override_wb[1],
+                ]
+            } else {
+                raw.wb_coeffs
+            };
+            color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, pulse)
+                .map_err(|r| at!(RawError::from(r)))?;
+
+            // Apply exposure_ev if nonzero
+            if config.exposure_ev.abs() > 1e-6 {
+                let mult = 2.0f32.powf(config.exposure_ev);
+                for chunk in rgb.chunks_mut(1 << 20) {
+                    pulse.check().map_err(|r| at!(RawError::from(r)))?;
+                    for v in &mut *chunk {
+                        *v *= mult;
+                    }
+                    pulse.advance(chunk.len() as u64);
                 }
             }
-        }
+            Ok(())
+        })?;
+    } else {
+        progress.skip();
     }
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Step 5: Crop
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref, stop)?
+        progress
+            .run(|pulse| apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref, pulse))?
     } else {
+        progress.skip();
         (rgb, width, height)
     };
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     let is_dng = is_dng_data(data);
 
@@ -647,15 +695,17 @@ pub(crate) fn decode(
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
-        let (data, w, h) =
-            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop)
-                .map_err(|r| at!(RawError::from(r)))?;
+        let (data, w, h) = progress.run(|pulse| {
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, pulse)
+                .map_err(|r| at!(RawError::from(r)))
+        })?;
         (data, w, h, 1u16)
     } else {
+        progress.skip();
         (cropped_rgb, out_w, out_h, raw_orient)
     };
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     let crop_rect = if raw.crops.iter().any(|&c| c > 0) {
         Some([
@@ -700,57 +750,70 @@ pub(crate) fn decode(
         sensor_layout: rawloader_sensor_layout(&raw),
     };
 
-    match config.output {
-        OutputMode::Develop => {
-            let mut gamma_rgb = final_rgb;
-            color::apply_srgb_gamma_stop(&mut gamma_rgb, stop)
-                .map_err(|r| at!(RawError::from(r)))?;
-            let u16_data =
-                color::f32_to_u16(&gamma_rgb, stop).map_err(|r| at!(RawError::from(r)))?;
+    progress.run(|pulse| {
+        crate::progress::total(
+            pulse,
+            final_rgb.len()
+                * if config.output == OutputMode::Develop {
+                    2
+                } else {
+                    4
+                },
+        );
+        match config.output {
+            OutputMode::Develop => {
+                let mut gamma_rgb = final_rgb;
+                color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
+                    .map_err(|r| at!(RawError::from(r)))?;
+                let u16_data =
+                    color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
 
-            let buf = PixelBuffer::from_vec(
-                u16_data,
-                final_w as u32,
-                final_h as u32,
-                PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
-            )
-            .map_err_at(RawError::Buffer)?;
+                let buf = PixelBuffer::from_vec(
+                    u16_data,
+                    final_w as u32,
+                    final_h as u32,
+                    PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
+                )
+                .map_err_at(RawError::Buffer)?;
 
-            Ok(RawDecodeOutput { pixels: buf, info })
+                Ok(RawDecodeOutput { pixels: buf, info })
+            }
+            OutputMode::Linear => {
+                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                    pulse,
+                )?;
+
+                let buf = PixelBuffer::from_vec(
+                    byte_data,
+                    final_w as u32,
+                    final_h as u32,
+                    PixelDescriptor::RGBF32_LINEAR
+                        .with_primaries(config.target.to_color_primaries()),
+                )
+                .map_err_at(RawError::Buffer)?;
+
+                Ok(RawDecodeOutput { pixels: buf, info })
+            }
+            OutputMode::CameraRaw => {
+                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                    pulse,
+                )?;
+
+                let buf = PixelBuffer::from_vec(
+                    byte_data,
+                    final_w as u32,
+                    final_h as u32,
+                    PixelDescriptor::RGBF32_LINEAR
+                        .with_primaries(zenpixels::ColorPrimaries::Unknown),
+                )
+                .map_err_at(RawError::Buffer)?;
+
+                Ok(RawDecodeOutput { pixels: buf, info })
+            }
         }
-        OutputMode::Linear => {
-            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                stop,
-            )?;
-
-            let buf = PixelBuffer::from_vec(
-                byte_data,
-                final_w as u32,
-                final_h as u32,
-                PixelDescriptor::RGBF32_LINEAR.with_primaries(config.target.to_color_primaries()),
-            )
-            .map_err_at(RawError::Buffer)?;
-
-            Ok(RawDecodeOutput { pixels: buf, info })
-        }
-        OutputMode::CameraRaw => {
-            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                stop,
-            )?;
-
-            let buf = PixelBuffer::from_vec(
-                byte_data,
-                final_w as u32,
-                final_h as u32,
-                PixelDescriptor::RGBF32_LINEAR.with_primaries(zenpixels::ColorPrimaries::Unknown),
-            )
-            .map_err_at(RawError::Buffer)?;
-
-            Ok(RawDecodeOutput { pixels: buf, info })
-        }
-    }
+    })
 }
 
 /// Handle non-Bayer data (cpp > 1, e.g., Foveon or some DNGs with embedded RGB).
@@ -759,7 +822,8 @@ fn decode_non_bayer(
     raw: rawloader::RawImage,
     normalized: Vec<f32>,
     config: &RawDecodeConfig,
-    stop: &dyn Stop,
+    pulse: &dyn how_far::Pulse,
+    progress: &mut crate::progress::Sequence<'_>,
 ) -> Result<RawDecodeOutput> {
     let width = raw.width;
     let height = raw.height;
@@ -767,71 +831,89 @@ fn decode_non_bayer(
 
     // Convert to 3-channel RGB, dropping extra channels. Full-image buffer
     // sized from the (untrusted) sensor dims → default fallible.
-    let rgb_len = width
-        .checked_mul(height)
-        .and_then(|p| p.checked_mul(3))
-        .ok_or_else(|| {
-            at!(RawError::OutOfMemory(
-                "RGB buffer size overflows usize".into()
-            ))
-        })?;
-    let mut rgb = crate::alloc_util::vec_with_capacity(config.alloc_pref, true, rgb_len)?;
-    for batch_start in (0..width * height).step_by(262144) {
-        stop.check().map_err(|r| at!(RawError::from(r)))?;
-        for i in batch_start..(width * height).min(batch_start + 262144) {
-            let base = i * cpp;
-            rgb.push(if base < normalized.len() {
-                normalized[base]
-            } else {
-                0.0
-            });
-            rgb.push(if base + 1 < normalized.len() {
-                normalized[base + 1]
-            } else {
-                0.0
-            });
-            rgb.push(if base + 2 < normalized.len() {
-                normalized[base + 2]
-            } else {
-                0.0
-            });
+    let mut rgb = progress.run(|pulse| {
+        crate::progress::total(pulse, width * height);
+        let rgb_len = width
+            .checked_mul(height)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| {
+                at!(RawError::OutOfMemory(
+                    "RGB buffer size overflows usize".into()
+                ))
+            })?;
+        let mut rgb = crate::alloc_util::vec_with_capacity(config.alloc_pref, true, rgb_len)?;
+        for batch_start in (0..width * height).step_by(262144) {
+            pulse.check().map_err(|r| at!(RawError::from(r)))?;
+            for i in batch_start..(width * height).min(batch_start + 262144) {
+                let base = i * cpp;
+                rgb.push(if base < normalized.len() {
+                    normalized[base]
+                } else {
+                    0.0
+                });
+                rgb.push(if base + 1 < normalized.len() {
+                    normalized[base + 1]
+                } else {
+                    0.0
+                });
+                rgb.push(if base + 2 < normalized.len() {
+                    normalized[base + 2]
+                } else {
+                    0.0
+                });
+            }
+            pulse.advance((width * height - batch_start).min(262144) as u64);
         }
-    }
+        Ok(rgb)
+    })?;
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     // Apply color pipeline — skipped for CameraRaw
     if config.output != OutputMode::CameraRaw {
-        let wb = if let Some(override_wb) = config.wb_override {
-            [
-                override_wb[0],
-                override_wb[1],
-                override_wb[2],
-                override_wb[1],
-            ]
-        } else {
-            raw.wb_coeffs
-        };
-        color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, stop)
-            .map_err(|r| at!(RawError::from(r)))?;
+        progress.run(|pulse| {
+            crate::progress::total(
+                pulse,
+                rgb.len() * (1 + usize::from(config.exposure_ev.abs() > 1e-6)),
+            );
 
-        // Apply exposure_ev if nonzero
-        if config.exposure_ev.abs() > 1e-6 {
-            let mult = 2.0f32.powf(config.exposure_ev);
-            for chunk in rgb.chunks_mut(1 << 20) {
-                stop.check().map_err(|r| at!(RawError::from(r)))?;
-                for v in chunk {
-                    *v *= mult;
+            let wb = if let Some(override_wb) = config.wb_override {
+                [
+                    override_wb[0],
+                    override_wb[1],
+                    override_wb[2],
+                    override_wb[1],
+                ]
+            } else {
+                raw.wb_coeffs
+            };
+            color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, pulse)
+                .map_err(|r| at!(RawError::from(r)))?;
+
+            // Apply exposure_ev if nonzero
+            if config.exposure_ev.abs() > 1e-6 {
+                let mult = 2.0f32.powf(config.exposure_ev);
+                for chunk in rgb.chunks_mut(1 << 20) {
+                    pulse.check().map_err(|r| at!(RawError::from(r)))?;
+                    for v in &mut *chunk {
+                        *v *= mult;
+                    }
+                    pulse.advance(chunk.len() as u64);
                 }
             }
-        }
+            Ok(())
+        })?;
+    } else {
+        progress.skip();
     }
 
-    stop.check().map_err(|r| at!(RawError::from(r)))?;
+    pulse.check().map_err(|r| at!(RawError::from(r)))?;
 
     let (cropped_rgb, out_w, out_h) = if config.apply_crop {
-        apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref, stop)?
+        progress
+            .run(|pulse| apply_crop(&rgb, width, height, &raw.crops, config.alloc_pref, pulse))?
     } else {
+        progress.skip();
         (rgb, width, height)
     };
 
@@ -841,11 +923,13 @@ fn decode_non_bayer(
     let raw_orient = orientation_to_u16(&raw.orientation);
     let (final_rgb, final_w, final_h, final_orient) = if config.apply_orientation && raw_orient > 1
     {
-        let (data, w, h) =
-            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, stop)
-                .map_err(|r| at!(RawError::from(r)))?;
+        let (data, w, h) = progress.run(|pulse| {
+            crate::orient::apply_orientation_stop(cropped_rgb, out_w, out_h, raw_orient, pulse)
+                .map_err(|r| at!(RawError::from(r)))
+        })?;
         (data, w, h, 1u16)
     } else {
+        progress.skip();
         (cropped_rgb, out_w, out_h, raw_orient)
     };
 
@@ -891,57 +975,70 @@ fn decode_non_bayer(
         sensor_layout: SensorLayout::LinearRaw,
     };
 
-    match config.output {
-        OutputMode::Develop => {
-            let mut gamma_rgb = final_rgb;
-            color::apply_srgb_gamma_stop(&mut gamma_rgb, stop)
-                .map_err(|r| at!(RawError::from(r)))?;
-            let u16_data =
-                color::f32_to_u16(&gamma_rgb, stop).map_err(|r| at!(RawError::from(r)))?;
+    progress.run(|pulse| {
+        crate::progress::total(
+            pulse,
+            final_rgb.len()
+                * if config.output == OutputMode::Develop {
+                    2
+                } else {
+                    4
+                },
+        );
+        match config.output {
+            OutputMode::Develop => {
+                let mut gamma_rgb = final_rgb;
+                color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
+                    .map_err(|r| at!(RawError::from(r)))?;
+                let u16_data =
+                    color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
 
-            let buf = PixelBuffer::from_vec(
-                u16_data,
-                final_w as u32,
-                final_h as u32,
-                PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
-            )
-            .map_err_at(RawError::Buffer)?;
+                let buf = PixelBuffer::from_vec(
+                    u16_data,
+                    final_w as u32,
+                    final_h as u32,
+                    PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
+                )
+                .map_err_at(RawError::Buffer)?;
 
-            Ok(RawDecodeOutput { pixels: buf, info })
+                Ok(RawDecodeOutput { pixels: buf, info })
+            }
+            OutputMode::Linear => {
+                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                    pulse,
+                )?;
+
+                let buf = PixelBuffer::from_vec(
+                    byte_data,
+                    final_w as u32,
+                    final_h as u32,
+                    PixelDescriptor::RGBF32_LINEAR
+                        .with_primaries(config.target.to_color_primaries()),
+                )
+                .map_err_at(RawError::Buffer)?;
+
+                Ok(RawDecodeOutput { pixels: buf, info })
+            }
+            OutputMode::CameraRaw => {
+                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
+                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
+                    pulse,
+                )?;
+
+                let buf = PixelBuffer::from_vec(
+                    byte_data,
+                    final_w as u32,
+                    final_h as u32,
+                    PixelDescriptor::RGBF32_LINEAR
+                        .with_primaries(zenpixels::ColorPrimaries::Unknown),
+                )
+                .map_err_at(RawError::Buffer)?;
+
+                Ok(RawDecodeOutput { pixels: buf, info })
+            }
         }
-        OutputMode::Linear => {
-            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                stop,
-            )?;
-
-            let buf = PixelBuffer::from_vec(
-                byte_data,
-                final_w as u32,
-                final_h as u32,
-                PixelDescriptor::RGBF32_LINEAR.with_primaries(config.target.to_color_primaries()),
-            )
-            .map_err_at(RawError::Buffer)?;
-
-            Ok(RawDecodeOutput { pixels: buf, info })
-        }
-        OutputMode::CameraRaw => {
-            let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                stop,
-            )?;
-
-            let buf = PixelBuffer::from_vec(
-                byte_data,
-                final_w as u32,
-                final_h as u32,
-                PixelDescriptor::RGBF32_LINEAR.with_primaries(zenpixels::ColorPrimaries::Unknown),
-            )
-            .map_err_at(RawError::Buffer)?;
-
-            Ok(RawDecodeOutput { pixels: buf, info })
-        }
-    }
+    })
 }
 
 /// Normalize raw sensor data to f32 \[0, 1\] using black/white levels.
@@ -949,7 +1046,7 @@ fn decode_non_bayer(
 fn normalize_raw_data(
     raw: &rawloader::RawImage,
     alloc_pref: crate::alloc_util::AllocPref,
-    stop: &dyn Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> core::result::Result<Vec<f32>, RawError> {
     let width = raw.width;
     let height = raw.height;
@@ -978,7 +1075,7 @@ fn normalize_raw_data(
 
             let mut out = new_buf(total)?;
             for (batch_index, batch) in data[..data.len().min(total)].chunks(1 << 18).enumerate() {
-                stop.check().map_err(RawError::from)?;
+                pulse.check().map_err(RawError::from)?;
                 for (offset, &sample) in batch.iter().enumerate() {
                     let i = batch_index * (1 << 18) + offset;
                     let ch = if cpp == 1 {
@@ -992,6 +1089,7 @@ fn normalize_raw_data(
                     let val = (sample as f32 - bl) / range;
                     out.push(val.clamp(0.0, 1.0));
                 }
+                pulse.advance(batch.len() as u64);
             }
             Ok(out)
         }
@@ -1006,7 +1104,7 @@ fn normalize_raw_data(
 
             let mut out = new_buf(total)?;
             for (batch_index, batch) in data[..data.len().min(total)].chunks(1 << 18).enumerate() {
-                stop.check().map_err(RawError::from)?;
+                pulse.check().map_err(RawError::from)?;
                 for (offset, &sample) in batch.iter().enumerate() {
                     let i = batch_index * (1 << 18) + offset;
                     let ch = if cpp == 1 {
@@ -1020,6 +1118,7 @@ fn normalize_raw_data(
                     let val = (sample - bl) / range;
                     out.push(val.clamp(0.0, 1.0));
                 }
+                pulse.advance(batch.len() as u64);
             }
             Ok(out)
         }
@@ -1060,14 +1159,19 @@ fn apply_crop(
     height: usize,
     crops: &[usize; 4],
     alloc_pref: crate::alloc_util::AllocPref,
-    stop: &dyn Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<(Vec<f32>, usize, usize)> {
     let (new_w, new_h) = cropped_dims(width, height, crops);
+    crate::progress::total(pulse, new_w * new_h * 3);
 
     // Crop was rejected (invalid / absent) — return the buffer unchanged so the
     // dims still match what `cropped_dims` reported (the full sensor).
     if (new_w, new_h) == (width, height) {
-        return Ok((crate::alloc_util::copy_with_stop(rgb, stop)?, width, height));
+        return Ok((
+            crate::alloc_util::copy_with_stop(rgb, pulse)?,
+            width,
+            height,
+        ));
     }
 
     let top = crops[0];
@@ -1079,11 +1183,12 @@ fn apply_crop(
     let mut cropped = crate::alloc_util::vec_with_capacity(alloc_pref, true, new_w * new_h * 3)?;
     for row in top..height - bottom {
         if row & 255 == 0 {
-            stop.check().map_err(|r| at!(RawError::from(r)))?;
+            pulse.check().map_err(|r| at!(RawError::from(r)))?;
         }
         let src_start = (row * width + left) * 3;
         let src_end = src_start + new_w * 3;
         cropped.extend_from_slice(&rgb[src_start..src_end]);
+        pulse.advance((src_end - src_start) as u64);
     }
 
     Ok((cropped, new_w, new_h))
@@ -1208,7 +1313,7 @@ mod tests {
         ];
         for (crops, expected) in cases {
             assert_eq!(cropped_dims(w, h, &crops), expected, "crops={crops:?}");
-            let (out, ow, oh) = apply_crop(&rgb, w, h, &crops, pref, &enough::Unstoppable).unwrap();
+            let (out, ow, oh) = apply_crop(&rgb, w, h, &crops, pref, &how_far::NoPulse).unwrap();
             assert_eq!((ow, oh), expected, "apply_crop dims, crops={crops:?}");
             assert_eq!(out.len(), ow * oh * 3, "buffer size, crops={crops:?}");
         }
@@ -1216,7 +1321,7 @@ mod tests {
         // The cropped pixels are the right ones: (0,0) of the crop is
         // (left, top) of the source.
         let crops = [7, 16, 7, 16];
-        let (out, ow, _) = apply_crop(&rgb, w, h, &crops, pref, &enough::Unstoppable).unwrap();
+        let (out, ow, _) = apply_crop(&rgb, w, h, &crops, pref, &how_far::NoPulse).unwrap();
         assert_eq!(ow, 6);
         assert_eq!(out[0], rgb[(7 * w + 16) * 3]);
         assert_eq!(out[ow * 3 - 1], rgb[(7 * w + 16 + 6) * 3 - 1]);

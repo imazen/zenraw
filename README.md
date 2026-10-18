@@ -11,17 +11,16 @@ coverage against dependency weight.
 [dependencies]
 zenraw = "0.2.0"
 # Helper crates the zenraw API hands you types from — add the ones you touch:
-enough = "0.4.3"     # `Unstoppable` / the `Stop` trait (decode's 3rd argument)
+how-far = "0.1.0"   # optional: progress and cancellation via `Pulse`
 zenpixels = "0.2.10" # `PixelBuffer` (what `output.pixels` is)
 bytemuck = "1.25.0"  # only for the `cast_slice` byte→f32/u16 views shown below
 ```
 
 ```rust
 use zenraw::{decode, RawDecodeConfig};
-use enough::Unstoppable;
 
 let data: &[u8] = &[/* RAW file bytes */];
-let output = decode(data, &RawDecodeConfig::default(), &Unstoppable)?;
+let output = decode(data, &RawDecodeConfig::default(), None)?;
 println!("{}x{} {} {}", output.info.width, output.info.height,
     output.info.make, output.info.model);
 // output.pixels is a `zenpixels::PixelBuffer`. The default OutputMode::Develop
@@ -37,7 +36,7 @@ use zenraw::OutputMode;
 
 // Scene-referred linear f32 (white-balanced, color-matrixed):
 let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
-let output = decode(data, &config, &Unstoppable)?;
+let output = decode(data, &config, None)?;
 // output.pixels is now f32 linear RGB. (OutputMode::Develop = u16 sRGB [default],
 //  OutputMode::CameraRaw = raw camera values as f32, no color processing.)
 ```
@@ -70,11 +69,10 @@ them for the channel type the mode produced — interleaved **f32 RGB** for
 
 ```rust
 use zenraw::{decode, OutputMode, RawDecodeConfig};
-use enough::Unstoppable;
 
 let data: &[u8] = &[/* RAW file bytes */];
 let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
-let output = decode(data, &config, &Unstoppable)?;
+let output = decode(data, &config, None)?;
 
 let w = output.pixels.width() as usize;
 let h = output.pixels.height() as usize;
@@ -132,46 +130,47 @@ row by row, `output.pixels.as_slice().row(y)` returns one row's
 `descriptor()` / `as_contiguous_bytes()` / `copy_to_contiguous_bytes()` /
 `as_slice()` are all on `PixelBuffer`.)
 
-## Cancellation (`Stop`)
+## Progress and cancellation
 
-`decode`'s third argument is a
-[`&dyn enough::Stop`](https://docs.rs/enough/latest/enough/trait.Stop.html) — the
-cooperative-cancellation / deadline hook. Pass the no-op when you don't need it:
+`decode` and `probe` accept
+[`Option<&dyn how_far::Pulse>`](https://docs.rs/how-far/0.1.0/how_far/trait.Pulse.html).
+Pass `None` when you do not need observation. To keep an existing
+[`enough::Stop`](https://docs.rs/enough/latest/enough/trait.Stop.html), pass
+`Some(&how_far::StopOnly::borrowed(&token))` instead of `&token`.
+Cancellation and deadlines still return `RawError::Stopped`; inspect a
+`whereat::At<RawError>` with `.error()`.
 
-```rust
-use enough::Unstoppable;
-let output = decode(data, &RawDecodeConfig::default(), &Unstoppable)?;
-```
-
-For a token you can cancel from another thread (timeout, request abort, etc.),
-use [`almost_enough::Stopper`](https://docs.rs/almost-enough). `Stopper` itself
-implements `Stop` (so you pass `&stopper` straight to `decode`) and is a cheap
-`Arc`-backed handle — clone it to share the cancellation state across threads,
-then `cancel()` from any clone:
+For progress, add `how-far = "0.1.0"` and `how-far-along = "0.1.0"`:
 
 ```rust
-use almost_enough::Stopper;
+use how_far::{Complete, Total, Unstoppable};
+use how_far_along::{Phase, PulseTree};
+use zenraw::{decode, RawDecodeConfig, RawError};
 
-let stopper = Stopper::new();
-let watcher = stopper.clone();      // hand the clone to a timeout/abort task
-
-// e.g. on another thread / after a deadline: `watcher.cancel();`
-
-match decode(data, &RawDecodeConfig::default(), &stopper) {
-    Ok(output) => { /* … */ }
-    Err(e) => match e.error() {
-        // cancellation surfaces as `RawError::Stopped(enough::StopReason)`
-        zenraw::RawError::Stopped(_) => { /* cancelled / deadline hit */ }
-        _ => return Err(e),
-    },
-}
+let pulse = PulseTree::new(Phase::new("RAW decode", Total::Unknown), Unstoppable);
+let observer = pulse.observer(); // Send this to your UI before decoding.
+let result = decode(data, &RawDecodeConfig::default(), Some(&pulse));
+let output = pulse.complete_classified(result, |e| {
+    matches!(e.error(), RawError::Stopped(_))
+})?;
 ```
 
-`decode` checks the token between pipeline stages, so cancellation is bounded by
-how long a single stage runs. Errors are `whereat::At<RawError>`; reach the
-underlying `RawError` with `.error()`. Add `almost-enough = "0.4.4"` for the
-cancellable `Stopper`; `enough` (the `Unstoppable` no-op and the `Stop` trait)
-comes in via zenraw, which depends on `enough` 0.4.
+Read `observer.summary()` while decoding, or use
+[`FnPulse`](https://docs.rs/how-far-along/0.1.0/how_far_along/struct.FnPulse.html)
+for checkpoint callbacks. Replace `Unstoppable` with your own stop token for
+cancellation. The caller owns the final result handoff: zenraw completes its
+child phases and leaves the borrowed input pulse open.
+
+Decode phases cover parsing, normalization, RGB reconstruction, color, crop,
+orientation and rendering. Completed batches are counted, including partial
+final batches; optional work is marked skipped. Equal phase weights give
+approximate work progress, not elapsed time or an ETA. Progress reporting does
+not change pixel values. The external `rawloader` and `rawler` parsers expose
+no interior hook: each parser call is indivisible for cancellation and progress.
+`probe` reports one completed operation after parsing and validation.
+
+See the [how-far integration guide](https://github.com/imazen/how-far/blob/main/docs/how-far-integration.md)
+for observers, callbacks and result ownership.
 
 ## Resource limits & server error handling
 
@@ -192,13 +191,12 @@ error with the source location it was raised at. Call `.error()` to borrow the
 
 ```rust
 use zenraw::{decode, RawDecodeConfig, RawError, RawLimitKind};
-use enough::Unstoppable;
 
 let config = RawDecodeConfig::default()
     .with_max_pixels(50_000_000)
     .with_max_decode_bytes(600 * 1024 * 1024);
 
-match decode(data, &config, &Unstoppable) {
+match decode(data, &config, None) {
     Ok(output) => { /* … */ }
     Err(e) => match e.error() {
         // Too big for this server's per-request budget — a 413-style reply.
@@ -209,7 +207,7 @@ match decode(data, &config, &Unstoppable) {
         | RawError::UnsupportedType(_) | RawError::UnsupportedFeature(_) => eprintln!("bad input: {e}"),
         // Allocation actually failed (distinct from a configured cap).
         RawError::OutOfMemory(_) => eprintln!("out of memory: {e}"),
-        // Cancelled via the `Stop` token (see above).
+        // Cancelled via the pulse (see above).
         RawError::Stopped(_) => eprintln!("cancelled"),
         _ => eprintln!("decode failed: {e}"), // Io / Dependency / Buffer / …
     },
@@ -252,7 +250,7 @@ caps (`with_max_pixels` / `with_max_decode_bytes`) tight:
 
 ```rust
 let result = std::thread::spawn(move || {
-    decode(&data, &config, &Unstoppable)
+    decode(&data, &config, None)
 })
 .join(); // `Err(_)` here means the decode thread panicked
 ```

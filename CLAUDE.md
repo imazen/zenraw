@@ -53,3 +53,13 @@ recover a discarded error: the trait does not require errors to remain sticky.
 `single_poll_cancellation_is_never_lost` exercises each observed decode poll
 with a token that fails exactly once, on both rawloader and rawler builds.
 Flat sample passes poll between batches, outside their pixel loops.
+
+### Progress integration (PR #18 revision)
+
+The native decode/probe hook is `Option<&dyn how_far::Pulse>`. `None` disables
+observation; existing stop tokens work through `StopOnly::borrowed`. Decode
+owns and completes only child phases. The external RAW parser calls have no
+interior progress/cancellation hook. `tests/pulse_progress.rs` exercises both
+backends, exact completed counts (including tails), pixel identity, cancellation
+outcomes, final-report cancellation, and non-sticky stop errors. The rawler
+non-Bayer extraction now also checks and reports between batches.

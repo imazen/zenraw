@@ -6,7 +6,6 @@
 use std::fs;
 use std::path::Path;
 
-use enough::Unstoppable;
 use zenbench::criterion_compat::*;
 use zenbench::{criterion_group, criterion_main};
 use zenraw::{DemosaicMethod, RawDecodeConfig};
@@ -64,7 +63,7 @@ fn bench_full_decode(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_with_input(BenchmarkId::new("full", sample.name), &data, |b, data| {
-            b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
+            b.iter(|| zenraw::decode(data, &config, None).unwrap());
         });
     }
 
@@ -88,7 +87,7 @@ fn bench_decode_gamma(c: &mut Criterion) {
         BenchmarkId::new("gamma", "DNG/iPhone12"),
         &data,
         |b, data| {
-            b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
+            b.iter(|| zenraw::decode(data, &config, None).unwrap());
         },
     );
 
@@ -112,7 +111,7 @@ fn bench_demosaic_methods(c: &mut Criterion) {
     ] {
         let config = RawDecodeConfig::default().with_demosaic(method);
         group.bench_with_input(BenchmarkId::new(name, "NEF/NikonD40"), &data, |b, data| {
-            b.iter(|| zenraw::decode(data, &config, &Unstoppable).unwrap());
+            b.iter(|| zenraw::decode(data, &config, None).unwrap());
         });
     }
 
@@ -132,7 +131,7 @@ fn bench_probe(c: &mut Criterion) {
             BenchmarkId::new("metadata", sample.name),
             &data,
             |b, data| {
-                b.iter(|| zenraw::probe(data, &Unstoppable).unwrap());
+                b.iter(|| zenraw::probe(data, None).unwrap());
             },
         );
     }

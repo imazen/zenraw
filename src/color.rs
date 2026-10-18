@@ -9,7 +9,7 @@
 //! This module performs steps 1-4 in a single pass over the pixel data.
 
 use archmage::prelude::*;
-use enough::{Stop, StopReason, Unstoppable};
+use enough::StopReason;
 
 use crate::dng_render::OutputPrimaries;
 
@@ -27,8 +27,8 @@ pub fn apply_color_pipeline(
     xyz_to_cam: [[f32; 3]; 4],
     target: OutputPrimaries,
 ) {
-    // `Unstoppable` never fires, so the Result is structurally `Ok`.
-    let _ = apply_color_pipeline_stop(rgb, wb_coeffs, xyz_to_cam, target, &Unstoppable);
+    // `NoPulse` never fires, so the Result is structurally `Ok`.
+    let _ = apply_color_pipeline_stop(rgb, wb_coeffs, xyz_to_cam, target, &how_far::NoPulse);
 }
 
 /// [`apply_color_pipeline`] with cooperative cancellation — checked every
@@ -39,10 +39,10 @@ pub(crate) fn apply_color_pipeline_stop(
     wb_coeffs: [f32; 4],
     xyz_to_cam: [[f32; 3]; 4],
     target: OutputPrimaries,
-    stop: &dyn Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<(), StopReason> {
     let cam_to_output = compute_cam_to_output_matrix(wb_coeffs, xyz_to_cam, target);
-    apply_color_matrix_stop(rgb, cam_to_output, stop)
+    apply_color_matrix_stop(rgb, cam_to_output, pulse)
 }
 
 /// Apply a 3×3 color matrix to interleaved RGB data with clamping.
@@ -52,11 +52,11 @@ pub(crate) fn apply_color_pipeline_stop(
 fn apply_color_matrix_stop(
     rgb: &mut [f32],
     mat: [[f32; 3]; 3],
-    stop: &dyn Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<(), StopReason> {
     let pixel_count = rgb.len() / 3;
     for batch_start in (0..pixel_count).step_by(65536) {
-        stop.check()?;
+        pulse.check()?;
         for i in batch_start..(pixel_count).min(batch_start + 65536) {
             let idx = i * 3;
             let r = rgb[idx];
@@ -71,6 +71,7 @@ fn apply_color_matrix_stop(
             rgb[idx + 1] = sg.clamp(0.0, 1.0);
             rgb[idx + 2] = sb.clamp(0.0, 1.0);
         }
+        pulse.advance(((pixel_count - batch_start).min(1 << 16) * 3) as u64);
     }
     Ok(())
 }
@@ -232,19 +233,23 @@ fn invert_3x3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 /// [`OutputMode::Develop`](crate::OutputMode::Develop) output, which is
 /// already sRGB-encoded — that double-encodes.
 pub fn apply_srgb_gamma(rgb: &mut [f32]) {
-    // `Unstoppable` never fires, so the Result is structurally `Ok`.
-    let _ = apply_srgb_gamma_stop(rgb, &Unstoppable);
+    // `NoPulse` never fires, so the Result is structurally `Ok`.
+    let _ = apply_srgb_gamma_stop(rgb, &how_far::NoPulse);
 }
 
 /// [`apply_srgb_gamma`] with cooperative cancellation — checked every 256K
 /// samples. Early-exits with the error; callers must not consume the
 /// partially-encoded buffer.
-pub(crate) fn apply_srgb_gamma_stop(rgb: &mut [f32], stop: &dyn Stop) -> Result<(), StopReason> {
+pub(crate) fn apply_srgb_gamma_stop(
+    rgb: &mut [f32],
+    pulse: &dyn how_far::Pulse,
+) -> Result<(), StopReason> {
     for batch in rgb.chunks_mut(1 << 18) {
-        stop.check()?;
-        for val in batch {
+        pulse.check()?;
+        for val in &mut *batch {
             *val = crate::simd::linear_to_srgb(*val);
         }
+        pulse.advance(batch.len() as u64);
     }
     Ok(())
 }
@@ -267,14 +272,18 @@ fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
 }
 
 /// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
-pub(crate) fn f32_to_u16(src: &[f32], stop: &dyn Stop) -> Result<alloc::vec::Vec<u8>, StopReason> {
+pub(crate) fn f32_to_u16(
+    src: &[f32],
+    pulse: &dyn how_far::Pulse,
+) -> Result<alloc::vec::Vec<u8>, StopReason> {
     let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
     for batch in src.chunks(1 << 18) {
-        stop.check()?;
+        pulse.check()?;
         for &v in batch {
             let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
             out.extend_from_slice(&val.to_ne_bytes());
         }
+        pulse.advance(batch.len() as u64);
     }
     Ok(out)
 }

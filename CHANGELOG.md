@@ -38,12 +38,24 @@
   with released versions before publishing.
 
 ### QUEUED BREAKING CHANGES
+
+- `decode` and `probe` now take `Option<&dyn how_far::Pulse>` instead of
+  `&dyn enough::Stop`. Use `None`, `Some(&pulse)`, or
+  `Some(&how_far::StopOnly::borrowed(&token))`.
 <!-- Breaking changes that will ship together in the next major (or minor for 0.x) release.
      Add items here as you discover them. Do NOT ship these piecemeal — batch them. -->
 - `RawError`'s variant set was reshaped for the zencodec `ErrorCategory` taxonomy (see the
   `### Changed` entry below): `Decode`, `InvalidInput`, `Unsupported(String)`, and the
   single-field `LimitExceeded(String)` no longer exist — matching code must be updated to the
   new variant names. No known in-workspace consumer pattern-matched `RawError` directly.
+
+### Added
+
+- Native decode progress through equal-weight child phases and completed
+  batches on both RAW backends. Probing reports one completed operation.
+  The caller retains completion of its borrowed pulse; failed/cancelled
+  stages classify their outcomes and prevent later stages from running.
+  The external parser calls remain indivisible.
 
 ### Changed
 

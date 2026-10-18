@@ -28,10 +28,10 @@ use magetypes::simd::generic::f32x8 as GenericF32x8;
 pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
     let mut out = vec![0.0f32; data.len()];
     incant!(
-        normalize_uniform_into(data, black, inv_range, &mut out, &enough::Unstoppable),
+        normalize_uniform_into(data, black, inv_range, &mut out, &how_far::NoPulse),
         [v3, neon, wasm128, scalar]
     )
-    .expect("Unstoppable cannot cancel");
+    .expect("NoPulse cannot cancel");
     out
 }
 
@@ -44,13 +44,13 @@ pub(crate) fn normalize_uniform_fallible(
     black: f32,
     inv_range: f32,
     alloc_pref: crate::alloc_util::AllocPref,
-    stop: &dyn enough::Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
     // Full normalized sensor buffer sized from the (untrusted) sensor dims →
     // default fallible.
     let mut out = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, data.len())?;
     incant!(
-        normalize_uniform_into(data, black, inv_range, &mut out, stop),
+        normalize_uniform_into(data, black, inv_range, &mut out, pulse),
         [v3, neon, wasm128, scalar]
     )
     .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?;
@@ -65,7 +65,7 @@ fn normalize_uniform_into(
     black: f32,
     inv_range: f32,
     out: &mut [f32],
-    stop: &dyn enough::Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<(), enough::StopReason> {
     #[allow(non_camel_case_types)]
     type f32x8 = GenericF32x8<Token>;
@@ -83,7 +83,7 @@ fn normalize_uniform_into(
         .chunks(1 << 15)
         .zip(dst_chunks.chunks_mut(1 << 15))
     {
-        stop.check()?;
+        pulse.check()?;
         for (src, dst) in src.iter().zip(dst) {
             let v = f32x8::load_t(token, src);
             let normalized = (v - black_v) * inv_range_v;
@@ -93,10 +93,12 @@ fn normalize_uniform_into(
             let clamped = f32x8::blend(lower.simd_gt(one), one, lower);
             clamped.store(dst);
         }
+        pulse.advance((src.len() * 8) as u64);
     }
     for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
         *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
     }
+    pulse.advance(src_tail.len() as u64);
     Ok(())
 }
 
@@ -106,14 +108,15 @@ fn normalize_uniform_into_scalar(
     black: f32,
     inv_range: f32,
     out: &mut [f32],
-    stop: &dyn enough::Stop,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<(), enough::StopReason> {
     debug_assert_eq!(out.len(), data.len());
     for (src, dst) in data.chunks(1 << 18).zip(out.chunks_mut(1 << 18)) {
-        stop.check()?;
+        pulse.check()?;
         for (src, dst) in src.iter().zip(dst) {
             *dst = ((*src - black) * inv_range).clamp(0.0, 1.0);
         }
+        pulse.advance(src.len() as u64);
     }
     Ok(())
 }
@@ -160,6 +163,7 @@ pub(crate) fn extract_rgb_from_cpp_fallible(
     pixel_count: usize,
     cpp: usize,
     alloc_pref: crate::alloc_util::AllocPref,
+    pulse: &dyn how_far::Pulse,
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
     // Full-image RGB output sized from the (untrusted) sensor dims → default
     // fallible.
@@ -170,22 +174,34 @@ pub(crate) fn extract_rgb_from_cpp_fallible(
     })?;
     let mut rgb = crate::alloc_util::vec_with_capacity(alloc_pref, true, len)?;
     if cpp == 3 && data.len() >= len {
-        rgb.extend_from_slice(&data[..len]);
+        for batch in data[..len].chunks(3 * (1 << 18)) {
+            pulse
+                .check()
+                .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
+            rgb.extend_from_slice(batch);
+            pulse.advance((batch.len() / 3) as u64);
+        }
         return Ok(rgb);
     }
-    for i in 0..pixel_count {
-        let base = i * cpp;
-        rgb.push(if base < data.len() { data[base] } else { 0.0 });
-        rgb.push(if base + 1 < data.len() {
-            data[base + 1]
-        } else {
-            0.0
-        });
-        rgb.push(if base + 2 < data.len() {
-            data[base + 2]
-        } else {
-            0.0
-        });
+    for batch_start in (0..pixel_count).step_by(1 << 18) {
+        pulse
+            .check()
+            .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
+        for i in batch_start..pixel_count.min(batch_start + (1 << 18)) {
+            let base = i * cpp;
+            rgb.push(if base < data.len() { data[base] } else { 0.0 });
+            rgb.push(if base + 1 < data.len() {
+                data[base + 1]
+            } else {
+                0.0
+            });
+            rgb.push(if base + 2 < data.len() {
+                data[base + 2]
+            } else {
+                0.0
+            });
+        }
+        pulse.advance((pixel_count - batch_start).min(1 << 18) as u64);
     }
     Ok(rgb)
 }
