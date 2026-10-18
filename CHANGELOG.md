@@ -13,6 +13,12 @@
 - Shared checked-policy and inventory tests reuse the existing decodable DNG fixture across rawloader and rawler, with inventory enabled and disabled. Dependencies are pinned to the unreleased testkit.
 
 ### Fixed
+
+- Incremental RAW admission rejects announced oversized sources before requesting
+  more bytes, including nonzero windows. Unknown prefix growth is bounded to an
+  input-cap EOF lookahead within the memory budget. Resource failures and stops
+  are terminal; preflight memory includes compressed input and decoded output.
+  Header availability remains separate from whole-file pixel availability.
 - Inventory part-cap and invariant failures retain the typed `InventoryError`
   and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
 - Inventory retains the first cancellation reason across nested TIFF, RAF and

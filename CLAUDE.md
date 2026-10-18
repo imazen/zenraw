@@ -2,6 +2,17 @@
 
 ## Known Bugs
 
+### Incremental input admission (prepared, runtime validation pending)
+
+PR25 asked the shared whole-file helper for unbounded prefix growth and checked
+the compressed input cap only after the full source was buffered. A private
+guard now admits lengths before requests, retains resource/lifecycle failures,
+and estimates compressed input plus decoded output before reporting a header.
+Unknown input permits one EOF lookahead byte only within the memory budget.
+`just incremental-admission-check` exercises zero/exact caps, offsets, overflow,
+terminal errors, early headers and byte-exact output into strided sink rows.
+No heavy test run has been authorized yet.
+
 ### Fixed: inventory lost transient timeout reasons
 
 Inventory retained only a cancellation boolean and re-polled the token while
