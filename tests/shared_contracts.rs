@@ -81,8 +81,11 @@ mod incremental_admission {
             self.begins += 1;
             self.width = width;
             self.height = height;
-            self.stride = (width as usize * desc.bytes_per_pixel() + 7) & !3;
-            self.storage = vec![0; self.stride * height as usize / 4];
+            // zenpixels0.2.16 requires whole-pixel stride. Four pixels also
+            // align the u32-backed storage for either RGB16 or RGBF32.
+            let unit = 4 * desc.bytes_per_pixel();
+            self.stride = (width as usize).div_ceil(4) * unit + unit;
+            self.storage = vec![0xA5A5_A5A5; self.stride * height as usize / 4];
             Ok(())
         }
 
@@ -265,6 +268,14 @@ mod incremental_admission {
             })
             .collect();
         assert_eq!(actual, expected_bytes);
+        for row in bytemuck::cast_slice::<_, u8>(&sink.storage).chunks_exact(sink.stride) {
+            assert!(
+                row[sink.width as usize * desc.bytes_per_pixel()..]
+                    .iter()
+                    .all(|&b| b == 0xA5),
+                "decoder must leave caller padding untouched"
+            );
+        }
         assert!(matches!(
             dec.step(eof, &mut sink, &Unstoppable).unwrap().event,
             Event::Done(_)

@@ -18,7 +18,8 @@
   more bytes, including nonzero windows. Unknown prefix growth is bounded to an
   input-cap EOF lookahead within the memory budget. Resource failures and stops
   are terminal; preflight memory includes compressed input and decoded output.
-  Header availability remains separate from whole-file pixel availability.
+  Header availability remains separate from whole-file pixel availability
+  (`6f2f9f60`, `a33a47fa`).
 - Inventory part-cap and invariant failures retain the typed `InventoryError`
   and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
 - Inventory retains the first cancellation reason across nested TIFF, RAF and

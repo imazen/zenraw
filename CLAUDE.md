@@ -2,7 +2,7 @@
 
 ## Known Bugs
 
-### Incremental input admission (prepared, runtime validation pending)
+### Incremental input admission
 
 PR25 asked the shared whole-file helper for unbounded prefix growth and checked
 the compressed input cap only after the full source was buffered. A private
@@ -11,7 +11,11 @@ and estimates compressed input plus decoded output before reporting a header.
 Unknown input permits one EOF lookahead byte only within the memory budget.
 `just incremental-admission-check` exercises zero/exact caps, offsets, overflow,
 terminal errors, early headers and byte-exact output into strided sink rows.
-No heavy test run has been authorized yet.
+The exact pinned graph passes this focused suite with both rawloader and rawler.
+The sink uses nonzero whole-pixel padding required by zenpixels0.2.16; exact
+pixel equality and untouched padding are asserted. A transient job-stop witness
+also checks the cached preflight handoff. These are focused local gates, not a
+complete release or platform validation claim.
 
 ### Fixed: inventory lost transient timeout reasons
 
