@@ -14,7 +14,9 @@ terminal errors, early headers and byte-exact output into strided sink rows.
 The exact pinned graph passes this focused suite with both rawloader and rawler.
 The sink uses nonzero whole-pixel padding required by zenpixels0.2.16; exact
 pixel equality and untouched padding are asserted. A transient job-stop witness
-also checks the cached preflight handoff. These are focused local gates, not a
+also checks the cached preflight handoff. Negative controls reproduce both
+missing admission and swallowed cancellation when the guard/cache is removed.
+These are focused local gates, not a
 complete release or platform validation claim.
 
 ### Fixed: inventory lost transient timeout reasons
