@@ -49,7 +49,7 @@ jobs:
         run: cargo test --features "rawler,darktable,exif,xmp,apple,zencodec,ultrahdr,inventory"
 
       - name: Disabled inventory contract
-        run: cargo test --features zencodec --test inventory_feature --test shared_contracts
+        run: cargo test --features zencodec --test inventory_feature --test shared_contracts --test synthetic_dng
 
       - name: Check (no-default-features, std only)
         run: cargo check --no-default-features --features std

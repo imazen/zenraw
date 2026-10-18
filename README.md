@@ -366,6 +366,17 @@ XMP metadata (when the `xmp` feature is enabled), honors `OrientationHint`
 set plus fixed overhead), serial threading, and wall-time for resource-aware
 schedulers.
 
+Incremental decode separates header availability from pixel availability:
+`HeaderReady` can arrive from a prefix, while all pixels wait for the complete
+compressed source. The driver retains that source; this is whole-file buffering,
+not bounded-memory row streaming. Known lengths are admitted before further
+requests. Unknown-length requests stop at the input cap plus one EOF lookahead
+byte, subject to the memory ceiling; driver read-ahead needs its own buffer
+policy. If EOF cannot be established within the memory budget, decoding refuses
+instead of asking for a larger buffer. Admission estimates the compressed input
+plus decoded output together; backend temporaries are not a tracked allocation
+total. `max_output_bytes` applies to encoded output and is not a decoded-pixel cap.
+
 <!-- crates.io:skip-start -->
 ## Benchmarks
 

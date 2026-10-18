@@ -9,9 +9,17 @@
 
 ### Added
 
+- Incremental decode: `dyn_incremental_decoder` returns zencodec's `WholeFileIncremental` and the decode capabilities declare `incremental`, so the zencodec-io drivers (files, streams, async sources) serve RAW/DNG. `HeaderReady` comes as soon as a prefix probes; rows come from `push_decoder` once the whole file is offered. `tests/synthetic_dng.rs` runs the testkit's incremental contract on synthetic Bayer and X-Trans DNGs (CI zencodec step). Pins zencodec/testkit/zenmeta `fa49f7ce`.
 - Shared checked-policy and inventory tests reuse the existing decodable DNG fixture across rawloader and rawler, with inventory enabled and disabled. Dependencies are pinned to the unreleased testkit.
 
 ### Fixed
+
+- Incremental RAW admission rejects announced oversized sources before requesting
+  more bytes, including nonzero windows. Unknown prefix growth is bounded to an
+  input-cap EOF lookahead within the memory budget. Resource failures and stops
+  are terminal; preflight memory includes compressed input and decoded output.
+  Header availability remains separate from whole-file pixel availability
+  (`6f2f9f60`, `a33a47fa`).
 - Inventory part-cap and invariant failures retain the typed `InventoryError`
   and its shared category (`c1c3292f`), instead of becoming memory-limit strings.
 - Inventory retains the first cancellation reason across nested TIFF, RAF and

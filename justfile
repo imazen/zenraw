@@ -156,6 +156,15 @@ metadata-contract-check:
     just api-doc
 
 # Reuse the decodable DNG fixture for both native parser backends.
+incremental-admission-check:
+    cargo test --no-default-features --features std,rawloader,zencodec --test shared_contracts incremental_admission
+    cargo test --no-default-features --features std,rawler,zencodec --test shared_contracts incremental_admission
+
+incremental-admission-lint:
+    cargo clippy --locked --no-default-features --features std,rawloader,zencodec --lib --test shared_contracts -- -D warnings
+    cargo clippy --locked --no-default-features --features std,rawler,zencodec --lib --test shared_contracts -- -D warnings
+
+# Reuse the decodable DNG fixture for both native parser backends.
 shared-contract-check:
     cargo fmt -p zenraw
     cargo test --no-default-features --features std,rawloader,inventory --test shared_contracts --test inventory
