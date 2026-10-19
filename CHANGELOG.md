@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Dependency compatibility
+
+- Admit archmage/magetypes 0.9.31-beta.1 in the current-main tool graph while retaining compatible stable requirements (`1d2c312d`). Strict library lint and all 86 library tests pass.
+
 ### Dependency integration
 
 - Use shared contract revision `d327434b` in the library and standalone fuzz graph so inventory dispatch unifies with streaming consumers. The rawloader/rawler policy and inventory suites, default inventory build and fuzz compilation pass (`just contract-pin-check`).
