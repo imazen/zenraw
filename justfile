@@ -185,3 +185,9 @@ pulse-validate:
     cargo test --all-features
     cargo check --no-default-features
     cargo check --no-default-features --features std
+
+# Shared native metadata behavior and standalone inventory build on the same pin.
+contract-pin-check:
+    just shared-contract-check
+    cargo check --features inventory
+    just metadata-fuzz-check

@@ -4,6 +4,8 @@
 
 ### Dependency integration
 
+- Use shared contract revision `d327434b` in the library and standalone fuzz graph so inventory dispatch unifies with streaming consumers. The rawloader/rawler policy and inventory suites, default inventory build and fuzz compilation pass (`just contract-pin-check`).
+
 - Align temporary zencodec/zenmeta/testkit pins with the checked fidelity and operation-matrix contracts (`4fda4391`). Replace coordinated git pins with released versions before publication.
 
 
