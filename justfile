@@ -191,3 +191,9 @@ contract-pin-check:
     just shared-contract-check
     cargo check --features inventory
     just metadata-fuzz-check
+
+# Validate stable compatibility while tool builds select the current SIMD beta.
+beta-cohort-check:
+    cargo fmt --check
+    cargo clippy --locked --lib -- -D warnings
+    cargo test --locked --lib
