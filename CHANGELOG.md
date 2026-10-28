@@ -7,6 +7,7 @@
 - Source-only Pulse follow-up: RAW adapter preflight forwards the complete
   observer to the unplanned native probe instead of constructing StopOnly;
   cached headers and every incremental step check the retained job pulse.
+  Owned pulse/stop combinations retain sharing as well as planning/reporting.
   Timeout after header discovery refuses before sink effects. Existing native
   progress/pixel assertions remain unchanged. Rust qualification is pending.
 

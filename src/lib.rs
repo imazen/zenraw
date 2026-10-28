@@ -68,6 +68,8 @@ pub mod dng_render;
 #[allow(dead_code)]
 pub(crate) mod dt_sigmoid;
 mod error;
+#[cfg(feature = "zencodec")]
+mod observation;
 #[allow(dead_code)]
 mod orient;
 #[allow(dead_code)]
