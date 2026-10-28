@@ -2,6 +2,23 @@
 
 ## Known Bugs
 
+### Retained Pulse follow-up (source proposal; qualification pending)
+
+The current native pipeline and adapter already support full decode progress.
+Adapter preflight still constructs StopOnly and a cached header can return
+without checking the retained pulse. Incremental empty-window polls check only
+the call-site/explicit stop policies. The proposal forwards the full observer
+to the unplanned native probe and checks retained job policies before/after
+all incremental calls. A native DNG header-then-timeout control requires no
+sink effects. Owned stop combinations also preserve child sharing through a
+private forwarding view; a private unit control shares both the job and a
+planned native child. Existing decode/progress/striding assertions are intact.
+
+No public signature, manifest pin or lockfile changed. Source parsing and old
+assertion preservation checks pass; Rust controls and API/native qualification
+remain uncompiled/unrun. Run `just pulse-adapter-check` only under the serialized
+grant, with rawloader and rawler in separate builds.
+
 ### Incremental input admission
 
 PR25 asked the shared whole-file helper for unbounded prefix growth and checked
