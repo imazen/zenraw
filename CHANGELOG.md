@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Source-only Pulse follow-up: RAW adapter preflight forwards the complete
+  observer to the unplanned native probe instead of constructing StopOnly;
+  cached headers and every incremental step check the retained job pulse.
+  Timeout after header discovery refuses before sink effects. Existing native
+  progress/pixel assertions remain unchanged. Rust qualification is pending.
+
 ### Dependency compatibility
 
 - Admit archmage/magetypes 0.9.31-beta.1 in the current-main tool graph while retaining compatible stable requirements (`1d2c312d`). Strict library lint and all 86 library tests pass.

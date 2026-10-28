@@ -474,14 +474,14 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         if let Some(cache) = &self.incremental_probe
             && let Some(info) = cache.get()
         {
             return Ok(info.clone());
         }
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
-        let stop: &dyn enough::Stop = &observation;
-        let info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
+        let info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &info);
         // Report consistently with what `decode()` produces under this hint.
         // `Preserve` (default) keeps the stored dims + intrinsic EXIF tag that
@@ -497,8 +497,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         // Probe for stored dims + intrinsic orientation (independent of hint).
         let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
-        let stop: &dyn enough::Stop = &observation;
-        let raw_info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
+        enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
+        let raw_info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &raw_info);
 
         let descriptor =
@@ -560,8 +560,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
 
         // Probe header for dimensions to check width/height/memory limits
         let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
-        let stop: &dyn enough::Stop = &observation;
-        let info = crate::probe(&data, Some(&how_far::StopOnly::borrowed(stop)))?;
+        enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
+        let info = crate::probe_inner(&data, &observation)?;
 
         // Check dimension limits (max_width, max_height, max_pixels)
         self.limits
@@ -722,6 +722,11 @@ impl IncrementalDecode for RawIncremental {
         stop: &dyn enough::Stop,
     ) -> Result<Progress, StepError<Self::Error>> {
         stop.check()?;
+        enough::Stop::check(&observation(
+            self.probe_job.pulse.as_ref(),
+            self.probe_job.stop.as_ref(),
+        ))
+        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         // Length describes the source even when this window starts elsewhere.
         if let Some(total) = input.total_len {
             self.admit_size(total).map_err(StepError::Codec)?;
@@ -786,10 +791,11 @@ impl IncrementalDecode for RawIncremental {
             self.inner.step(input, sink, stop)?
         };
         stop.check()?;
-        if let Some(job_stop) = &self.probe_job.stop {
-            enough::Stop::check(job_stop)
-                .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
-        }
+        enough::Stop::check(&observation(
+            self.probe_job.pulse.as_ref(),
+            self.probe_job.stop.as_ref(),
+        ))
+        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         self.header_ready = self.inner.info().is_some();
         self.needs_input = matches!(progress.event, Event::Need);
         if self.needs_input {

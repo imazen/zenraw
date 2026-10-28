@@ -167,7 +167,22 @@ pub fn probe(
 }
 
 #[allow(clippy::needless_return)]
-fn probe_inner(data: &[u8], pulse: &dyn how_far::Pulse) -> crate::error::Result<decode::RawInfo> {
+pub(crate) fn probe_inner(
+    data: &[u8],
+    pulse: &dyn how_far::Pulse,
+) -> crate::error::Result<decode::RawInfo> {
+    pulse
+        .check()
+        .map_err(|reason| whereat::at!(RawError::from(reason)))?;
+    let info = probe_backend(data, pulse)?;
+    pulse
+        .check()
+        .map_err(|reason| whereat::at!(RawError::from(reason)))?;
+    Ok(info)
+}
+
+#[allow(clippy::needless_return)]
+fn probe_backend(data: &[u8], pulse: &dyn how_far::Pulse) -> crate::error::Result<decode::RawInfo> {
     #[cfg(feature = "rawler")]
     {
         return rawler_backend::probe(data, pulse);

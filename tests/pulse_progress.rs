@@ -571,4 +571,69 @@ mod adapter {
                 .unwrap_err();
         }
     }
+    #[test]
+    fn incremental_header_then_job_pulse_timeout_refuses_before_sink_effects() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use zencodec::decode::{DecodeRowSink, Event, Input, SinkError, StepError};
+        use zenpixels::{PixelDescriptor, PixelSliceMut};
+        struct NoEffects;
+        impl DecodeRowSink for NoEffects {
+            fn begin(&mut self, _: u32, _: u32, _: PixelDescriptor) -> Result<(), SinkError> {
+                panic!("cancelled session published a header")
+            }
+            fn provide_next_buffer(
+                &mut self,
+                _: u32,
+                _: u32,
+                _: u32,
+                _: PixelDescriptor,
+            ) -> Result<PixelSliceMut<'_>, SinkError> {
+                panic!("cancelled session requested output storage")
+            }
+            fn finish(&mut self) -> Result<(), SinkError> {
+                panic!("cancelled session finished output")
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let pulse = FnPulse::new("incremental timeout", move |_| {
+            if flag.load(Ordering::SeqCst) {
+                Err(StopReason::TimedOut)
+            } else {
+                Ok(())
+            }
+        });
+        let observer = pulse.observer();
+        let data = fixture(131, 99, false, false, false, 6);
+        let mut decoder = RawDecoderConfig::new()
+            .job()
+            .with_pulse(pulse.share().unwrap())
+            .dyn_incremental_decoder(&[])
+            .unwrap();
+        let input = || Input::new(0, &data).with_total_len(data.len() as u64);
+        let mut sink = NoEffects;
+        assert!(matches!(
+            decoder
+                .step(input(), &mut sink, &how_far::Unstoppable)
+                .unwrap()
+                .event,
+            Event::Metadata(_)
+        ));
+        cancelled.store(true, Ordering::SeqCst);
+        let error = decoder
+            .step(Input::empty(), &mut sink, &how_far::Unstoppable)
+            .unwrap_err();
+        assert!(
+            matches!(error, StepError::Codec(ref e) if matches!(e.error(), RawError::Stopped(StopReason::TimedOut)))
+        );
+        assert!(
+            observer.snapshot().children.is_empty(),
+            "cancelled preflight must not consume decode plan"
+        );
+        drop(decoder);
+        pulse.complete_as(Outcome::Cancelled);
+    }
 }
