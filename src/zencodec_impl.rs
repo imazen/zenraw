@@ -711,9 +711,10 @@ impl IncrementalDecode for RawIncremental {
         &mut self,
         input: Input<'_>,
         sink: &mut dyn DecodeRowSink,
-        stop: &dyn enough::Stop,
+        pulse: Option<&dyn how_far::Pulse>,
     ) -> Result<Progress, StepError<Self::Error>> {
-        stop.check()?;
+        let observer = pulse.unwrap_or(&how_far::NoPulse);
+        observer.check()?;
         enough::Stop::check(&observation(
             self.probe_job.pulse.as_ref(),
             self.probe_job.stop.as_ref(),
@@ -780,9 +781,9 @@ impl IncrementalDecode for RawIncremental {
         let progress = if incomplete_probe {
             Progress::need(0)
         } else {
-            self.inner.step(input, sink, stop)?
+            self.inner.step(input, sink, pulse)?
         };
-        stop.check()?;
+        observer.check()?;
         enough::Stop::check(&observation(
             self.probe_job.pulse.as_ref(),
             self.probe_job.stop.as_ref(),

@@ -480,25 +480,16 @@ mod adapter {
         let mut sink = Sink::default();
         let input = || Input::new(0, &data).with_total_len(data.len() as u64);
         assert!(matches!(
-            decoder
-                .step(input(), &mut sink, &how_far::Unstoppable)
-                .unwrap()
-                .event,
+            decoder.step(input(), &mut sink, None).unwrap().event,
             Event::Metadata(_)
         ));
         assert!(observer.snapshot().children.is_empty());
         assert!(matches!(
-            decoder
-                .step(input(), &mut sink, &how_far::Unstoppable)
-                .unwrap()
-                .event,
+            decoder.step(input(), &mut sink, None).unwrap().event,
             Event::Rows { .. }
         ));
         assert!(matches!(
-            decoder
-                .step(Input::empty(), &mut sink, &how_far::Unstoppable)
-                .unwrap()
-                .event,
+            decoder.step(Input::empty(), &mut sink, None).unwrap().event,
             Event::Done(_)
         ));
         assert!(sink.finished);
@@ -616,16 +607,11 @@ mod adapter {
         let input = || Input::new(0, &data).with_total_len(data.len() as u64);
         let mut sink = NoEffects;
         assert!(matches!(
-            decoder
-                .step(input(), &mut sink, &how_far::Unstoppable)
-                .unwrap()
-                .event,
+            decoder.step(input(), &mut sink, None).unwrap().event,
             Event::Metadata(_)
         ));
         cancelled.store(true, Ordering::SeqCst);
-        let error = decoder
-            .step(Input::empty(), &mut sink, &how_far::Unstoppable)
-            .unwrap_err();
+        let error = decoder.step(Input::empty(), &mut sink, None).unwrap_err();
         assert!(
             matches!(error, StepError::Codec(ref e) if matches!(e.error(), RawError::Stopped(StopReason::TimedOut)))
         );

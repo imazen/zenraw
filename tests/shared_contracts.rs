@@ -123,7 +123,7 @@ mod incremental_admission {
 
     fn assert_denial(dec: &mut DynIncrementalDecoder, input: Input<'_>, kind: RawLimitKind) {
         let mut sink = Sink::default();
-        let error = dec.step(input, &mut sink, &Unstoppable).unwrap_err();
+        let error = dec.step(input, &mut sink, None).unwrap_err();
         let StepError::Codec(error) = error else {
             panic!("unexpected error: {error:?}")
         };
@@ -140,7 +140,7 @@ mod incremental_admission {
         assert_eq!(sink.finishes, 0);
         assert!(dec.requested().is_empty());
         assert!(matches!(
-            dec.step(Input::empty(), &mut sink, &Unstoppable),
+            dec.step(Input::empty(), &mut sink, None),
             Err(StepError::Finished)
         ));
     }
@@ -176,7 +176,7 @@ mod incremental_admission {
             let bytes = vec![0u8; cap + 1];
             let mut sink = Sink::default();
             let p = dec
-                .step(Input::new(0, &bytes[..cap]), &mut sink, &Unstoppable)
+                .step(Input::new(0, &bytes[..cap]), &mut sink, None)
                 .unwrap();
             assert!(matches!(p.event, Event::Need));
             assert_eq!(dec.requested(), &[Request::at_least(0, cap + 1)]);
@@ -186,7 +186,7 @@ mod incremental_admission {
         // A hard memory ceiling never gains the input cap's lookahead byte.
         let mut dec = decoder(ResourceLimits::none().with_max_memory(8));
         let mut sink = Sink::default();
-        let p = dec.step(Input::empty(), &mut sink, &Unstoppable).unwrap();
+        let p = dec.step(Input::empty(), &mut sink, None).unwrap();
         assert!(matches!(p.event, Event::Need));
         assert_eq!(dec.requested(), &[Request::at_least(0, 8)]);
         assert_denial(&mut *dec, Input::new(0, &[0; 8]), RawLimitKind::Memory);
@@ -202,7 +202,7 @@ mod incremental_admission {
         ] {
             let mut dec = decoder(ResourceLimits::none());
             let mut sink = Sink::default();
-            let error = dec.step(input, &mut sink, &Unstoppable).unwrap_err();
+            let error = dec.step(input, &mut sink, None).unwrap_err();
             let StepError::Codec(error) = error else {
                 panic!("unexpected error: {error:?}")
             };
@@ -214,7 +214,7 @@ mod incremental_admission {
             assert!(dec.info().is_none());
             assert_eq!(sink.begins, 0);
             assert!(matches!(
-                dec.step(Input::empty(), &mut sink, &Unstoppable),
+                dec.step(Input::empty(), &mut sink, None),
                 Err(StepError::Finished)
             ));
         }
@@ -234,7 +234,7 @@ mod incremental_admission {
         let mut dec = decoder(ResourceLimits::none().with_max_input_bytes(bytes.len() as u64));
         let mut sink = Sink::default();
         let prefix = Input::new(0, &bytes[..bytes.len() - 1]);
-        let p = dec.step(prefix, &mut sink, &Unstoppable).unwrap();
+        let p = dec.step(prefix, &mut sink, None).unwrap();
         assert!(matches!(p.event, Event::Metadata(_)));
         assert!(dec.info().is_some());
         assert_eq!(
@@ -242,11 +242,11 @@ mod incremental_admission {
             "header availability is not pixel availability"
         );
         assert!(matches!(
-            dec.step(prefix, &mut sink, &Unstoppable).unwrap().event,
+            dec.step(prefix, &mut sink, None).unwrap().event,
             Event::Need
         ));
         assert!(matches!(
-            dec.step(Input::new(0, &bytes), &mut sink, &Unstoppable)
+            dec.step(Input::new(0, &bytes), &mut sink, None)
                 .unwrap()
                 .event,
             Event::Need
@@ -254,7 +254,7 @@ mod incremental_admission {
         assert_eq!(dec.requested(), &[Request::at_least(0, bytes.len() + 1)]);
         let eof = Input::new(0, &bytes).with_total_len(bytes.len() as u64);
         assert!(matches!(
-            dec.step(eof, &mut sink, &Unstoppable).unwrap().event,
+            dec.step(eof, &mut sink, None).unwrap().event,
             Event::Rows { .. }
         ));
         assert_eq!(sink.begins, 1);
@@ -277,13 +277,11 @@ mod incremental_admission {
             );
         }
         assert!(matches!(
-            dec.step(eof, &mut sink, &Unstoppable).unwrap().event,
+            dec.step(eof, &mut sink, None).unwrap().event,
             Event::Done(_)
         ));
         assert!(matches!(
-            dec.step(Input::empty(), &mut sink, &Unstoppable)
-                .unwrap()
-                .event,
+            dec.step(Input::empty(), &mut sink, None).unwrap().event,
             Event::Done(_)
         ));
     }
@@ -323,13 +321,17 @@ mod incremental_admission {
         let mut dec = decoder(ResourceLimits::none());
         let mut sink = Sink::default();
         assert!(matches!(
-            dec.step(Input::new(0, &bytes), &mut sink, &Stopped),
+            dec.step(
+                Input::new(0, &bytes),
+                &mut sink,
+                Some(&how_far::StopOnly::new(Stopped))
+            ),
             Err(StepError::Cancelled(StopReason::Cancelled))
         ));
         assert!(dec.info().is_none());
         assert_eq!(sink.begins, 0);
         assert!(matches!(
-            dec.step(Input::empty(), &mut sink, &Unstoppable),
+            dec.step(Input::empty(), &mut sink, None),
             Err(StepError::Finished)
         ));
     }
@@ -376,7 +378,7 @@ mod incremental_admission {
             .unwrap();
         let mut sink = Sink::default();
         let error = dec
-            .step(Input::new(0, prefix), &mut sink, &Unstoppable)
+            .step(Input::new(0, prefix), &mut sink, None)
             .unwrap_err();
         let StepError::Codec(error) = error else {
             panic!("unexpected error: {error:?}")
@@ -396,7 +398,7 @@ mod incremental_admission {
         );
         assert_eq!(sink.begins, 0);
         assert!(matches!(
-            dec.step(Input::empty(), &mut sink, &Unstoppable),
+            dec.step(Input::empty(), &mut sink, None),
             Err(StepError::Finished)
         ));
     }
@@ -411,14 +413,14 @@ mod incremental_admission {
                 dec.step(
                     Input::new(0, &bytes[..end]).with_total_len(end as u64),
                     &mut sink,
-                    &Unstoppable
+                    None
                 )
                 .is_err()
             );
             assert!(dec.info().is_none());
             assert_eq!(sink.begins, 0);
             assert!(matches!(
-                dec.step(Input::empty(), &mut sink, &Unstoppable),
+                dec.step(Input::empty(), &mut sink, None),
                 Err(StepError::Finished)
             ));
         }

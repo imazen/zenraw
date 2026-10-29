@@ -38,7 +38,7 @@ inventory = ["zenraw/inventory", "dep:zencodec"]
 
 [dependencies.zencodec]
 git = "https://github.com/imazen/zencodec"
-rev = "d327434b0826a3e39633665c76f5081c0ceb34cc"
+rev = "feb09f9fd25e90e49a30d7161db8f3b558dfb2a6"
 optional = true
 
 [[bin]]
