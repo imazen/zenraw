@@ -2,7 +2,7 @@
 
 ## Known Bugs
 
-### Retained Pulse follow-up (source proposal; qualification pending)
+### Retained Pulse follow-up (focused qualification, 2026-10-29)
 
 The current native pipeline and adapter already support full decode progress.
 Adapter preflight still constructs StopOnly and a cached header can return
@@ -14,10 +14,12 @@ sink effects. Owned stop combinations also preserve child sharing through a
 private forwarding view; a private unit control shares both the job and a
 planned native child. Existing decode/progress/striding assertions are intact.
 
-No public signature, manifest pin or lockfile changed. Source parsing and old
-assertion preservation checks pass; Rust controls and API/native qualification
-remain uncompiled/unrun. Run `just pulse-adapter-check` only under the serialized
-grant, with rawloader and rawler in separate builds.
+IncrementalDecode now accepts Option<&dyn Pulse> on paired core feb09f9f and
+pixels283655c5. Both native backend progress suites (9 each), both admission
+suites (8 each), sharing (1) and default all-target strict Clippy pass on51411a7b.
+The resolved lock and initial failures are retained in
+`benchmarks/optional_pulse_2026-10-29.md`. Full inventory/fuzz/API/platform
+coverage remains separate. No original assertions were weakened.
 
 ### Incremental input admission
 
