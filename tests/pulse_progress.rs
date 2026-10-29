@@ -513,6 +513,7 @@ mod adapter {
     }
 
     #[test]
+    #[allow(deprecated)] // Exercise the retained explicit-stop compatibility path.
     fn either_pulse_or_explicit_stop_cancels_the_adapter() {
         let data = fixture(131, 99, false, false, false, 6);
         for (explicit_stop, target) in [
@@ -613,7 +614,7 @@ mod adapter {
         cancelled.store(true, Ordering::SeqCst);
         let error = decoder.step(Input::empty(), &mut sink, None).unwrap_err();
         assert!(
-            matches!(error, StepError::Codec(ref e) if matches!(e.error(), RawError::Stopped(StopReason::TimedOut)))
+            matches!(error, StepError::Codec(ref e) if matches!(zencodec::find_cause::<RawError>(e), Some(RawError::Stopped(StopReason::TimedOut))))
         );
         assert!(
             observer.snapshot().children.is_empty(),

@@ -340,6 +340,7 @@ mod incremental_admission {
     }
 
     #[test]
+    #[allow(deprecated)] // Retain coverage of the explicit-stop compatibility path.
     fn transient_job_stop_after_preflight_cannot_be_swallowed_by_a_second_probe() {
         use std::sync::{
             Arc,
