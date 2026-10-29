@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Dependency integration
+
+- Use version requirements for the shared zencodec/zenmeta dependencies so a
+  consuming application can select one core revision. Standalone development
+  keeps the existing pinned root patches. Codec behavior is unchanged.
+
 ### Fixed
 
 - Pulse follow-up: RAW adapter preflight forwards the complete
