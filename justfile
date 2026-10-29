@@ -197,3 +197,15 @@ beta-cohort-check:
     cargo fmt --check
     cargo clippy --locked --lib -- -D warnings
     cargo test --locked --lib
+
+# Source proposal controls: qualify both backends separately under a grant.
+pulse-adapter-check:
+    cargo test --features zencodec --lib observation::tests
+    cargo test --features zencodec --test pulse_progress
+    cargo test --no-default-features --features rawler,zencodec --test pulse_progress
+    cargo clippy --features zencodec --all-targets -- -D warnings
+
+# Keep legacy inventory cancellation coverage under the paired Pulse graph.
+pulse-inventory-check:
+    cargo test --locked --all-features --test inventory cancellation
+    cargo clippy --locked --all-targets --all-features -- -D warnings

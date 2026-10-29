@@ -11,7 +11,7 @@ use whereat::{At, at};
 use zencodec::Unsupported;
 use zencodec::decode::{
     Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, Event, IncrementalDecode, Input,
-    OutputInfo, Progress, Request, SinkError, StepError,
+    InputRequest, OutputInfo, Progress, SinkError, StepError,
 };
 use zencodec::{
     ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, OrientationHint,
@@ -29,15 +29,7 @@ fn wrap_limit(e: zencodec::LimitExceeded) -> RawError {
     RawError::LimitExceeded(RawLimitKind::from_zencodec(e.kind()), e.to_string())
 }
 
-fn observation<'a>(
-    pulse: Option<&'a how_far::SharedPulse>,
-    stop: Option<&'a zencodec::StopToken>,
-) -> how_far::WithStop<'a> {
-    how_far::WithStop::borrowed(
-        pulse.map_or(&how_far::NoPulse as &dyn how_far::Pulse, |p| p),
-        stop.map_or(&enough::Unstoppable as &dyn enough::Stop, |s| s),
-    )
-}
+use crate::observation::observation;
 
 // ── Format definition ──────────────────────────────────────────────────
 
@@ -474,14 +466,14 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
+        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         if let Some(cache) = &self.incremental_probe
             && let Some(info) = cache.get()
         {
             return Ok(info.clone());
         }
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
-        let stop: &dyn enough::Stop = &observation;
-        let info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
+        let info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &info);
         // Report consistently with what `decode()` produces under this hint.
         // `Preserve` (default) keeps the stored dims + intrinsic EXIF tag that
@@ -497,8 +489,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         // Probe for stored dims + intrinsic orientation (independent of hint).
         let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
-        let stop: &dyn enough::Stop = &observation;
-        let raw_info = crate::probe(data, Some(&how_far::StopOnly::borrowed(stop)))?;
+        enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
+        let raw_info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &raw_info);
 
         let descriptor =
@@ -560,8 +552,8 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
 
         // Probe header for dimensions to check width/height/memory limits
         let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
-        let stop: &dyn enough::Stop = &observation;
-        let info = crate::probe(&data, Some(&how_far::StopOnly::borrowed(stop)))?;
+        enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
+        let info = crate::probe_inner(&data, &observation)?;
 
         // Check dimension limits (max_width, max_height, max_pixels)
         self.limits
@@ -651,7 +643,7 @@ struct RawIncremental {
     probe_job: RawDecodeJob,
     output_bytes_per_pixel: u64,
     estimated_output: u64,
-    need: [Request; 1],
+    need: [InputRequest; 1],
     needs_input: bool,
     header_ready: bool,
 }
@@ -681,7 +673,7 @@ impl RawIncremental {
             probe_job,
             output_bytes_per_pixel,
             estimated_output: 0,
-            need: [Request::at_least(0, 1)],
+            need: [InputRequest::at_least(0, 1)],
             needs_input: false,
             header_ready: false,
         }
@@ -719,9 +711,15 @@ impl IncrementalDecode for RawIncremental {
         &mut self,
         input: Input<'_>,
         sink: &mut dyn DecodeRowSink,
-        stop: &dyn enough::Stop,
+        pulse: Option<&dyn how_far::Pulse>,
     ) -> Result<Progress, StepError<Self::Error>> {
-        stop.check()?;
+        let observer = pulse.unwrap_or(&how_far::NoPulse);
+        observer.check()?;
+        enough::Stop::check(&observation(
+            self.probe_job.pulse.as_ref(),
+            self.probe_job.stop.as_ref(),
+        ))
+        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         // Length describes the source even when this window starts elsewhere.
         if let Some(total) = input.total_len {
             self.admit_size(total).map_err(StepError::Codec)?;
@@ -783,13 +781,14 @@ impl IncrementalDecode for RawIncremental {
         let progress = if incomplete_probe {
             Progress::need(0)
         } else {
-            self.inner.step(input, sink, stop)?
+            self.inner.step(input, sink, pulse)?
         };
-        stop.check()?;
-        if let Some(job_stop) = &self.probe_job.stop {
-            enough::Stop::check(job_stop)
-                .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
-        }
+        observer.check()?;
+        enough::Stop::check(&observation(
+            self.probe_job.pulse.as_ref(),
+            self.probe_job.stop.as_ref(),
+        ))
+        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         self.header_ready = self.inner.info().is_some();
         self.needs_input = matches!(progress.event, Event::Need);
         if self.needs_input {
@@ -825,7 +824,7 @@ impl IncrementalDecode for RawIncremental {
                     .min(ceiling)
             } else {
                 match self.inner.requested().first() {
-                    Some(Request::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
+                    Some(InputRequest::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
                     _ => ceiling,
                 }
             };
@@ -840,12 +839,12 @@ impl IncrementalDecode for RawIncremental {
                     "whole RAW input leaves no addressable EOF lookahead".into(),
                 ))));
             }
-            self.need = [Request::at_least(0, wanted as usize)];
+            self.need = [InputRequest::at_least(0, wanted as usize)];
         }
         Ok(progress)
     }
 
-    fn requested(&self) -> &[Request] {
+    fn requested(&self) -> &[InputRequest] {
         if self.needs_input { &self.need } else { &[] }
     }
 

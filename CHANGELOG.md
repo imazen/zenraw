@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Pulse follow-up: RAW adapter preflight forwards the complete
+  observer to the unplanned native probe instead of constructing StopOnly;
+  cached headers and every incremental step check the retained job pulse.
+  Owned pulse/stop combinations retain sharing as well as planning/reporting.
+  Timeout after header discovery refuses before sink effects. Existing native
+  progress/pixel assertions remain unchanged. Both backend progress/admission
+  suites and default all-target strict Clippy pass; see
+  `benchmarks/optional_pulse_2026-10-29.md`.
+- Accept `Option<&dyn Pulse>` in incremental decoding (`d48fd448`), retaining
+  job controls when None is supplied; migrate the request name to InputRequest.
+
 ### Dependency compatibility
 
 - Admit archmage/magetypes 0.9.31-beta.1 in the current-main tool graph while retaining compatible stable requirements (`1d2c312d`). Strict library lint and all 86 library tests pass.

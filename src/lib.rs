@@ -68,6 +68,8 @@ pub mod dng_render;
 #[allow(dead_code)]
 pub(crate) mod dt_sigmoid;
 mod error;
+#[cfg(feature = "zencodec")]
+mod observation;
 #[allow(dead_code)]
 mod orient;
 #[allow(dead_code)]
@@ -167,7 +169,22 @@ pub fn probe(
 }
 
 #[allow(clippy::needless_return)]
-fn probe_inner(data: &[u8], pulse: &dyn how_far::Pulse) -> crate::error::Result<decode::RawInfo> {
+pub(crate) fn probe_inner(
+    data: &[u8],
+    pulse: &dyn how_far::Pulse,
+) -> crate::error::Result<decode::RawInfo> {
+    pulse
+        .check()
+        .map_err(|reason| whereat::at!(RawError::from(reason)))?;
+    let info = probe_backend(data, pulse)?;
+    pulse
+        .check()
+        .map_err(|reason| whereat::at!(RawError::from(reason)))?;
+    Ok(info)
+}
+
+#[allow(clippy::needless_return)]
+fn probe_backend(data: &[u8], pulse: &dyn how_far::Pulse) -> crate::error::Result<decode::RawInfo> {
     #[cfg(feature = "rawler")]
     {
         return rawler_backend::probe(data, pulse);
