@@ -55,7 +55,7 @@ mod incremental_admission {
     use enough::{Stop, StopReason, Unstoppable};
     use zencodec::ResourceLimits;
     use zencodec::decode::{
-        DecodeRowSink, DynIncrementalDecoder, Event, Input, Request, SinkError, StepError,
+        DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
     };
     use zenpixels::{PixelDescriptor, PixelSliceMut};
     use zenraw::{RawError, RawLimitKind};
@@ -179,7 +179,7 @@ mod incremental_admission {
                 .step(Input::new(0, &bytes[..cap]), &mut sink, None)
                 .unwrap();
             assert!(matches!(p.event, Event::Need));
-            assert_eq!(dec.requested(), &[Request::at_least(0, cap + 1)]);
+            assert_eq!(dec.requested(), &[InputRequest::at_least(0, cap + 1)]);
             assert_denial(&mut *dec, Input::new(0, &bytes), RawLimitKind::InputSize);
             assert_eq!(sink.begins, 0);
         }
@@ -188,7 +188,7 @@ mod incremental_admission {
         let mut sink = Sink::default();
         let p = dec.step(Input::empty(), &mut sink, None).unwrap();
         assert!(matches!(p.event, Event::Need));
-        assert_eq!(dec.requested(), &[Request::at_least(0, 8)]);
+        assert_eq!(dec.requested(), &[InputRequest::at_least(0, 8)]);
         assert_denial(&mut *dec, Input::new(0, &[0; 8]), RawLimitKind::Memory);
         let mut dec = decoder(ResourceLimits::none().with_max_memory(0));
         assert_denial(&mut *dec, Input::empty(), RawLimitKind::Memory);
@@ -251,7 +251,10 @@ mod incremental_admission {
                 .event,
             Event::Need
         ));
-        assert_eq!(dec.requested(), &[Request::at_least(0, bytes.len() + 1)]);
+        assert_eq!(
+            dec.requested(),
+            &[InputRequest::at_least(0, bytes.len() + 1)]
+        );
         let eof = Input::new(0, &bytes).with_total_len(bytes.len() as u64);
         assert!(matches!(
             dec.step(eof, &mut sink, None).unwrap().event,

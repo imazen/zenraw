@@ -11,7 +11,7 @@ use whereat::{At, at};
 use zencodec::Unsupported;
 use zencodec::decode::{
     Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, Event, IncrementalDecode, Input,
-    OutputInfo, Progress, Request, SinkError, StepError,
+    InputRequest, OutputInfo, Progress, SinkError, StepError,
 };
 use zencodec::{
     ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, OrientationHint,
@@ -643,7 +643,7 @@ struct RawIncremental {
     probe_job: RawDecodeJob,
     output_bytes_per_pixel: u64,
     estimated_output: u64,
-    need: [Request; 1],
+    need: [InputRequest; 1],
     needs_input: bool,
     header_ready: bool,
 }
@@ -673,7 +673,7 @@ impl RawIncremental {
             probe_job,
             output_bytes_per_pixel,
             estimated_output: 0,
-            need: [Request::at_least(0, 1)],
+            need: [InputRequest::at_least(0, 1)],
             needs_input: false,
             header_ready: false,
         }
@@ -824,7 +824,7 @@ impl IncrementalDecode for RawIncremental {
                     .min(ceiling)
             } else {
                 match self.inner.requested().first() {
-                    Some(Request::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
+                    Some(InputRequest::AtLeast { min_len, .. }) => (*min_len as u64).min(ceiling),
                     _ => ceiling,
                 }
             };
@@ -839,12 +839,12 @@ impl IncrementalDecode for RawIncremental {
                     "whole RAW input leaves no addressable EOF lookahead".into(),
                 ))));
             }
-            self.need = [Request::at_least(0, wanted as usize)];
+            self.need = [InputRequest::at_least(0, wanted as usize)];
         }
         Ok(progress)
     }
 
-    fn requested(&self) -> &[Request] {
+    fn requested(&self) -> &[InputRequest] {
         if self.needs_input { &self.need } else { &[] }
     }
 

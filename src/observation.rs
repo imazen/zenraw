@@ -95,6 +95,7 @@ mod tests {
                 )
                 .unwrap();
             let child = children.remove(0);
+            drop(children);
             let worker = child.share().expect("native child keeps owned policy");
             assert_eq!(
                 worker.check(),
