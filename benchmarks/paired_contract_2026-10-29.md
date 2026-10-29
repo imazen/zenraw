@@ -18,3 +18,9 @@ codec/platform or complete release qualification.
 Commands ran under run-heavy with 3G/jobs2 and timeout900. Logs:
 `~/tmp/zenpixels-release-reconcile-20261029/zenpipe-portable2.log` and
 `zenpipe-portable-profile.log` on the qualification host.
+
+Standalone fuzz CI additionally required explicit root core/metadata/pixel
+patches; parent patches do not propagate. A targeted zenpixels lock update
+selects 0.2.17. `cargo check --all-targets --features inventory --locked`
+passes in an isolated export, rc0, 9s, peak RSS 0.28GiB. This compiles the
+fuzz targets; it is not a fuzz-duration or sanitizer-runtime claim.

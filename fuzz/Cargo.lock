@@ -340,6 +340,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -410,12 +416,13 @@ checksum = "d107c80dd656e1a2c254dfb1d57ece73b7f515b8a8684c270c23cab68f4a440d"
 
 [[package]]
 name = "zencodec"
-version = "0.1.27"
-source = "git+https://github.com/imazen/zencodec?rev=d327434b0826a3e39633665c76f5081c0ceb34cc#d327434b0826a3e39633665c76f5081c0ceb34cc"
+version = "0.2.0"
+source = "git+https://github.com/imazen/zencodec?rev=feb09f9fd25e90e49a30d7161db8f3b558dfb2a6#feb09f9fd25e90e49a30d7161db8f3b558dfb2a6"
 dependencies = [
  "almost-enough",
  "enough",
  "how-far",
+ "spin",
  "whereat",
  "zenpixels",
 ]
@@ -423,7 +430,7 @@ dependencies = [
 [[package]]
 name = "zenmeta"
 version = "0.1.0"
-source = "git+https://github.com/imazen/zencodec?rev=d327434b0826a3e39633665c76f5081c0ceb34cc#d327434b0826a3e39633665c76f5081c0ceb34cc"
+source = "git+https://github.com/imazen/zencodec?rev=feb09f9fd25e90e49a30d7161db8f3b558dfb2a6#feb09f9fd25e90e49a30d7161db8f3b558dfb2a6"
 dependencies = [
  "zencodec",
  "zenpixels",
@@ -431,9 +438,8 @@ dependencies = [
 
 [[package]]
 name = "zenpixels"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5851fd39b312749a3c367a0cd3522bd95d43276cfa613e9c18df748447cef3a8"
+version = "0.2.17"
+source = "git+https://github.com/imazen/zenpixels?rev=283655c5424e0ad7ebc6d2acd94670fac1e29158#283655c5424e0ad7ebc6d2acd94670fac1e29158"
 dependencies = [
  "bytemuck",
  "whereat",
@@ -466,3 +472,8 @@ dependencies = [
  "zencodec",
  "zenraw",
 ]
+
+[[patch.unused]]
+name = "zenpixels-convert"
+version = "0.2.17"
+source = "git+https://github.com/imazen/zenpixels?rev=283655c5424e0ad7ebc6d2acd94670fac1e29158#283655c5424e0ad7ebc6d2acd94670fac1e29158"

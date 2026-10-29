@@ -209,3 +209,7 @@ pulse-adapter-check:
 pulse-inventory-check:
     cargo test --locked --all-features --test inventory cancellation
     cargo clippy --locked --all-targets --all-features -- -D warnings
+
+# Standalone fuzz graph includes the optional shared inventory target.
+paired-fuzz-check:
+    cargo check --manifest-path fuzz/Cargo.toml --all-targets --features inventory --locked
