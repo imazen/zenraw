@@ -88,3 +88,10 @@ one-shot and whole-file incremental decode. Metadata probing uses its stop
 policy without planning progress children; decode reserves native processing
 and output-orientation phases. The adapter's orientation kernel accepts strided
 `PixelSlice` rows and matches the existing byte permutations for RGB16/RGBF32.
+
+### Fixed: inventory compatibility Clippy gate (2026-10-29)
+
+The all-feature CI gate exposed deprecated stop calls in three retained inventory
+cancellation tests. Scoped allowances preserve compatibility coverage without
+changing assertions. `just pulse-inventory-check` passes; evidence is in
+`benchmarks/optional_pulse_2026-10-29.md`.

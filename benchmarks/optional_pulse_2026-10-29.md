@@ -34,3 +34,16 @@ Final receipt on r7900x: `run-heavy: done rc=0 11s | peak-RSS 0.27GiB | min-avai
 This is qualification resource usage, not an encoding/decoding performance result.
 Standalone fuzz graph, full inventory/corpus, API snapshots, WASM and platform
 qualification remain outstanding. No crate publication claim.
+
+## Inventory compatibility follow-up
+
+CI run 40819550694 passed the Linux, Windows (x64/ARM64), macOS ARM64,
+i686 inventory, native backend and feature-permutation jobs. Its all-feature
+Clippy job found five deprecated calls in three legacy cancellation tests.
+Scoped allowances preserve those compatibility calls and every assertion; no
+production lint suppression was added.
+
+On source `5df5a9bb`, `just pulse-inventory-check` passes the inventory cancellation
+controls and all-target/all-feature strict Clippy with the same resolved lock.
+Receipt: rc=0, 39s, peak RSS 0.82 GiB, minimum available 14201 MiB, peak load 1.01.
+Original CI failure is retained; this does not establish fuzz or API freshness.

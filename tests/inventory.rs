@@ -1317,6 +1317,7 @@ fn bigtiff_is_not_decoded() {
 /// `inventory` checks the job's stop token and `max_input_bytes` like
 /// `decoder` does.
 #[test]
+#[allow(deprecated)] // Exercise the retained cancellation-only compatibility API.
 fn inventory_honours_stop_and_input_limit() {
     let data = dng_fixture();
     let limited = RawDecoderConfig::new()
@@ -2311,6 +2312,7 @@ fn the_gate_rejects_undecodable_fixtures() {
 }
 
 #[test]
+#[allow(deprecated)] // Exercise the retained cancellation-only compatibility API.
 fn configured_limits_and_cancellation_survive_dispatch() {
     use zencodec::decode::DynDecoderConfig;
     use zencodec::{CategorizedError, CodecErrorExt, ErrorCategory, LimitExceeded, ResourceLimits};
@@ -2358,6 +2360,7 @@ fn configured_limits_and_cancellation_survive_dispatch() {
 }
 
 #[test]
+#[allow(deprecated)] // Exercise the retained cancellation-only compatibility API.
 fn mid_walk_cancellation_preserves_the_first_reason() {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use zencodec::{CategorizedError, ErrorCategory};

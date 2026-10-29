@@ -204,3 +204,8 @@ pulse-adapter-check:
     cargo test --features zencodec --test pulse_progress
     cargo test --no-default-features --features rawler,zencodec --test pulse_progress
     cargo clippy --features zencodec --all-targets -- -D warnings
+
+# Keep legacy inventory cancellation coverage under the paired Pulse graph.
+pulse-inventory-check:
+    cargo test --locked --all-features --test inventory cancellation
+    cargo clippy --locked --all-targets --all-features -- -D warnings
