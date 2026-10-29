@@ -52,7 +52,7 @@ fn dng_policy_and_inventory_contracts() {
 #[cfg(test)]
 mod incremental_admission {
     use super::*;
-    use enough::{Stop, StopReason, Unstoppable};
+    use enough::{Stop, StopReason};
     use zencodec::ResourceLimits;
     use zencodec::decode::{
         DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
