@@ -91,6 +91,8 @@
 
 ### Changed
 
+- Accept the archmage and magetypes 0.9.31 stable release.
+
 - **Third-party dependency pass.** zenraw gitignores its root `Cargo.lock`, so a
   fresh resolve already picks the newest compatible third-party versions and
   there was nothing to commit for it; the two **tracked** nested lockfiles were
