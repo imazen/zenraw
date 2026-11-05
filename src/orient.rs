@@ -334,7 +334,7 @@ fn remap_pixels(
     map: impl Fn(usize, usize) -> (usize, usize),
 ) -> crate::Result<(Vec<u8>, usize, usize)> {
     let bpp = src.descriptor().bytes_per_pixel();
-    let mut out = crate::alloc_util::alloc_filled(alloc_pref, true, 0u8, width * height * bpp)?;
+    let mut out = crate::alloc_util::alloc_zeroed(alloc_pref, true, width * height * bpp)?;
     let mut pace = pulse.paced(64);
     for r in 0..height {
         for c in 0..width {

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- RAW demosaic, orientation and conversion buffers explicitly request zeroed allocation while preserving allocation-error policy and nonzero-fill semantics.
+
 ### Dependency integration
 
 - Use version requirements for the shared zencodec/zenmeta dependencies so a

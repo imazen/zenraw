@@ -222,7 +222,7 @@ pub(crate) fn demosaic_to_rgb_f32_fallible<C: CfaColorAt + ?Sized>(
         })?;
     // Full-image demosaic output sized from the (untrusted) sensor dims →
     // default fallible.
-    let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
+    let rgb = crate::alloc_util::alloc_zeroed(alloc_pref, true, n)?;
     let rgb = if (tile_w, tile_h) == (2, 2) {
         match method {
             DemosaicMethod::Bilinear => demosaic_bilinear(data, width, height, cfa, rgb, pulse)
@@ -854,7 +854,7 @@ pub(crate) fn demosaic_xtrans_bilinear_fallible<C: CfaColorAt + ?Sized>(
         })?;
     // Full-image demosaic output sized from the (untrusted) sensor dims →
     // default fallible.
-    let rgb = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, n)?;
+    let rgb = crate::alloc_util::alloc_zeroed(alloc_pref, true, n)?;
     let rgb = demosaic_xtrans_bilinear_into(data, width, height, cfa, rgb, pulse)
         .map_err(|r| whereat::at!(crate::error::RawError::from(r)))?;
     pulse

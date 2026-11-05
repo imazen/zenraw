@@ -32,6 +32,7 @@
 //! are predominantly `Vec<f32>` (linear / scene-referred pixels) rather than the
 //! `Vec<u8>` byte buffers a byte-oriented codec allocates.
 
+#[cfg(test)]
 use alloc::vec;
 use alloc::vec::Vec;
 use whereat::{At, at};
@@ -87,6 +88,23 @@ pub(crate) fn resolve_fallible(pref: AllocPref, site_default_fallible: bool) -> 
     }
 }
 
+/// Allocate explicitly zero-valued elements without requiring zero to equal Default.
+pub(crate) fn alloc_zeroed<T: bytemuck::Zeroable>(
+    pref: AllocPref,
+    site_default_fallible: bool,
+    n: usize,
+) -> Result<Vec<T>, At<RawError>> {
+    bytemuck::allocation::try_zeroed_vec(n).map_err(|()| {
+        if !resolve_fallible(pref, site_default_fallible) {
+            let layout = core::alloc::Layout::array::<T>(n).expect("capacity overflow");
+            alloc::alloc::handle_alloc_error(layout);
+        }
+        at!(RawError::OutOfMemory(alloc::format!(
+            "out of memory allocating {n} elements"
+        )))
+    })
+}
+
 /// Allocate `n` elements all equal to `fill`, honoring the per-site fallibility.
 ///
 /// `pref` is the caller's [`AllocPref`]; `site_default_fallible` is this site's
@@ -96,6 +114,7 @@ pub(crate) fn resolve_fallible(pref: AllocPref, site_default_fallible: bool) -> 
 ///   [`RawError::OutOfMemory`] on allocation failure.
 /// * infallible → `vec![fill; n]` (single `calloc` when `fill` is the zero
 ///   bit-pattern; aborts on OOM).
+#[cfg(test)]
 pub(crate) fn alloc_filled<T: Clone>(
     pref: AllocPref,
     site_default_fallible: bool,
@@ -193,6 +212,29 @@ mod tests {
     fn explicit_infallible_overrides_any_site_default() {
         assert!(!resolve_fallible(AllocPref::Infallible, true));
         assert!(!resolve_fallible(AllocPref::Infallible, false));
+    }
+
+    #[test]
+    fn zero_only_typed_buffers_preserve_bits_and_zst_lengths() {
+        for pref in [
+            AllocPref::CodecDefault,
+            AllocPref::Fallible,
+            AllocPref::Infallible,
+        ] {
+            for site in [false, true] {
+                for n in [0, 1, 4095, 4096, 4097] {
+                    let v = alloc_zeroed::<f32>(pref, site, n).unwrap();
+                    assert_eq!(v.len(), n);
+                    assert!(v.iter().all(|v| v.to_bits() == 0));
+                }
+                let v = alloc_zeroed::<()>(pref, site, usize::MAX).unwrap();
+                assert_eq!(v.len(), usize::MAX);
+                assert_eq!(v.capacity(), usize::MAX);
+            }
+        }
+        assert!(alloc_zeroed::<u16>(AllocPref::Fallible, true, usize::MAX).is_err());
+        let v = alloc_filled(AllocPref::Fallible, true, -0.0f32, 3).unwrap();
+        assert!(v.iter().all(|v| v.to_bits() == (-0.0f32).to_bits()));
     }
 
     #[test]

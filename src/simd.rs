@@ -48,7 +48,7 @@ pub(crate) fn normalize_uniform_fallible(
 ) -> Result<Vec<f32>, whereat::At<crate::error::RawError>> {
     // Full normalized sensor buffer sized from the (untrusted) sensor dims →
     // default fallible.
-    let mut out = crate::alloc_util::alloc_filled(alloc_pref, true, 0.0f32, data.len())?;
+    let mut out = crate::alloc_util::alloc_zeroed(alloc_pref, true, data.len())?;
     incant!(
         normalize_uniform_into(data, black, inv_range, &mut out, pulse),
         [v3, neon, wasm128, scalar]
