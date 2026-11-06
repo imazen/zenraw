@@ -213,3 +213,8 @@ pulse-inventory-check:
 # Standalone fuzz graph includes the optional shared inventory target.
 paired-fuzz-check:
     cargo check --manifest-path fuzz/Cargo.toml --all-targets --features inventory --locked
+
+# Deterministic DNG fixture: source depth differs from the developed sample grid.
+exact-depth-check:
+    cargo test --locked --no-default-features --features std,rawloader,zencodec --test exact_depth
+    cargo test --locked --no-default-features --features std,rawler,zencodec --test exact_depth
