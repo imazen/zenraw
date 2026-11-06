@@ -593,7 +593,7 @@ fn auto_develop_output(
     )
     .map_err_at(RawError::Buffer)?;
 
-    Ok(RawDecodeOutput { pixels: buf, info })
+    crate::decode::output_with_exact_depth(buf, info)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
@@ -1022,7 +1022,7 @@ fn build_linear_output(
     )
     .map_err_at(RawError::Buffer)?;
 
-    Ok(RawDecodeOutput { pixels: buf, info })
+    crate::decode::output_with_exact_depth(buf, info)
 }
 
 /// Build display-ready u16 output (simple path without DngPipeline).
@@ -1051,7 +1051,7 @@ fn build_develop_output(
     )
     .map_err_at(RawError::Buffer)?;
 
-    Ok(RawDecodeOutput { pixels: buf, info })
+    crate::decode::output_with_exact_depth(buf, info)
 }
 
 /// Convert rawler Orientation to EXIF u16 value.

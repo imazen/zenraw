@@ -314,9 +314,9 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_dng = ext.eq_ignore_ascii_case("dng");
 
-    Ok(RawDecodeOutput {
-        pixels: buf,
-        info: RawInfo {
+    crate::decode::output_with_exact_depth(
+        buf,
+        RawInfo {
             width,
             height,
             make: String::new(),
@@ -336,7 +336,7 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
             baseline_exposure: None,
             sensor_layout: crate::decode::SensorLayout::Unknown,
         },
-    })
+    )
 }
 
 /// Decode RAW bytes using darktable-cli (writes to temp file, decodes, cleans up).

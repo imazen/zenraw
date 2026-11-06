@@ -214,6 +214,7 @@ fn apply_orientation_to_output_pulse(
     let intrinsic = info.orientation;
     let resolved = resolve_orientation(hint, intrinsic);
 
+    let exact = output.pixels().exact_depth();
     let buf = output.into_buffer();
 
     // Even when the resolved transform is Identity (e.g. `Correct` on an upright
@@ -234,8 +235,14 @@ fn apply_orientation_to_output_pulse(
         pulse,
     )?;
 
-    let baked_buf = zenpixels::PixelBuffer::from_vec(baked, nw as u32, nh as u32, descriptor)
+    let mut baked_buf = zenpixels::PixelBuffer::from_vec(baked, nw as u32, nh as u32, descriptor)
         .expect("apply_orientation_to_output: baked buffer matches output geometry");
+
+    if let Some(exact) = exact {
+        baked_buf
+            .set_exact_depth(Some(exact))
+            .map_err(|error| whereat::at!(RawError::InvalidBuffer(error.to_string())))?;
+    }
 
     // `ImageInfo` has no dimension setter; the fields are public. Report the
     // baked buffer's geometry + Identity (pixels are now final).

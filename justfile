@@ -218,3 +218,10 @@ paired-fuzz-check:
 exact-depth-check:
     cargo test --locked --no-default-features --features std,rawloader,zencodec --test exact_depth
     cargo test --locked --no-default-features --features std,rawler,zencodec --test exact_depth
+
+# Keep native progress/cancellation alongside current-depth metadata.
+exact-depth-contract-check:
+    cargo test --locked --no-default-features --features std,rawloader,zencodec --lib --test exact_depth --test pulse_progress --test shared_contracts
+    cargo test --locked --no-default-features --features std,rawler,zencodec --lib --test exact_depth --test pulse_progress --test shared_contracts
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo check --locked --no-default-features

@@ -273,6 +273,25 @@ pub struct RawDecodeOutput {
     pub info: RawInfo,
 }
 
+/// Describe the delivered integer grid, after every value-changing operation.
+/// Sensor precision does not establish this property after development.
+pub(crate) fn output_with_exact_depth(
+    mut pixels: PixelBuffer,
+    info: RawInfo,
+) -> crate::Result<RawDecodeOutput> {
+    if matches!(
+        pixels.descriptor().channel_type(),
+        zenpixels::ChannelType::U8 | zenpixels::ChannelType::U16
+    ) {
+        let exact = zenpixels::sample::ExactDepth::measure(&pixels.as_slice())
+            .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
+        pixels
+            .set_exact_depth(Some(exact))
+            .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
+    }
+    Ok(RawDecodeOutput { pixels, info })
+}
+
 /// Reject the decode early if image dimensions blow past `max_pixels` OR the
 /// `RGB f32` working-set bytes blow past `max_decode_bytes`.
 ///
@@ -776,7 +795,7 @@ fn decode_inner(
                 )
                 .map_err_at(RawError::Buffer)?;
 
-                Ok(RawDecodeOutput { pixels: buf, info })
+                output_with_exact_depth(buf, info)
             }
             OutputMode::Linear => {
                 let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
@@ -793,7 +812,7 @@ fn decode_inner(
                 )
                 .map_err_at(RawError::Buffer)?;
 
-                Ok(RawDecodeOutput { pixels: buf, info })
+                output_with_exact_depth(buf, info)
             }
             OutputMode::CameraRaw => {
                 let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
@@ -810,7 +829,7 @@ fn decode_inner(
                 )
                 .map_err_at(RawError::Buffer)?;
 
-                Ok(RawDecodeOutput { pixels: buf, info })
+                output_with_exact_depth(buf, info)
             }
         }
     })
@@ -1001,7 +1020,7 @@ fn decode_non_bayer(
                 )
                 .map_err_at(RawError::Buffer)?;
 
-                Ok(RawDecodeOutput { pixels: buf, info })
+                output_with_exact_depth(buf, info)
             }
             OutputMode::Linear => {
                 let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
@@ -1018,7 +1037,7 @@ fn decode_non_bayer(
                 )
                 .map_err_at(RawError::Buffer)?;
 
-                Ok(RawDecodeOutput { pixels: buf, info })
+                output_with_exact_depth(buf, info)
             }
             OutputMode::CameraRaw => {
                 let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
@@ -1035,7 +1054,7 @@ fn decode_non_bayer(
                 )
                 .map_err_at(RawError::Buffer)?;
 
-                Ok(RawDecodeOutput { pixels: buf, info })
+                output_with_exact_depth(buf, info)
             }
         }
     })

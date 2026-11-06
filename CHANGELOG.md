@@ -12,6 +12,10 @@
 
 ### Fixed
 
+- Measure the delivered U8/U16 grid after RAW development and retain its
+  `ExactDepth` through byte-only orientation. Sensor depth stays separate;
+  Linear and CameraRaw floating outputs carry no integer-grid statement.
+
 - Pulse follow-up: RAW adapter preflight forwards the complete
   observer to the unplanned native probe instead of constructing StopOnly;
   cached headers and every incremental step check the retained job pulse.

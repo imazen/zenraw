@@ -95,3 +95,15 @@ The all-feature CI gate exposed deprecated stop calls in three retained inventor
 cancellation tests. Scoped allowances preserve compatibility coverage without
 changing assertions. `just pulse-inventory-check` passes; evidence is in
 `benchmarks/optional_pulse_2026-10-29.md`.
+
+### Fixed: developed integer grid evidence (2026-11-06)
+
+Native rawloader and rawler output measure `ExactDepth` after development;
+orientation retains that evidence because it only permutes whole pixels.
+A synthetic 10-bit-sensor DNG produces a measured 16-bit developed grid,
+while Linear and CameraRaw produce floats without an integer statement.
+`just exact-depth-contract-check` passed 253 library and selected integration
+tests across both backends, strict all-target/all-feature Clippy, and the
+no-default-features check. Existing progress/cancellation assertions remain
+unchanged. The darktable output path uses the same helper and compiles in
+the all-feature lint gate; the external darktable executable was not run.
