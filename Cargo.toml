@@ -21,16 +21,16 @@ include = [
 [dependencies]
 rawloader = { version = "0.37.1", optional = true }
 rawler = { version = "0.7.2", optional = true }
-thiserror = { version = "2.0.18", default-features = false }
+thiserror = { version = "2.0.21", default-features = false }
 whereat = { version = "0.1.5", default-features = false }
-enough = { version = "0.4.3", default-features = false }
+enough = { version = "0.4.5", default-features = false }
 how-far = { version = "0.1.0", default-features = false }
 zenpixels = { version = ">=0.2.10, <0.4.0", default-features = false }
 zencodec = { version = ">=0.2.0, <0.4.0", optional = true }
 zenmeta = { version = "0.1.0", default-features = false, features = ["inventory"], optional = true }
 archmage = { version = "0.9.32", default-features = false }
 magetypes = { version = "0.9.32", default-features = false }
-bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
+bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
 memchr = { version = "2.8.0", default-features = false }
 ultrahdr-core = { version = "0.3.0", default-features = false, features = ["transfer"], optional = true }
 
@@ -41,9 +41,9 @@ kamadak-exif = { version = "0.6.1", optional = true }
 how-far-along = "0.1.0"
 zenutils-fuzz = "0.1.0"
 zensim = { version = "0.2.4"}
-bytemuck = "1.25.0"
+bytemuck = "1.25.2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-zenbench = { version = "0.1.2", features = ["criterion-compat"] }
+zenbench = { version = "0.1.11", features = ["criterion-compat"] }
 # Decoder-only inventory conformance checks preserve the native error type.
 zencodec-testkit = ">=0.1.0, <0.3.0"
 

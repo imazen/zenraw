@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.9"
-enough = "0.4.3"
+enough = "0.4.5"
 
 [dependencies.zenraw]
 path = ".."
