@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fix `OutputMode::Develop` colour for non-DNG RAW: the camera-to-output matrix applied white balance twice (Bradford adaptation, then a column division by the neutral), which kept greys neutral but shifted every saturated colour (blue skies rendered purple, reds magenta) and darkened the image.
 - RAW demosaic, orientation and conversion buffers explicitly request zeroed allocation while preserving allocation-error policy and nonzero-fill semantics.
 
 ### Dependency integration

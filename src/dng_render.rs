@@ -291,8 +291,12 @@ pub(crate) fn neutral_to_xy(as_shot_neutral: &[f64], color_matrix: &Mat3) -> Opt
 /// 1. Invert ColorMatrix (XYZ→camera becomes camera→XYZ)
 /// 2. Bradford adaptation from camera white to D50
 /// 3. XYZ (D50) → output primaries (sRGB, P3, or BT.2020)
-/// 4. Bake WB into the matrix (divide columns by neutral)
-/// 5. Normalize so neutral maps to equal output
+/// 4. Normalize so neutral maps to equal output
+///
+/// White balance is the Bradford adaptation in step 2: it maps the camera white
+/// (derived from `as_shot_neutral`) to D50. Dividing the columns by the neutral as
+/// well would white-balance twice; step 4 would still keep greys neutral, but every
+/// saturated colour would shift (reds toward magenta).
 ///
 /// `as_shot_neutral`: effective camera-space neutral (AnalogBalance × AsShotNeutral)
 pub(crate) fn compute_camera_to_output_with_wb(
@@ -307,15 +311,7 @@ pub(crate) fn compute_camera_to_output_with_wb(
 
     // XYZ (D50) → output linear RGB
     let output_from_xyz = mat3_invert(output.to_xyz_d50())?;
-    let raw_mat = mat3_mul(&output_from_xyz, &camera_to_xyz_d50);
-
-    // Bake WB: divide columns by neutral
-    let mut wb_mat = raw_mat;
-    for row in &mut wb_mat {
-        for (j, cell) in row.iter_mut().enumerate() {
-            *cell /= as_shot_neutral[j].max(1e-10);
-        }
-    }
+    let wb_mat = mat3_mul(&output_from_xyz, &camera_to_xyz_d50);
 
     // Normalize: neutral → equal output
     let test = mat3_vec(&wb_mat, as_shot_neutral);
@@ -597,44 +593,10 @@ impl DngPipeline {
             (wb_g / wb[2].max(1e-10)) as f64,
         ];
 
-        // Build the combined camera→output matrix with WB baked in
-        let cm_inv = mat3_invert(&color_matrix)?;
-        let output_from_xyz = mat3_invert(output.to_xyz_d50())?;
-
-        // Bradford adaptation from camera white to D50
-        let white_xy = neutral_to_xy(
-            &[
-                effective_neutral[0],
-                effective_neutral[1],
-                effective_neutral[2],
-            ],
-            &color_matrix,
-        )?;
-        let adapt = bradford_adapt(white_xy, D50_XY);
-        let camera_to_xyz_d50 = mat3_mul(&adapt, &cm_inv);
-        let raw_mat = mat3_mul(&output_from_xyz, &camera_to_xyz_d50);
-
-        // Bake WB: divide columns by effective_neutral
-        let mut wb_mat = raw_mat;
-        for row in &mut wb_mat {
-            for (j, cell) in row.iter_mut().enumerate() {
-                *cell /= effective_neutral[j].max(1e-10);
-            }
-        }
-
-        // Normalize: effective_neutral should map to equal sRGB
-        let test_out = mat3_vec(&wb_mat, &effective_neutral);
-        let target = test_out[1];
-        if target.abs() < 1e-10 {
-            return None;
-        }
-        let mut camera_to_output = wb_mat;
-        for (row, &test_val) in camera_to_output.iter_mut().zip(test_out.iter()) {
-            let row_scale = target / test_val.max(1e-10);
-            for cell in row.iter_mut() {
-                *cell *= row_scale;
-            }
-        }
+        // Camera → output, white-balanced by Bradford adaptation from the camera white
+        let white_xy = neutral_to_xy(&effective_neutral, &color_matrix)?;
+        let camera_to_output =
+            compute_camera_to_output_with_wb(&color_matrix, white_xy, &effective_neutral, output)?;
 
         let baseline_exposure = info.baseline_exposure.unwrap_or(0.0);
 
@@ -1572,5 +1534,100 @@ mod tests {
             lum_rg > per_ch_rg,
             "lum-preserving should maintain higher R/G ratio"
         );
+    }
+
+    /// Sony ILCE-6700 `ColorMatrix` (XYZ→camera) and as-shot WB, as rawler reports them.
+    const A6700_CM: Mat3 = [
+        [0.6972, -0.2408, -0.0600],
+        [-0.4330, 1.2101, 0.2515],
+        [-0.0388, 0.1277, 0.5847],
+    ];
+    const A6700_WB: [f32; 4] = [2.383789, 1.0, 1.7714844, f32::NAN];
+
+    /// Saturated scene colours (XYZ under the shot's illuminant) and the sRGB the DNG
+    /// colour model gives for each: Bradford-adapt to D50, then XYZ (D50) → sRGB.
+    /// Returns (camera-space value, expected linear sRGB) pairs.
+    fn saturated_patches(cm: &Mat3, white_xy: (f64, f64)) -> Vec<(Vec3, Vec3)> {
+        let adapt = bradford_adapt(white_xy, D50_XY);
+        let srgb_from_xyz = mat3_invert(&SRGB_TO_XYZ_D50).unwrap();
+        [[0.30, 0.18, 0.05], [0.12, 0.10, 0.45], [0.15, 0.30, 0.10]]
+            .into_iter()
+            .map(|xyz| {
+                let camera = mat3_vec(cm, &xyz);
+                let expected = mat3_vec(&srgb_from_xyz, &mat3_vec(&adapt, &xyz));
+                (camera, expected)
+            })
+            .collect()
+    }
+
+    /// Compares chromaticity (R/G and B/G), since the matrix may carry a global gain.
+    fn assert_same_ratios(actual: &Vec3, expected: &Vec3, what: &str) {
+        for (i, ch) in [(0, "R/G"), (2, "B/G")] {
+            let a = actual[i] / actual[1];
+            let e = expected[i] / expected[1];
+            assert!(
+                (a / e - 1.0).abs() < 0.01,
+                "{what}: {ch} = {a:.4}, expected {e:.4} (actual {actual:?}, expected {expected:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn camera_to_output_applies_white_balance_once() {
+        // The Bradford adaptation already maps the camera neutral to D50 white, so a
+        // second WB (dividing columns by the neutral) would distort every non-neutral
+        // colour while the final row normalisation still keeps greys grey.
+        let neutral = [1.0 / A6700_WB[0] as f64, 1.0, 1.0 / A6700_WB[2] as f64];
+        let white_xy = neutral_to_xy(&neutral, &A6700_CM).unwrap();
+        let mat =
+            compute_camera_to_output_with_wb(&A6700_CM, white_xy, &neutral, OutputPrimaries::Srgb)
+                .unwrap();
+        for (camera, expected) in saturated_patches(&A6700_CM, white_xy) {
+            assert_same_ratios(
+                &mat3_vec(&mat, &camera),
+                &expected,
+                "compute_camera_to_output_with_wb",
+            );
+        }
+    }
+
+    #[test]
+    fn from_raw_info_applies_white_balance_once() {
+        let mut cm = [[0.0f32; 3]; 4];
+        for (dst, src) in cm.iter_mut().zip(A6700_CM.iter()) {
+            for (d, &s) in dst.iter_mut().zip(src.iter()) {
+                *d = s as f32;
+            }
+        }
+        let info = crate::decode::RawInfo {
+            width: 2,
+            height: 2,
+            make: "Sony".into(),
+            model: "ILCE-6700".into(),
+            sensor_width: 2,
+            sensor_height: 2,
+            cfa_pattern: "RGGB".into(),
+            is_dng: false,
+            orientation: 1,
+            bit_depth: Some(14),
+            wb_coeffs: A6700_WB,
+            color_matrix: cm,
+            black_levels: [512.0; 4],
+            white_levels: [15360.0; 4],
+            crop_rect: None,
+            active_area: None,
+            baseline_exposure: None,
+            sensor_layout: crate::decode::SensorLayout::Bayer,
+        };
+        let pipeline = DngPipeline::from_raw_info(&info, OutputPrimaries::Srgb).unwrap();
+        let neutral = [1.0 / A6700_WB[0] as f64, 1.0, 1.0 / A6700_WB[2] as f64];
+        let white_xy = neutral_to_xy(&neutral, &A6700_CM).unwrap();
+        for (camera, expected) in saturated_patches(&A6700_CM, white_xy) {
+            assert_same_ratios(
+                &mat3_vec(&pipeline.camera_to_output, &camera),
+                &expected,
+                "from_raw_info",
+            );
+        }
     }
 }
