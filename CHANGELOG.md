@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Upgrade `archmage` and `magetypes` minimums to `0.9.33` (root and fuzz lockfiles at `0.9.33` while retaining the `zencodec`/`zenpixels` `0.2.17` cohort).
+
 - Bump dependency minimums (`enough`, `bytemuck`, `thiserror`, `zenbench`, `zenutils-apidoc`), refresh fuzz/apidoc lockfiles, and set `--security-opt seccomp=unconfined` on CI `i686` cross containers.
 
 - Fix `OutputMode::Develop` colour for non-DNG RAW: the camera-to-output matrix applied white balance twice (Bradford adaptation, then a column division by the neutral), which kept greys neutral but shifted every saturated colour (blue skies rendered purple, reds magenta) and darkened the image.
