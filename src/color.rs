@@ -48,7 +48,7 @@ pub(crate) fn apply_color_pipeline_stop(
 /// Apply a 3×3 color matrix to interleaved RGB data with clamping.
 ///
 /// Autoversioned: compiles for AVX2/NEON/scalar and dispatches at runtime.
-#[autoversion]
+#[autoversion(v3, neon, wasm128, scalar)]
 fn apply_color_matrix_stop(
     rgb: &mut [f32],
     mat: [[f32; 3]; 3],
@@ -264,7 +264,7 @@ pub fn f32_to_u8_srgb(src: &[f32]) -> alloc::vec::Vec<u8> {
     f32_to_u8_inner(src)
 }
 
-#[autoversion]
+#[autoversion(v3, neon, wasm128, scalar)]
 fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
     src.iter()
         .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)

@@ -522,7 +522,7 @@ fn demosaic_malvar<C: CfaColorAt + ?Sized>(
 ///
 /// Processes all pixels with row ∈ [2, height-2) and col ∈ [2, width-2)
 /// using direct array indexing (no boundary clamping).
-#[autoversion]
+#[autoversion(v3, neon, wasm128, scalar)]
 fn malvar_interior_stop(
     data: &[f32],
     rgb: &mut [f32],

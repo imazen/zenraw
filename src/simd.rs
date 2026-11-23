@@ -95,11 +95,24 @@ fn normalize_uniform_into(
         }
         pulse.advance((src.len() * 8) as u64);
     }
-    for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
-        *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
+    if !src_tail.is_empty() {
+        normalize_uniform_tail_scalar(src_tail, dst_tail, black, inv_range);
     }
     pulse.advance(src_tail.len() as u64);
     Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn normalize_uniform_tail_scalar(
+    src_tail: &[f32],
+    dst_tail: &mut [f32],
+    black: f32,
+    inv_range: f32,
+) {
+    for (s, d) in src_tail.iter().zip(dst_tail.iter_mut()) {
+        *d = ((*s - black) * inv_range).clamp(0.0, 1.0);
+    }
 }
 
 fn normalize_uniform_into_scalar(
