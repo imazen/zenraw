@@ -38,7 +38,7 @@ inventory = ["zenraw/inventory", "dep:zencodec"]
 
 [dependencies.zencodec]
 git = "https://github.com/imazen/zencodec"
-rev = "037ef59b57ae003f853a5b6624b173edfee22d6a"
+rev = "093211c276fbb1781bec1601d7cb6b0fb92f245a"
 optional = true
 
 [[bin]]
@@ -48,9 +48,9 @@ doc = false
 required-features = ["inventory"]
 
 [patch.crates-io]
-zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "42a0c5c83c5c418950eb528d92d57788f6700bcf" }
-zenpixels-convert = { git = "https://github.com/imazen/zenpixels", rev = "42a0c5c83c5c418950eb528d92d57788f6700bcf" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "e0dba0052a839ecfe17e4c911a3761e793605adf" }
+zenpixels-convert = { git = "https://github.com/imazen/zenpixels", rev = "e0dba0052a839ecfe17e4c911a3761e793605adf" }
 garb = { git = "https://github.com/imazen/garb", rev = "457ff8b9153e9d675a39dc098052b2ffeb6206fa" }
 linear-srgb = { git = "https://github.com/imazen/linear-srgb", rev = "ae83f19426737635fee3dd16f228681019f52585" }
-zencodec = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
-zenmeta = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "093211c276fbb1781bec1601d7cb6b0fb92f245a" }
+zenmeta = { git = "https://github.com/imazen/zencodec", rev = "093211c276fbb1781bec1601d7cb6b0fb92f245a" }

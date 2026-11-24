@@ -375,7 +375,7 @@ fn decode_inner(
                     pulse,
                 )
             }
-            OutputMode::Linear => {
+            OutputMode::Linear | OutputMode::LinearExtended => {
                 crate::progress::total(
                     pulse,
                     final_rgb.len() * (5 + usize::from(config.exposure_ev.abs() > 1e-6)),
@@ -397,6 +397,7 @@ fn decode_inner(
                     wb,
                     xyz_to_cam,
                     config.target,
+                    config.output != OutputMode::LinearExtended,
                     pulse,
                 )
                 .map_err(|r| at!(RawError::from(r)))?;
@@ -566,8 +567,15 @@ fn auto_develop_output(
             camera_linear.len() * (3 + usize::from(config.exposure_ev.abs() > 1e-6)),
         );
         let mut rgb = camera_linear;
-        color::apply_color_pipeline_stop(&mut rgb, raw.wb_coeffs, xyz_to_cam, config.target, pulse)
-            .map_err(|r| at!(RawError::from(r)))?;
+        color::apply_color_pipeline_stop(
+            &mut rgb,
+            raw.wb_coeffs,
+            xyz_to_cam,
+            config.target,
+            true,
+            pulse,
+        )
+        .map_err(|r| at!(RawError::from(r)))?;
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
@@ -844,8 +852,15 @@ fn decode_non_bayer(
             } else {
                 raw.wb_coeffs
             };
-            color::apply_color_pipeline_stop(&mut rgb, wb, xyz_to_cam, config.target, pulse)
-                .map_err(|r| at!(RawError::from(r)))?;
+            color::apply_color_pipeline_stop(
+                &mut rgb,
+                wb,
+                xyz_to_cam,
+                config.target,
+                config.output != OutputMode::LinearExtended,
+                pulse,
+            )
+            .map_err(|r| at!(RawError::from(r)))?;
 
             // Apply exposure_ev if nonzero
             if config.exposure_ev.abs() > 1e-6 {
@@ -918,17 +933,23 @@ fn decode_non_bayer(
                     pulse,
                 )
             }
-            OutputMode::Linear | OutputMode::CameraRaw => build_linear_output(
-                final_rgb,
-                final_w,
-                final_h,
-                &raw,
-                xyz_to_cam,
-                is_dng,
-                final_orient,
-                primaries,
-                pulse,
-            ),
+            OutputMode::Linear | OutputMode::LinearExtended | OutputMode::CameraRaw => {
+                build_linear_output(
+                    final_rgb,
+                    final_w,
+                    final_h,
+                    &raw,
+                    xyz_to_cam,
+                    is_dng,
+                    final_orient,
+                    if config.output == OutputMode::CameraRaw {
+                        Primaries::Unknown
+                    } else {
+                        primaries
+                    },
+                    pulse,
+                )
+            }
         }
     })
 }

@@ -47,23 +47,26 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
     for mode in [
         OutputMode::Develop,
         OutputMode::Linear,
+        OutputMode::LinearExtended,
         OutputMode::CameraRaw,
     ] {
         let config = RawDecodeConfig::new().with_output(mode).with_crop(false);
         let native = zenraw::decode(&data, &config, None).unwrap();
         assert_eq!(native.info.bit_depth, Some(10));
-        let exact = native.pixels.facts().exact;
+        let facts = native.pixels.facts();
         if mode == OutputMode::Develop {
+            let exact = facts.depth.expect("measured integer depth");
             assert_eq!(
-                exact.effective_bits, 16,
+                exact.color_bits(),
+                16,
                 "demosaicing/color processing do not inherit the sensor grid"
             );
-            assert!(exact.all_opaque);
+            assert!(facts.all_opaque);
             let view = native.pixels.as_view();
             let samples = view.as_contiguous_as::<u16>().unwrap();
             // An independent full-range reconstruction check rejects every
             // smaller candidate depth for the delivered samples.
-            for bits in 1..exact.effective_bits {
+            for bits in 1..exact.color_bits() {
                 let max = f64::from((1u16 << bits) - 1);
                 assert!(samples.iter().any(|&v| {
                     let code = (f64::from(v) * max / 65535.0).round();
@@ -71,7 +74,7 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
                 }));
             }
         } else {
-            assert_eq!(exact.effective_bits, 0);
+            assert!(facts.depth.is_none());
         }
         #[cfg(feature = "zencodec")]
         for hint in [
@@ -86,6 +89,9 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
                 .decode()
                 .unwrap();
             let pixels = decoded.pixels();
+            if let Some(depth) = pixels.facts().depth {
+                assert!(depth.holds_for(&pixels).unwrap());
+            }
             assert_eq!(decoded.info().source_color.bit_depth, Some(10));
             assert_eq!(
                 pixels.facts(),
@@ -101,4 +107,15 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
             }
         }
     }
+}
+
+#[test]
+fn measured_three_bit_grid_does_not_establish_eight_bit_exactness() {
+    let pixels =
+        zenpixels::PixelBuf::from_vec(vec![[9362u16; 3]], 1, 1, zenpixels::ImageSpec::rgb16_srgb())
+            .unwrap();
+    let depth = zenpixels::ExactDepth::measure(&pixels.as_view()).unwrap();
+    assert_eq!(depth.color_bits(), 3);
+    assert!(depth.holds_for(&pixels.as_view()).unwrap());
+    assert!(!depth.color_exact_at(8));
 }

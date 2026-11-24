@@ -373,7 +373,11 @@ fn remap_pixels(
     pace.finish()
         .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
     out.set_facts(src.facts());
-    Ok(out.with_hdr(src.hdr()))
+    let out = out.with_hdr(src.hdr());
+    Ok(match src.origin() {
+        Some(origin) => out.with_origin(origin.clone()),
+        None => out,
+    })
 }
 
 #[cfg(test)]

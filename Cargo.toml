@@ -26,8 +26,8 @@ whereat = { version = "0.1.5", default-features = false }
 enough = { version = "0.4.5", default-features = false }
 how-far = { version = "0.1.0", default-features = false }
 zenpixels = { version = "0.5", default-features = false }
-zencodec = { version = ">=0.2.0, <0.4.0", optional = true }
-zenmeta = { version = "0.1.0", default-features = false, features = ["inventory"], optional = true }
+zencodec = { version = ">=0.3.0, <0.5.0", optional = true }
+zenmeta = { version = "0.2.0", default-features = false, features = ["inventory"], optional = true }
 archmage = { version = "0.9.33", default-features = false }
 magetypes = { version = "0.9.33", default-features = false }
 bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
@@ -44,7 +44,8 @@ bytemuck = "1.25.2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 zenbench = { version = "0.1.11", features = ["criterion-compat"] }
 # Decoder-only inventory conformance checks preserve the native error type.
-zencodec-testkit = ">=0.1.0, <0.3.0"
+zencodec-testkit = ">=0.3.0, <0.5.0"
+zenpixels-convert = { version = "0.5", default-features = false }
 
 [[bench]]
 name = "decode_bench"
@@ -80,13 +81,13 @@ harness = false
 required-features = ["_dev"]
 
 [patch.crates-io]
-zenmeta = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
-zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "42a0c5c83c5c418950eb528d92d57788f6700bcf" }
+zenmeta = { git = "https://github.com/imazen/zencodec", rev = "093211c276fbb1781bec1601d7cb6b0fb92f245a" }
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "e0dba0052a839ecfe17e4c911a3761e793605adf" }
 garb = { git = "https://github.com/imazen/garb", rev = "457ff8b9153e9d675a39dc098052b2ffeb6206fa" }
 linear-srgb = { git = "https://github.com/imazen/linear-srgb", rev = "ae83f19426737635fee3dd16f228681019f52585" }
-zenpixels-convert = { git = "https://github.com/imazen/zenpixels", rev = "42a0c5c83c5c418950eb528d92d57788f6700bcf" }
-zencodec = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
-zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
+zenpixels-convert = { git = "https://github.com/imazen/zenpixels", rev = "e0dba0052a839ecfe17e4c911a3761e793605adf" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "093211c276fbb1781bec1601d7cb6b0fb92f245a" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "093211c276fbb1781bec1601d7cb6b0fb92f245a" }
 
 [[test]]
 name = "inventory"

@@ -217,7 +217,6 @@ fn apply_orientation_to_output_pulse(
         buf
     } else {
         crate::orient::apply_orientation_pixels(&buf.as_view(), resolved, alloc_pref, pulse)?
-            .with_origin(buf.origin().clone())
     };
     details.info.width = buf.width();
     details.info.height = buf.height();
@@ -851,7 +850,9 @@ pub struct RawDecoder<'a> {
 // target primaries remain controlled by the native config.
 fn preferred_output(configured: OutputMode, preferred: &[ImageSpec]) -> OutputMode {
     let linear_layout = ImageSpec::rgbf32_linear().layout;
-    if preferred.iter().any(|spec| spec.layout == linear_layout) {
+    if configured != OutputMode::LinearExtended
+        && preferred.iter().any(|spec| spec.layout == linear_layout)
+    {
         OutputMode::Linear
     } else {
         configured
@@ -1091,6 +1092,51 @@ mod orientation_tests {
             baked.pixels().try_contiguous_bytes().unwrap().as_ref(),
             &before[..]
         );
+    }
+
+    #[test]
+    fn correct_keeps_source_origin_and_extended_samples() {
+        use zencodec::decode::RowMetadata;
+        use zenpixels::{Cicp, ColorOrigin, FloatFacts, Primaries, SampleFacts};
+
+        let origin = ColorOrigin::from_cicp(Cicp::new(9, 13, 0, true));
+        let spec = ImageSpec::rgbf32_linear().with_primaries(Primaries::DisplayP3);
+        let samples = vec![[2.0f32, -0.25, 0.5], [4.0, 0.5, 0.25]];
+        let mut buf = PixelBuf::from_vec(samples, 1, 2, spec.clone())
+            .unwrap()
+            .with_origin(origin.clone());
+        let facts = SampleFacts::from_float(FloatFacts::FINITE);
+        buf.set_facts(facts);
+        let view = buf.as_view();
+        assert_eq!(view.origin(), Some(&origin));
+        let converted = zenpixels_convert::apply_orientation(&view, Orientation::Rotate90).unwrap();
+        let info = ImageInfo::new(1, 2, ImageFormat::Custom(&DNG_FORMAT))
+            .with_orientation(Orientation::Rotate90);
+        let corrected =
+            apply_orientation_to_output(DecodeOutput::new(buf, info), OrientationHint::Correct);
+        let pixels = corrected.pixels();
+        assert_eq!((pixels.width(), pixels.rows()), (2, 1));
+        assert_eq!(corrected.info().orientation, Orientation::Identity);
+        assert_eq!(pixels.spec(), &spec);
+        assert_eq!(pixels.origin(), Some(&origin));
+        assert_eq!(pixels.facts(), facts);
+        assert_eq!(
+            pixels.row_as::<f32>(0).unwrap(),
+            &[4.0, 0.5, 0.25, 2.0, -0.25, 0.5]
+        );
+        let converted = converted.as_view();
+        assert_eq!(converted.spec(), pixels.spec());
+        assert_eq!(converted.origin(), pixels.origin());
+        assert_eq!(converted.facts(), pixels.facts());
+        assert_eq!(converted.row(0), pixels.row(0));
+
+        let row_ptr = pixels.row(0).as_ptr();
+        let twice = apply_orientation_to_output(corrected, OrientationHint::Correct);
+        assert_eq!(twice.pixels().row(0).as_ptr(), row_ptr);
+        assert_eq!(twice.info().orientation, Orientation::Identity);
+        let metadata = RowMetadata::from_view(&twice.pixels());
+        assert_eq!(metadata.origin, Some(origin));
+        assert_eq!(metadata.facts, facts);
     }
 
     #[test]

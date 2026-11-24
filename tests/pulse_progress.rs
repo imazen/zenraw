@@ -127,6 +127,7 @@ fn tracked_decode_counts_exact_work_and_preserves_pixels() {
         for mode in [
             OutputMode::CameraRaw,
             OutputMode::Linear,
+            OutputMode::LinearExtended,
             OutputMode::Develop,
         ] {
             for orientation in 1..=8 {
@@ -425,6 +426,7 @@ mod adapter {
         storage: Vec<u32>,
         stride: usize,
         finished: bool,
+        metadata: Option<zencodec::decode::RowMetadata>,
     }
 
     impl zencodec::decode::DecodeRowSink for PaddedSink {
@@ -459,6 +461,27 @@ mod adapter {
             .map_err(|e| e.to_string().into())
         }
 
+        fn max_buffer_rows(&self) -> std::num::NonZeroU32 {
+            std::num::NonZeroU32::new(3).unwrap()
+        }
+
+        fn provide_buffer_with_metadata(
+            &mut self,
+            meta: zencodec::decode::BatchMeta,
+            height: u32,
+            width: u32,
+            spec: zenpixels::ImageSpec,
+            metadata: &zencodec::decode::RowMetadata,
+        ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
+            assert!(meta.is_final && height <= self.max_buffer_rows().get());
+            if let Some(held) = &mut self.metadata {
+                held.merge(metadata)?;
+            } else {
+                self.metadata = Some(metadata.clone());
+            }
+            self.provide_next_buffer(meta.y, height, width, spec)
+        }
+
         fn finish(&mut self) -> Result<(), zencodec::decode::SinkError> {
             self.finished = true;
             Ok(())
@@ -468,6 +491,10 @@ mod adapter {
     impl PaddedSink {
         fn assert_pixels(&self, expected: &zenpixels::PixelView<'_>) {
             assert!(self.finished);
+            assert_eq!(
+                self.metadata.as_ref(),
+                Some(&zencodec::decode::RowMetadata::from_view(expected))
+            );
             let bytes = bytemuck::cast_slice::<u32, u8>(&self.storage);
             assert_eq!(bytes.len(), self.stride * expected.rows() as usize);
             for (y, row) in bytes.chunks_exact(self.stride).enumerate() {
@@ -493,6 +520,10 @@ mod adapter {
             for (mode, target) in [
                 (OutputMode::Develop, zenraw::OutputPrimaries::DisplayP3),
                 (OutputMode::Linear, zenraw::OutputPrimaries::Bt2020),
+                (
+                    OutputMode::LinearExtended,
+                    zenraw::OutputPrimaries::DisplayP3,
+                ),
                 (OutputMode::CameraRaw, zenraw::OutputPrimaries::Srgb),
             ] {
                 for (bake, hint) in [
