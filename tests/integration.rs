@@ -191,11 +191,11 @@ fn full_pipeline_synthetic_data() {
     assert_eq!(u8_data.len(), width * height * 3);
 
     // Build pixel buffer
-    let buf = zenpixels::PixelBuffer::from_vec(
+    let buf = zenpixels::PixelBuf::from_vec(
         u8_data,
         width as u32,
         height as u32,
-        zenpixels::PixelDescriptor::RGB8_SRGB,
+        zenpixels::ImageSpec::rgb8_srgb(),
     )
     .expect("buffer creation");
 
@@ -262,10 +262,7 @@ fn decode_real_raw_file() {
     // Test decode with default settings (display-ready u16 sRGB)
     let config = RawDecodeConfig::default();
     let output = zenraw::decode(&data, &config, None).expect("decode should succeed");
-    assert_eq!(
-        output.pixels.descriptor(),
-        zenpixels::PixelDescriptor::RGB16_SRGB
-    );
+    assert_eq!(output.pixels.spec(), &zenpixels::ImageSpec::rgb16_srgb());
     assert!(output.info.width > 0);
     assert!(output.info.height > 0);
 
@@ -273,8 +270,8 @@ fn decode_real_raw_file() {
     let config_linear = RawDecodeConfig::new().with_output(OutputMode::Linear);
     let output_linear = zenraw::decode(&data, &config_linear, None).expect("linear decode");
     assert_eq!(
-        output_linear.pixels.descriptor(),
-        zenpixels::PixelDescriptor::RGBF32_LINEAR
+        output_linear.pixels.spec(),
+        &zenpixels::ImageSpec::rgbf32_linear()
     );
 
     // Test decode with bilinear demosaic
@@ -286,8 +283,8 @@ fn decode_real_raw_file() {
     let config_p3 = RawDecodeConfig::new().with_target(OutputPrimaries::DisplayP3);
     let output_p3 = zenraw::decode(&data, &config_p3, None).expect("P3 decode");
     assert_eq!(
-        output_p3.pixels.descriptor().primaries,
-        zenpixels::ColorPrimaries::DisplayP3
+        output_p3.pixels.spec(),
+        &zenpixels::ImageSpec::rgb16_srgb().with_primaries(zenpixels::Primaries::DisplayP3)
     );
 
     // Test decode with BT.2020 linear
@@ -296,16 +293,16 @@ fn decode_real_raw_file() {
         .with_output(OutputMode::Linear);
     let output_bt2020 = zenraw::decode(&data, &config_bt2020, None).expect("BT.2020 decode");
     assert_eq!(
-        output_bt2020.pixels.descriptor().primaries,
-        zenpixels::ColorPrimaries::Bt2020
+        output_bt2020.pixels.spec(),
+        &zenpixels::ImageSpec::rgb16_srgb().with_primaries(zenpixels::Primaries::Bt2020)
     );
 
     // Test CameraRaw reports Unknown primaries
     let config_raw = RawDecodeConfig::new().with_output(OutputMode::CameraRaw);
     let output_raw = zenraw::decode(&data, &config_raw, None).expect("CameraRaw decode");
     assert_eq!(
-        output_raw.pixels.descriptor().primaries,
-        zenpixels::ColorPrimaries::Unknown
+        output_raw.pixels.spec(),
+        &zenpixels::ImageSpec::rgbf32_linear().with_primaries(zenpixels::Primaries::Unknown)
     );
 
     eprintln!("All decode modes successful for {}", path.display());
@@ -389,10 +386,7 @@ mod darktable_tests {
         let output = zenraw::darktable::decode_file(&path, &config)
             .expect("darktable decode should succeed");
 
-        assert_eq!(
-            output.pixels.descriptor(),
-            zenpixels::PixelDescriptor::RGBF32_LINEAR
-        );
+        assert_eq!(output.pixels.spec(), &zenpixels::ImageSpec::rgbf32_linear());
         assert!(output.info.width > 0);
         assert!(output.info.height > 0);
         eprintln!(
@@ -401,7 +395,7 @@ mod darktable_tests {
         );
 
         // Verify output is reasonable (not all zeros or all ones)
-        let data = output.pixels.copy_to_contiguous_bytes();
+        let data = output.pixels.as_view().try_contiguous_bytes().unwrap();
         let floats: Vec<f32> = data
             .as_chunks::<4>()
             .0
@@ -429,10 +423,7 @@ mod darktable_tests {
         let config = DtConfig::new().with_color_profile(DtColorProfile::LinearRec2020);
         let output = zenraw::darktable::decode_file(&path, &config).expect("rec2020 decode");
 
-        assert_eq!(
-            output.pixels.descriptor(),
-            zenpixels::PixelDescriptor::RGBF32_LINEAR
-        );
+        assert_eq!(output.pixels.spec(), &zenpixels::ImageSpec::rgbf32_linear());
         eprintln!(
             "darktable Rec.2020 decoded: {}x{}",
             output.info.width, output.info.height

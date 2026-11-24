@@ -173,7 +173,7 @@ fn decode_f32(mode: zenraw::OutputMode) -> Vec<f32> {
     let data = dng_full_range();
     let config = RawDecodeConfig::new().with_output(mode);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.copy_to_contiguous_bytes();
+    let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
     bytes
         .as_chunks::<4>()
         .0
@@ -228,7 +228,7 @@ fn exposure_ev_multiplies_after_the_clamp() {
         .with_output(zenraw::OutputMode::Linear)
         .with_exposure_ev(3.0);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.copy_to_contiguous_bytes();
+    let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
     let values: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -351,7 +351,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 6x6 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.copy_to_contiguous_bytes();
+        let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -395,7 +395,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 2x2 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.copy_to_contiguous_bytes();
+        let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -503,13 +503,19 @@ fn decode_with_non_firing_stop_is_byte_identical() {
     let base = zenraw::decode(&data, &config, None)
         .expect("baseline decode")
         .pixels
-        .copy_to_contiguous_bytes();
+        .as_view()
+        .try_contiguous_bytes()
+        .unwrap()
+        .into_owned();
 
     let metered = CountdownStop::new(u64::MAX);
     let out = zenraw::decode(&data, &config, Some(&how_far::StopOnly::borrowed(&metered)))
         .expect("decode with non-firing stop")
         .pixels
-        .copy_to_contiguous_bytes();
+        .as_view()
+        .try_contiguous_bytes()
+        .unwrap()
+        .into_owned();
 
     assert_eq!(base, out, "stop checks changed the output bytes");
     assert!(

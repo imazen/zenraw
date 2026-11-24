@@ -99,8 +99,8 @@ fn bench_decode(suite: &mut Suite) {
         assert_eq!(scalar.pixels.width(), simd.pixels.width());
         assert_eq!(scalar.pixels.height(), simd.pixels.height());
         assert_eq!(
-            scalar.pixels.as_contiguous_bytes().unwrap(),
-            simd.pixels.as_contiguous_bytes().unwrap()
+            scalar.pixels.as_view().as_contiguous_bytes().unwrap(),
+            simd.pixels.as_view().as_contiguous_bytes().unwrap()
         );
         let pixels = u64::from(simd.pixels.width()) * u64::from(simd.pixels.height());
         eprintln!(

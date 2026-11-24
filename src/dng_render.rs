@@ -20,7 +20,7 @@ use alloc::format;
 use alloc::vec::Vec;
 
 // Re-export zenpixels for to_color_primaries()
-use zenpixels::ColorPrimaries;
+use zenpixels::Primaries;
 
 use whereat::at;
 
@@ -91,12 +91,12 @@ impl OutputPrimaries {
         }
     }
 
-    /// Convert to the corresponding [`zenpixels::ColorPrimaries`] value.
-    pub fn to_color_primaries(self) -> ColorPrimaries {
+    /// Convert to the corresponding [`zenpixels::Primaries`] value.
+    pub fn to_color_primaries(self) -> Primaries {
         match self {
-            Self::Srgb => ColorPrimaries::Bt709,
-            Self::DisplayP3 => ColorPrimaries::DisplayP3,
-            Self::Bt2020 => ColorPrimaries::Bt2020,
+            Self::Srgb => Primaries::Bt709,
+            Self::DisplayP3 => Primaries::DisplayP3,
+            Self::Bt2020 => Primaries::Bt2020,
         }
     }
 }
@@ -464,14 +464,17 @@ pub(crate) fn linear_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
     output
 }
 
-/// Convert linear f32 \[0,1\] RGB data to sRGB-gamma u16 \[0,65535\] byte data.
+/// Convert linear f32 \[0,1\] RGB data to sRGB-gamma u16 \[0,65535\] samples.
 pub(crate) fn linear_to_srgb_u16(
     linear: &[f32],
+    alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
-) -> core::result::Result<Vec<u8>, enough::StopReason> {
-    let mut output = Vec::with_capacity(linear.len() * 2);
+) -> crate::Result<Vec<u16>> {
+    let mut output = crate::alloc_util::vec_with_capacity(alloc_pref, true, linear.len())?;
     for batch in linear.chunks(1 << 18) {
-        pulse.check()?;
+        pulse
+            .check()
+            .map_err(|reason| whereat::at!(crate::RawError::from(reason)))?;
         for &v in batch {
             let v = v.clamp(0.0, 1.0);
             let srgb = if v <= 0.003_130_8 {
@@ -480,7 +483,7 @@ pub(crate) fn linear_to_srgb_u16(
                 1.055 * v.powf(1.0 / 2.4) - 0.055
             };
             let val = (srgb * 65535.0 + 0.5) as u16;
-            output.extend_from_slice(&val.to_ne_bytes());
+            output.push(val);
         }
         pulse.advance(batch.len() as u64);
     }
@@ -1232,7 +1235,7 @@ mod tests {
 
         let dw = output.pixels.width();
         let dh = output.pixels.height();
-        let raw_bytes = output.pixels.copy_to_contiguous_bytes();
+        let raw_bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
         let camera_raw: &[f32] = bytemuck::cast_slice(&raw_bytes);
         eprintln!(
             "Camera-space raw: {}x{}, {} floats",
@@ -1371,7 +1374,7 @@ mod tests {
         if let Ok(output) = crate::decode(&data, &config, None) {
             let w = output.pixels.width();
             let h = output.pixels.height();
-            let bytes = output.pixels.copy_to_contiguous_bytes();
+            let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
             let raw: &[f32] = bytemuck::cast_slice(&bytes);
             let npix = (w as usize) * (h as usize);
             let (mut r, mut g, mut b) = (0.0f64, 0.0f64, 0.0f64);

@@ -1,9 +1,12 @@
-#![cfg(all(feature = "zencodec", any(feature = "rawloader", feature = "rawler")))]
+#![cfg(any(feature = "rawloader", feature = "rawler"))]
 #[path = "support/dng_builder.rs"]
 mod dng_builder;
 use dng_builder::*;
+#[cfg(feature = "zencodec")]
 use std::borrow::Cow;
+#[cfg(feature = "zencodec")]
 use zencodec::decode::{Decode, DecodeJob, DecoderConfig};
+#[cfg(feature = "zencodec")]
 use zencodec::{Orientation, OrientationHint};
 use zenraw::{OutputMode, RawDecodeConfig};
 
@@ -49,20 +52,28 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
         let config = RawDecodeConfig::new().with_output(mode).with_crop(false);
         let native = zenraw::decode(&data, &config, None).unwrap();
         assert_eq!(native.info.bit_depth, Some(10));
+        let exact = native.pixels.facts().exact;
         if mode == OutputMode::Develop {
-            let exact = native
-                .pixels
-                .exact_depth()
-                .expect("developed integer samples have evidence");
             assert_eq!(
-                exact.color_bits(),
-                16,
+                exact.effective_bits, 16,
                 "demosaicing/color processing do not inherit the sensor grid"
             );
-            assert!(exact.holds_for(&native.pixels.as_slice()).unwrap());
+            assert!(exact.all_opaque);
+            let view = native.pixels.as_view();
+            let samples = view.as_contiguous_as::<u16>().unwrap();
+            // An independent full-range reconstruction check rejects every
+            // smaller candidate depth for the delivered samples.
+            for bits in 1..exact.effective_bits {
+                let max = f64::from((1u16 << bits) - 1);
+                assert!(samples.iter().any(|&v| {
+                    let code = (f64::from(v) * max / 65535.0).round();
+                    (code * 65535.0 / max).round() as u16 != v
+                }));
+            }
         } else {
-            assert!(native.pixels.exact_depth().is_none());
+            assert_eq!(exact.effective_bits, 0);
         }
+        #[cfg(feature = "zencodec")]
         for hint in [
             OrientationHint::Preserve,
             OrientationHint::ExactTransform(Orientation::FlipH),

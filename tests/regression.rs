@@ -148,7 +148,7 @@ fn darktable_decode_srgb(path: &Path) -> Option<(Vec<[u8; 3]>, u32, u32)> {
     let output = zenraw::darktable::decode_file(path, &config).ok()?;
     let w = output.info.width;
     let h = output.info.height;
-    let bytes = output.pixels.copy_to_contiguous_bytes();
+    let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
     let pixels = linear_f32_to_srgb_u8(&bytes, w, h);
     Some((pixels, w, h))
 }
@@ -163,7 +163,7 @@ fn zenraw_decode_srgb(data: &[u8]) -> Option<(Vec<[u8; 3]>, u32, u32)> {
         let output = zenraw::decode(&data, &config, None).ok()?;
         let w = output.info.width;
         let h = output.info.height;
-        let bytes = output.pixels.copy_to_contiguous_bytes();
+        let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
         // Convert u16 to u8 by taking high byte
         let pixels: Vec<[u8; 3]> = bytes
             .as_chunks::<6>() // 3 channels × 2 bytes
@@ -327,7 +327,7 @@ fn regression_darktable_dng_batch() {
                 let h = output.info.height;
 
                 // Verify reasonable output
-                let bytes = output.pixels.copy_to_contiguous_bytes();
+                let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
                 let floats: Vec<f32> = bytes
                     .as_chunks::<4>()
                     .0

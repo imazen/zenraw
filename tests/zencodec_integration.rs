@@ -89,7 +89,7 @@ fn probe_and_output_info() {
     assert!(output_info.height > 0);
     assert_eq!(
         output_info.native_format.format,
-        zenpixels::PixelFormat::Rgb16
+        zenpixels_legacy::PixelFormat::Rgb16
     );
 }
 
@@ -107,7 +107,7 @@ fn output_info_linear() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format.format,
-        zenpixels::PixelFormat::RgbF32
+        zenpixels_legacy::PixelFormat::RgbF32
     );
 }
 
@@ -125,7 +125,7 @@ fn output_info_camera_raw_primaries_unknown() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format.primaries,
-        zenpixels::ColorPrimaries::Unknown
+        zenpixels_legacy::ColorPrimaries::Unknown
     );
 }
 
@@ -143,7 +143,7 @@ fn output_info_display_p3_primaries() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format.primaries,
-        zenpixels::ColorPrimaries::DisplayP3
+        zenpixels_legacy::ColorPrimaries::DisplayP3
     );
 }
 
@@ -179,12 +179,15 @@ fn decode_prefers_linear_when_requested() {
     let decoder = job
         .decoder(
             Cow::Borrowed(&data),
-            &[zenpixels::PixelDescriptor::RGBF32_LINEAR],
+            &[zenpixels_legacy::PixelDescriptor::RGBF32_LINEAR],
         )
         .expect("decoder creation failed");
     let output = decoder.decode().expect("decode failed");
 
-    assert_eq!(output.descriptor().format, zenpixels::PixelFormat::RgbF32);
+    assert_eq!(
+        output.descriptor().format,
+        zenpixels_legacy::PixelFormat::RgbF32
+    );
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────
@@ -284,7 +287,7 @@ fn decode_bt2020_primaries() {
 
     assert_eq!(
         output.descriptor().primaries,
-        zenpixels::ColorPrimaries::Bt2020
+        zenpixels_legacy::ColorPrimaries::Bt2020
     );
 }
 
@@ -306,7 +309,7 @@ fn decode_display_p3_develop() {
 
     assert_eq!(
         output.descriptor().primaries,
-        zenpixels::ColorPrimaries::DisplayP3
+        zenpixels_legacy::ColorPrimaries::DisplayP3
     );
 }
 
@@ -315,7 +318,7 @@ fn decode_display_p3_develop() {
 #[test]
 fn estimate_decode_resources_scales_and_is_serial() {
     use zencodec::estimate::{ComputeEnvironment, ImageCharacteristics, ThreadingInformation};
-    use zenpixels::PixelDescriptor;
+    use zenpixels_legacy::PixelDescriptor;
 
     let config = zenraw::RawDecoderConfig::new();
     let compute = ComputeEnvironment::conservative().with_cores(8);

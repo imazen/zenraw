@@ -300,7 +300,7 @@ fn remap(
 /// source and avoiding an intermediate contiguous full-image copy.
 #[cfg(feature = "zencodec")]
 pub(crate) fn apply_orientation_pixels(
-    src: &zenpixels::PixelSlice<'_>,
+    src: &zenpixels_legacy::PixelSlice<'_>,
     orientation: u16,
     alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
@@ -327,7 +327,7 @@ pub(crate) fn apply_orientation_pixels(
 
 #[cfg(feature = "zencodec")]
 fn remap_pixels(
-    src: &zenpixels::PixelSlice<'_>,
+    src: &zenpixels_legacy::PixelSlice<'_>,
     (width, height): (usize, usize),
     alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
@@ -359,8 +359,8 @@ mod tests {
         use how_far::{Complete, Outcome, Total};
         use how_far_along::{Phase, PulseTree};
         for descriptor in [
-            zenpixels::PixelDescriptor::RGB16_SRGB,
-            zenpixels::PixelDescriptor::RGBF32_LINEAR,
+            zenpixels_legacy::PixelDescriptor::RGB16_SRGB,
+            zenpixels_legacy::PixelDescriptor::RGBF32_LINEAR,
         ] {
             let (w, h) = (5usize, 3usize);
             let bpp = descriptor.bytes_per_pixel();
@@ -376,7 +376,8 @@ mod tests {
                 }
             }
             let src =
-                zenpixels::PixelSlice::new(bytes, w as u32, h as u32, stride, descriptor).unwrap();
+                zenpixels_legacy::PixelSlice::new(bytes, w as u32, h as u32, stride, descriptor)
+                    .unwrap();
             for orientation in 1..=8 {
                 let pulse =
                     PulseTree::new(Phase::new("orient", Total::Unknown), how_far::Unstoppable);

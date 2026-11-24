@@ -57,7 +57,7 @@ mod incremental_admission {
     use zencodec::decode::{
         DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
     };
-    use zenpixels::{PixelDescriptor, PixelSliceMut};
+    use zenpixels_legacy::{PixelDescriptor, PixelSliceMut};
     use zenraw::{RawError, RawLimitKind};
 
     // Padded caller-owned rows exercise the shared helper's real sink path.

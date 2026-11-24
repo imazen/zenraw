@@ -11,20 +11,12 @@
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 extern crate std;
 
-// These three are only used by the rawloader-backend functions in this
-// module; the rawler backend lives in `rawler_backend.rs`. Gating them on
-// `rawloader` keeps a rawler-only build warning-free.
-#[cfg(feature = "rawloader")]
 use alloc::vec::Vec;
 
-#[cfg(feature = "rawloader")]
-#[cfg(feature = "rawloader")]
 use whereat::ResultAtExt;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use whereat::at;
-use zenpixels::PixelBuffer;
-#[cfg(feature = "rawloader")]
-use zenpixels::PixelDescriptor;
+use zenpixels::{ExactDepth, ImageSpec, PixelBuf, Primaries, SampleFacts, SampleType};
 
 pub use crate::dng_render::OutputPrimaries;
 
@@ -41,14 +33,11 @@ use crate::error::{RawError, RawLimitKind, Result};
 #[non_exhaustive]
 pub enum OutputMode {
     /// Full develop: WB + color matrix + tone curve + gamma.
-    /// Produces display-ready, sRGB-encoded **u16** RGB
-    /// (`PixelDescriptor::RGB16_SRGB`) in target primaries — never u8, never
-    /// f32. Narrow to u8 yourself if you need 8-bit output.
+    /// Produces display-ready **u16** RGB with the sRGB transfer in the target primaries.
     #[default]
     Develop,
     /// Linear scene-referred: WB + color matrix only.
-    /// Produces **f32** linear RGB (`PixelDescriptor::RGBF32_LINEAR`) in
-    /// target primaries.
+    /// Produces **f32** linear RGB in the target primaries.
     ///
     /// **Clamped to `[0, 1]` by the colour pipeline.** The combined
     /// white-balance + camera→output matrix is applied by
@@ -66,7 +55,7 @@ pub enum OutputMode {
     /// overshoot survives.
     Linear,
     /// Raw camera values: no WB, no color matrix.
-    /// Produces **f32** RGB (`PixelDescriptor::RGBF32_LINEAR`, primaries
+    /// Produces **f32** RGB (linear transfer, primaries
     /// `Unknown`) in camera color space.
     ///
     /// The only mode that is **not clamped to `1.0`**. Sensor samples are
@@ -265,31 +254,132 @@ impl RawDecodeConfig {
 #[non_exhaustive]
 pub struct RawDecodeOutput {
     /// Decoded pixel buffer. The format follows [`RawDecodeConfig::output`]:
-    /// [`Develop`](OutputMode::Develop) produces `RGB16_SRGB` (u16 sRGB), while
+    /// [`Develop`](OutputMode::Develop) produces u16 RGB with the sRGB transfer, while
     /// [`Linear`](OutputMode::Linear) and [`CameraRaw`](OutputMode::CameraRaw)
-    /// produce `RGBF32_LINEAR` (f32 linear).
-    pub pixels: PixelBuffer,
+    /// produce linear f32 RGB. CameraRaw has unknown primaries.
+    pub pixels: PixelBuf,
     /// Decoded image metadata.
     pub info: RawInfo,
 }
 
-/// Describe the delivered integer grid, after every value-changing operation.
-/// Sensor precision does not establish this property after development.
-pub(crate) fn output_with_exact_depth(
-    mut pixels: PixelBuffer,
+/// Wrap the samples and describe the delivered grid after all value changes.
+pub(crate) fn make_output<P: bytemuck::Pod>(
+    samples: Vec<P>,
     info: RawInfo,
+    spec: ImageSpec,
 ) -> crate::Result<RawDecodeOutput> {
-    if matches!(
-        pixels.descriptor().channel_type(),
-        zenpixels::ChannelType::U8 | zenpixels::ChannelType::U16
-    ) {
-        let exact = zenpixels::sample::ExactDepth::measure(&pixels.as_slice())
-            .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
-        pixels
-            .set_exact_depth(Some(exact))
-            .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
-    }
+    let mut pixels = PixelBuf::from_vec(samples, info.width, info.height, spec)
+        .map_err_at(crate::RawError::Buffer)?;
+    // zenpixels-convert 0.5 only scans for an 8-bit grid and treats U16
+    // evidence of <=8 bits as safe for U8. For U16, only offer 8-bit evidence
+    // when the actual 8-bit grid holds, and search wider grids otherwise.
+    let view = pixels.as_view();
+    let facts = match pixels.spec().layout.sample {
+        SampleType::U8 => measure_rgb_depth(
+            view.as_contiguous_as::<u8>()
+                .map_err_at(crate::RawError::Buffer)?,
+            8,
+        ),
+        SampleType::U16 => measure_rgb_depth(
+            view.as_contiguous_as::<u16>()
+                .map_err_at(crate::RawError::Buffer)?,
+            16,
+        ),
+        _ => return Ok(RawDecodeOutput { pixels, info }),
+    };
+    pixels.set_facts(facts);
     Ok(RawDecodeOutput { pixels, info })
+}
+
+/// Find the smallest supported full-range grid, eliminating candidates on their first mismatch.
+fn measure_rgb_depth(
+    samples: &[impl Copy + Into<u32> + PartialEq],
+    storage_bits: u8,
+) -> SampleFacts {
+    let storage_max = (1 << storage_bits) - 1;
+    let storage_grid = 1u32 << (storage_bits - 1);
+    let mut candidates = (storage_grid << 1) - 1;
+    if storage_bits == 16 {
+        candidates &= !0x7f;
+    }
+    let mut all_grayscale = true;
+    for rgb in samples.as_chunks::<3>().0 {
+        all_grayscale &= rgb[0] == rgb[1] && rgb[1] == rgb[2];
+        for &sample in rgb {
+            let v = sample.into();
+            if v == 0 || v == storage_max {
+                continue;
+            }
+            let mut remaining = candidates & !storage_grid;
+            while remaining != 0 {
+                let bit = remaining & remaining.wrapping_neg();
+                let max = (bit << 1) - 1;
+                let code = (v * max + storage_max / 2) / storage_max;
+                if (code * storage_max + max / 2) / max != v {
+                    candidates &= !bit;
+                }
+                remaining &= !bit;
+            }
+        }
+        if !all_grayscale && candidates.is_power_of_two() {
+            break;
+        }
+    }
+    SampleFacts {
+        exact: ExactDepth {
+            effective_bits: candidates.trailing_zeros() as u8 + 1,
+            all_opaque: true,
+            all_grayscale,
+        },
+        ..SampleFacts::NONE
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn rgb16_grid_evidence_preserves_precision_and_requires_actual_8_bit_membership() {
+    let three_bit = measure_rgb_depth(&[9362u16; 3], 16).exact;
+    assert_eq!(three_bit.effective_bits, 9);
+    assert!(three_bit.all_grayscale);
+    assert!(three_bit.all_opaque);
+    assert_eq!(
+        measure_rgb_depth(&[0u16, 257, 65535], 16)
+            .exact
+            .effective_bits,
+        8
+    );
+    assert_eq!(
+        measure_rgb_depth(&[0u16, 64, 65535], 16)
+            .exact
+            .effective_bits,
+        10
+    );
+    assert_eq!(
+        measure_rgb_depth(&[0u16, 16, 65535], 16)
+            .exact
+            .effective_bits,
+        12
+    );
+}
+
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
+pub(crate) fn make_linear_output(
+    samples: Vec<f32>,
+    info: RawInfo,
+    primaries: Primaries,
+    pulse: &dyn how_far::Pulse,
+) -> Result<RawDecodeOutput> {
+    pulse
+        .check()
+        .map_err(|reason| at!(RawError::from(reason)))?;
+    let bytes = core::mem::size_of_val(samples.as_slice());
+    let output = make_output(
+        samples,
+        info,
+        ImageSpec::rgbf32_linear().with_primaries(primaries),
+    )?;
+    pulse.advance(bytes as u64);
+    Ok(output)
 }
 
 /// Reject the decode early if image dimensions blow past `max_pixels` OR the
@@ -561,7 +651,7 @@ fn rawloader_sensor_layout(raw: &rawloader::RawImage) -> SensorLayout {
 /// 4. Apply white balance + camera→sRGB color matrix
 /// 5. Optionally apply sRGB gamma curve
 /// 6. Optionally crop to the camera's recommended region
-/// 7. Return as a PixelBuffer
+/// 7. Return as a PixelBuf
 #[cfg(feature = "rawloader")]
 pub(crate) fn decode(
     data: &[u8],
@@ -769,70 +859,7 @@ fn decode_inner(
         sensor_layout: rawloader_sensor_layout(&raw),
     };
 
-    progress.run(|pulse| {
-        crate::progress::total(
-            pulse,
-            final_rgb.len()
-                * if config.output == OutputMode::Develop {
-                    2
-                } else {
-                    4
-                },
-        );
-        match config.output {
-            OutputMode::Develop => {
-                let mut gamma_rgb = final_rgb;
-                color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
-                    .map_err(|r| at!(RawError::from(r)))?;
-                let u16_data =
-                    color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
-
-                let buf = PixelBuffer::from_vec(
-                    u16_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::Linear => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::CameraRaw => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(zenpixels::ColorPrimaries::Unknown),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-        }
-    })
+    progress.run(|pulse| finish_rawloader_output(final_rgb, info, config, pulse))
 }
 
 /// Handle non-Bayer data (cpp > 1, e.g., Foveon or some DNGs with embedded RGB).
@@ -994,70 +1021,42 @@ fn decode_non_bayer(
         sensor_layout: SensorLayout::LinearRaw,
     };
 
-    progress.run(|pulse| {
-        crate::progress::total(
-            pulse,
-            final_rgb.len()
-                * if config.output == OutputMode::Develop {
-                    2
-                } else {
-                    4
-                },
-        );
-        match config.output {
-            OutputMode::Develop => {
-                let mut gamma_rgb = final_rgb;
-                color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
-                    .map_err(|r| at!(RawError::from(r)))?;
-                let u16_data =
-                    color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
+    progress.run(|pulse| finish_rawloader_output(final_rgb, info, config, pulse))
+}
 
-                let buf = PixelBuffer::from_vec(
-                    u16_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::Linear => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::CameraRaw => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(zenpixels::ColorPrimaries::Unknown),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
+#[cfg(feature = "rawloader")]
+fn finish_rawloader_output(
+    final_rgb: Vec<f32>,
+    info: RawInfo,
+    config: &RawDecodeConfig,
+    pulse: &dyn how_far::Pulse,
+) -> Result<RawDecodeOutput> {
+    crate::progress::total(
+        pulse,
+        final_rgb.len()
+            * if config.output == OutputMode::Develop {
+                2
+            } else {
+                4
+            },
+    );
+    match config.output {
+        OutputMode::Develop => {
+            let mut gamma_rgb = final_rgb;
+            color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
+                .map_err(|r| at!(RawError::from(r)))?;
+            let samples = color::f32_to_u16(&gamma_rgb, config.alloc_pref, pulse)?;
+            make_output(
+                samples,
+                info,
+                ImageSpec::rgb16_srgb().with_primaries(config.target.to_color_primaries()),
+            )
         }
-    })
+        OutputMode::Linear => {
+            make_linear_output(final_rgb, info, config.target.to_color_primaries(), pulse)
+        }
+        OutputMode::CameraRaw => make_linear_output(final_rgb, info, Primaries::Unknown, pulse),
+    }
 }
 
 /// Normalize raw sensor data to f32 \[0, 1\] using black/white levels.

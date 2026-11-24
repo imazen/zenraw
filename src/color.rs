@@ -274,14 +274,17 @@ fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
 /// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
 pub(crate) fn f32_to_u16(
     src: &[f32],
+    alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
-) -> Result<alloc::vec::Vec<u8>, StopReason> {
-    let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
+) -> crate::Result<alloc::vec::Vec<u16>> {
+    let mut out = crate::alloc_util::vec_with_capacity(alloc_pref, true, src.len())?;
     for batch in src.chunks(1 << 18) {
-        pulse.check()?;
+        pulse
+            .check()
+            .map_err(|reason| whereat::at!(crate::RawError::from(reason)))?;
         for &v in batch {
             let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
-            out.extend_from_slice(&val.to_ne_bytes());
+            out.push(val);
         }
         pulse.advance(batch.len() as u64);
     }

@@ -17,7 +17,8 @@ use zencodec::{
     ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, OrientationHint,
     ResourceLimits,
 };
-use zenpixels::PixelDescriptor;
+use zenpixels_legacy as zenpixels;
+use zenpixels_legacy::PixelDescriptor;
 
 use crate::decode::{self, OutputMode, RawDecodeConfig};
 use crate::error::{RawError, RawLimitKind};
@@ -500,15 +501,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         let raw_info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &raw_info);
 
-        let descriptor =
-            match self.config.output {
-                OutputMode::Develop => PixelDescriptor::RGB16_SRGB
-                    .with_primaries(self.config.target.to_color_primaries()),
-                OutputMode::Linear => PixelDescriptor::RGBF32_LINEAR
-                    .with_primaries(self.config.target.to_color_primaries()),
-                OutputMode::CameraRaw => PixelDescriptor::RGBF32_LINEAR
-                    .with_primaries(zenpixels::ColorPrimaries::Unknown),
-            };
+        let descriptor = legacy_descriptor(&self.config);
 
         // Report the post-orientation output geometry + the transform the decoder
         // will bake. `Preserve` bakes nothing (output = stored dims, `Identity`
@@ -883,6 +876,69 @@ pub struct RawDecoder<'a> {
     orientation: OrientationHint,
 }
 
+// The pinned zencodec contracts still own zenpixels 0.2 types. Keep their
+// signaling local to this adapter until the coordinated 0.5 dependency lands.
+fn legacy_descriptor(config: &RawDecodeConfig) -> PixelDescriptor {
+    use crate::OutputPrimaries;
+    use zenpixels::ColorPrimaries;
+
+    let target = match config.target {
+        OutputPrimaries::Srgb => ColorPrimaries::Bt709,
+        OutputPrimaries::DisplayP3 => ColorPrimaries::DisplayP3,
+        OutputPrimaries::Bt2020 => ColorPrimaries::Bt2020,
+    };
+    match config.output {
+        OutputMode::Develop => PixelDescriptor::RGB16_SRGB.with_primaries(target),
+        OutputMode::Linear => PixelDescriptor::RGBF32_LINEAR.with_primaries(target),
+        OutputMode::CameraRaw => {
+            PixelDescriptor::RGBF32_LINEAR.with_primaries(ColorPrimaries::Unknown)
+        }
+    }
+}
+
+fn legacy_pixels(
+    pixels: &::zenpixels::PixelBuf,
+    config: &RawDecodeConfig,
+    pulse: &dyn how_far::Pulse,
+) -> crate::Result<zenpixels::PixelBuffer> {
+    let descriptor = legacy_descriptor(config);
+    let fallible = crate::alloc_util::resolve_fallible(config.alloc_pref, true);
+    let mut legacy = if fallible {
+        zenpixels::PixelBuffer::try_new(pixels.width(), pixels.height(), descriptor).map_err(
+            |error| {
+                at!(RawError::Buffer(match error.error() {
+                    zenpixels::BufferError::AllocationFailed =>
+                        ::zenpixels::BufferError::AllocationFailed,
+                    _ => ::zenpixels::BufferError::InvalidDimensions,
+                }))
+            },
+        )?
+    } else {
+        zenpixels::PixelBuffer::new(pixels.width(), pixels.height(), descriptor)
+    };
+    let src = pixels.as_view();
+    let mut dst = legacy.as_slice_mut();
+    for y in 0..src.rows() {
+        if y % 64 == 0 {
+            pulse
+                .check()
+                .map_err(|reason| at!(RawError::from(reason)))?;
+        }
+        dst.row_mut(y).copy_from_slice(src.row(y));
+    }
+
+    // The legacy contract can prove sub-8-bit grids independently of whether
+    // they nest in the 8-bit grid, and its evidence also carries storage/range.
+    if descriptor.channel_type() == zenpixels::ChannelType::U16 {
+        let exact = zenpixels::sample::ExactDepth::measure(&legacy.as_slice())
+            .map_err(|error| at!(RawError::InvalidBuffer(error.to_string())))?;
+        legacy
+            .set_exact_depth(Some(exact))
+            .map_err(|error| at!(RawError::InvalidBuffer(error.to_string())))?;
+    }
+    Ok(legacy)
+}
+
 impl<'a> Decode for RawDecoder<'a> {
     type Error = At<RawError>;
 
@@ -891,10 +947,12 @@ impl<'a> Decode for RawDecoder<'a> {
         let mut progress =
             crate::progress::Sequence::new(&observation, &["Decode RAW", "Output orientation"]);
         let result = (|| {
-            let output =
-                progress.run(|pulse| crate::decode(&self.data, &self.config, Some(pulse)))?;
-            let info = build_image_info(&self.data, &output.info);
-            let decoded = DecodeOutput::new(output.pixels, info);
+            let decoded = progress.run(|pulse| {
+                let output = crate::decode(&self.data, &self.config, Some(pulse))?;
+                let info = build_image_info(&self.data, &output.info);
+                let pixels = legacy_pixels(&output.pixels, &self.config, pulse)?;
+                Ok(DecodeOutput::new(pixels, info))
+            })?;
             if hint_bakes(self.orientation) {
                 progress.run(|pulse| {
                     apply_orientation_to_output_pulse(
@@ -926,7 +984,7 @@ impl<'a> Decode for RawDecoder<'a> {
 mod orientation_tests {
     use super::*;
     use alloc::vec::Vec;
-    use zenpixels::{PixelBuffer, PixelDescriptor};
+    use zenpixels_legacy::{PixelBuffer, PixelDescriptor};
 
     /// Build a synthetic RGB16 `DecodeOutput`: a `w×h` image whose pixel (r,c)
     /// is three identical u16 channels of value `(r*16 + c) + 1`, with the given

@@ -163,12 +163,12 @@ fn tracked_decode_counts_exact_work_and_preserves_pixels() {
                         assert!(!child.overrun(), "{child:?}");
                     }
                     assert_eq!(
-                        base.pixels.copy_to_contiguous_bytes(),
-                        tracked.pixels.copy_to_contiguous_bytes()
+                        base.pixels.as_view().try_contiguous_bytes().unwrap(),
+                        tracked.pixels.as_view().try_contiguous_bytes().unwrap()
                     );
                     assert_eq!(
-                        base.pixels.copy_to_contiguous_bytes(),
-                        no_pulse.pixels.copy_to_contiguous_bytes()
+                        base.pixels.as_view().try_contiguous_bytes().unwrap(),
+                        no_pulse.pixels.as_view().try_contiguous_bytes().unwrap()
                     );
                     assert_eq!(
                         (base.info.width, base.info.height),
@@ -423,7 +423,7 @@ mod adapter {
     #[test]
     fn incremental_decode_retains_shared_progress_and_exact_sink_pixels() {
         use zencodec::decode::{DecodeRowSink, Event, Input, SinkError};
-        use zenpixels::{PixelDescriptor, PixelSliceMut};
+        use zenpixels_legacy::{PixelDescriptor, PixelSliceMut};
         #[derive(Default)]
         struct Sink {
             storage: Vec<u32>,
@@ -570,7 +570,7 @@ mod adapter {
             atomic::{AtomicBool, Ordering},
         };
         use zencodec::decode::{DecodeRowSink, Event, Input, SinkError, StepError};
-        use zenpixels::{PixelDescriptor, PixelSliceMut};
+        use zenpixels_legacy::{PixelDescriptor, PixelSliceMut};
         struct NoEffects;
         impl DecodeRowSink for NoEffects {
             fn begin(&mut self, _: u32, _: u32, _: PixelDescriptor) -> Result<(), SinkError> {

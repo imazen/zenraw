@@ -107,7 +107,7 @@ pub enum RawError {
 
     /// Pixel buffer construction failed. Every call site in this crate
     /// builds both the byte buffer and the dimensions passed to
-    /// [`zenpixels::PixelBuffer::from_vec`] itself (never directly from
+    /// [`zenpixels::PixelBuf::from_vec`] itself (never directly from
     /// caller-supplied geometry), so
     /// [`AllocationFailed`](zenpixels::BufferError::AllocationFailed) is
     /// genuine memory exhaustion — every other variant reflects a
