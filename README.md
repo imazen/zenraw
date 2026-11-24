@@ -2,7 +2,7 @@
 
 Camera RAW and DNG decoder in pure Rust (`#![forbid(unsafe_code)]`).
 Display-ready sRGB output by default (`OutputMode::Develop`, u16); scene-referred
-linear f32 is opt-in (`OutputMode::Linear`). Three swappable backends trade camera
+linear f32 is opt-in (`OutputMode::Linear` and `OutputMode::LinearExtended`). Three swappable backends trade camera
 coverage against dependency weight.
 
 ## Quick start
@@ -34,7 +34,7 @@ literal):
 use zenraw::OutputMode;
 
 // Scene-referred linear f32 (white-balanced, color-matrixed):
-let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
+let config = RawDecodeConfig::default().with_output(OutputMode::LinearExtended);
 let output = decode(data, &config, None)?;
 // output.pixels is now f32 linear RGB. (OutputMode::Develop = u16 sRGB [default],
 //  OutputMode::CameraRaw = raw camera values as f32, no color processing.)
@@ -45,7 +45,8 @@ let output = decode(data, &config, None)?;
 | `OutputMode` | Sample layout and color | Bytes/channel | Values |
 |---|---|---|---|
 | `Develop` (default) | RGB U16, sRGB transfer | **2 (u16)** | `[0, 65535]`, gamma-encoded, in `with_target` primaries |
-| `Linear` | RGB F32, linear transfer | 4 (f32) | white-balanced + colour-matrixed, clamped to `[0, 1]` (see below) |
+| `Linear` | RGB F32, linear transfer | 4 (f32) | matrix output clamped to `[0, 1]` before exposure |
+| `LinearExtended` | RGB F32, linear transfer | 4 (f32) | matrix output retains negative values and highlights above `1.0` |
 | `CameraRaw` | RGB F32, linear transfer, unknown primaries | 4 (f32) | raw camera values, no WB / matrix, **not** clamped to `1.0` |
 
 There is **no 8-bit output mode**: `Develop` is `u16`, so a thumbnail/web
@@ -65,7 +66,7 @@ Choose the Rust sample type that matches your requested output mode.
 use zenraw::{decode, OutputMode, RawDecodeConfig};
 
 let data: &[u8] = &[/* RAW file bytes */];
-let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
+let config = RawDecodeConfig::default().with_output(OutputMode::LinearExtended);
 let output = decode(data, &config, None)?;
 
 let w = output.pixels.width() as usize;
@@ -90,23 +91,17 @@ Key facts about the layout and value range (verified against the decode path):
 - **Channel order is interleaved `R, G, B`** — three samples per pixel, no
   alpha, in `width * height * 3` order (row-major, top-to-bottom). The pixel
   layout is RGB with `SampleType::F32` and `Transfer::Linear` in linear modes.
-- **`OutputMode::Linear` is scene-referred in its transfer function, not in
-  its dynamic range** — white-balanced and colour-matrixed, with no tone curve
-  and no gamma, but **clamped to `[0, 1]`**. Sensor samples are normalised with
-  `clamp(0.0, 1.0)` against the black/white levels, and the combined WB +
-  camera→output matrix clamps every component again as it writes it, so
-  highlights above the sensor's white level are not preserved and negative
-  out-of-gamut components are floored at zero. Values above `1.0` reach the
-  output only via `exposure_ev`, which multiplies after the clamp.
-- **`OutputMode::CameraRaw` is the mode that keeps values above `1.0`.** Sensor
-  samples are normalised with `clamp(0.0, 1.0)`, but demosaicing runs next and
-  the Malvar-He-Cutler Laplacian correction floors at zero without a ceiling, so
-  high-contrast neighbourhoods overshoot. `Linear` and `Develop` lose that
-  overshoot to the colour matrix's clamp; `CameraRaw` skips the colour pipeline
-  and keeps it. Samples are always finite and never negative.
+- **`OutputMode::Linear`** clamps the white-balanced matrix result to
+  `[0, 1]` before any exposure adjustment.
+- **`OutputMode::LinearExtended`** keeps the full matrix result, including
+  negative out-of-gamut values and highlights above `1.0`. Exposure scales
+  that result directly. Sensor normalization in both modes still uses the
+  recorded black and white levels and clamps sensor values to `[0, 1]`.
+- **`OutputMode::CameraRaw`** keeps demosaic overshoot in camera coordinates.
+  It omits white balance, the color matrix, and exposure compensation.
 - **`OutputMode::Develop` (the default)** is display-ready **u16 sRGB**: read it
   with `view.as_contiguous_as::<u16>()?` for three samples per pixel in
-  `[0, 65535]`. `pixels.facts().exact` describes the delivered integer grid,
+  `[0, 65535]`. `pixels.facts().depth` describes the delivered integer grid,
   and `info.bit_depth` describes the sensor.
 - **Don't re-apply gamma.** `Develop` output is already sRGB-encoded. The two
   public helpers in `zenraw::color` split the job in two: `apply_srgb_gamma`
@@ -328,7 +323,7 @@ use zenraw::{RawDecodeConfig, DemosaicMethod, OutputMode, OutputPrimaries};
 
 let config = RawDecodeConfig::default()
     .with_demosaic(DemosaicMethod::MalvarHeCutler) // or Bilinear
-    .with_output(OutputMode::Linear)               // Develop (u16 sRGB, default) | Linear (f32) | CameraRaw (f32)
+    .with_output(OutputMode::LinearExtended)       // Preserve the extended linear matrix result
     .with_target(OutputPrimaries::DisplayP3)       // Srgb (default) | DisplayP3 | Bt2020 (Develop/Linear only)
     .with_exposure_ev(0.0)                          // exposure compensation in stops (2^ev); Develop/Linear only
     .with_wb([1.0, 1.0, 1.0])                       // override the as-shot white balance (RGB multipliers)

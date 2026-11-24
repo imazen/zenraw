@@ -17,6 +17,11 @@
 - The `ultrahdr` feature remains a compatibility flag. Apple gain-map metadata
   extraction is available through `apple`.
 
+### Added
+
+- `OutputMode::LinearExtended` retains highlights above one and negative
+  out-of-gamut components through the camera color matrix and exposure stage.
+
 ### Dependency integration
 
 - Use version requirements for the shared zencodec/zenmeta dependencies so a
@@ -24,6 +29,12 @@
   keeps the existing pinned root patches. Codec behavior is unchanged.
 
 ### Fixed
+
+- Document the XYZ-to-camera direction of `RawInfo::color_matrix`.
+  A shared DNG fixture checks the direction and the renderer's inverse
+  with both RAW backends.
+- Report unknown primaries for camera-space pixels from rawler's
+  non-Bayer path.
 
 - Measure the delivered U8/U16 grid after RAW development and retain its
   `ExactDepth` through byte-only orientation. Sensor depth stays separate;

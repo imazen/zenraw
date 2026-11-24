@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenraw.txt 205 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
+# files: zenraw.txt 207 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
 
 ## summary
 #
@@ -15,19 +15,19 @@
 #   free functions                              9
 #   inherent methods                           37
 #   struct fields                              66
-#   enum variants                              64
+#   enum variants                              66
 #   trait roster entries (type × trait)        53
 #   auto-trait-complete types                  11
 #
 # per-module pub lines:
-#   (root)                           89
+#   (root)                           90
 #   classify                         18
 #   color                             3
-#   decode                           65
+#   decode                           66
 #   demosaic                          4
 #   dng_render                       24
 
-## items (193 lines)
+## items (195 lines)
 
 pub mod zenraw
 pub mod classify
@@ -52,6 +52,7 @@ pub mod decode
 pub decode::OutputMode::CameraRaw
 pub decode::OutputMode::Develop
 pub decode::OutputMode::Linear
+pub decode::OutputMode::LinearExtended
 pub decode::OutputPrimaries::Bt2020
 pub decode::OutputPrimaries::DisplayP3
 pub decode::OutputPrimaries::Srgb
@@ -145,6 +146,7 @@ pub fn classify::FileFormat::is_raw(self) -> bool
 pub OutputMode::CameraRaw
 pub OutputMode::Develop
 pub OutputMode::Linear
+pub OutputMode::LinearExtended
 pub enum OutputPrimaries [also: decode, dng_render]
 pub OutputPrimaries::Bt2020
 pub OutputPrimaries::DisplayP3

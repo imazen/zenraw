@@ -40,7 +40,7 @@ Raw file bytes (&[u8])
                 │       [3] demosaic_to_rgb_f32() → Vec<f32> [R,G,B,R,G,B,...]
                 │           (CFA pattern → interleaved RGB, SIMD-accelerated)
                 │       [4] apply_color_pipeline() → in-place
-                │           (WB × cam_to_srgb matrix, clamp [0,1])
+                │           (WB × cam_to_srgb matrix, range follows output mode)
                 │           or DngPipeline (PGTM, ForwardMatrix, ToneCurve)
                 │       [5] apply_crop() + apply_orientation()
                 │
@@ -57,7 +57,8 @@ Raw file bytes (&[u8])
 
                 Final output conversion (RawDecodeConfig::output):
                     OutputMode::Develop   → RGB16_SRGB u16 (default; sRGB gamma + quantise)
-                    OutputMode::Linear    → RGBF32_LINEAR f32 (scene-referred TF, clamped [0,1])
+                    OutputMode::Linear         → linear RGB F32, bounded before exposure
+                    OutputMode::LinearExtended → linear RGB F32, extended range
                     OutputMode::CameraRaw → RGBF32_LINEAR f32, primaries Unknown (no WB/matrix)
                     (darktable backend: RGB8_SRGB or RGBF32_LINEAR, whatever darktable-cli wrote)
 ```
@@ -157,7 +158,7 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 2. **`no_std + alloc`** — std opt-in for I/O (rawloader requires std)
 3. **Progress and cancellation** — optional `how_far::Pulse` with completed batches and child phases
 4. **Non-exhaustive types** — future-proof public API
-5. **Display-ready default, scene-referred opt-in** — `OutputMode::Develop` (u16 sRGB) by default; `OutputMode::Linear` for linear f32 (no tone curve or gamma, but clamped to `[0,1]` by the colour matrix); `OutputMode::CameraRaw` when the demosaic overshoot above `1.0` must survive
+5. **Display-ready default, scene-referred opt-in** — `Develop` produces U16 sRGB. `Linear` clamps the color matrix result before exposure, while `LinearExtended` preserves the full signed F32 result. `CameraRaw` retains camera-space values and demosaic overshoot.
 
 ## Dependencies
 
