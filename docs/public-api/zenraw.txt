@@ -55,7 +55,7 @@ pub decode::OutputMode::Linear
 pub decode::OutputPrimaries::Bt2020
 pub decode::OutputPrimaries::DisplayP3
 pub decode::OutputPrimaries::Srgb
-pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descriptor::ColorPrimaries
+pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::color::Primaries
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 pub decode::SensorLayout::Bayer
 pub decode::SensorLayout::LinearRaw
@@ -81,7 +81,7 @@ pub fn decode::RawDecodeConfig::with_output(self, decode::OutputMode) -> Self
 pub fn decode::RawDecodeConfig::with_target(self, dng_render::OutputPrimaries) -> Self
 pub fn decode::RawDecodeConfig::with_wb(self, [f32; 3]) -> Self
 pub decode::RawDecodeOutput::info: decode::RawInfo
-pub decode::RawDecodeOutput::pixels: zenpixels::buffer::PixelBuffer
+pub decode::RawDecodeOutput::pixels: zenpixels::buffer::PixelBuf
 pub decode::RawInfo::active_area: core::option::Option<[u32; 4]>
 pub decode::RawInfo::baseline_exposure: core::option::Option<f64>
 pub decode::RawInfo::bit_depth: core::option::Option<u8>
@@ -108,7 +108,7 @@ pub mod dng_render
 pub dng_render::OutputPrimaries::Bt2020
 pub dng_render::OutputPrimaries::DisplayP3
 pub dng_render::OutputPrimaries::Srgb
-pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descriptor::ColorPrimaries
+pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::color::Primaries
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 pub struct dng_render::DngPipeline
 pub dng_render::DngPipeline::analog_balance: [f64; 3]
@@ -149,7 +149,7 @@ pub enum OutputPrimaries [also: decode, dng_render]
 pub OutputPrimaries::Bt2020
 pub OutputPrimaries::DisplayP3
 pub OutputPrimaries::Srgb
-pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descriptor::ColorPrimaries
+pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::color::Primaries
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 #[non_exhaustive] pub enum RawError
 pub RawError::Buffer(zenpixels::buffer::BufferError)
@@ -197,7 +197,7 @@ pub fn decode::RawDecodeConfig::with_target(self, dng_render::OutputPrimaries) -
 pub fn decode::RawDecodeConfig::with_wb(self, [f32; 3]) -> Self
 #[non_exhaustive] pub struct RawDecodeOutput [also: decode]
 pub RawDecodeOutput::info: decode::RawInfo
-pub RawDecodeOutput::pixels: zenpixels::buffer::PixelBuffer
+pub RawDecodeOutput::pixels: zenpixels::buffer::PixelBuf
 #[non_exhaustive] pub struct RawInfo [also: decode]
 pub RawInfo::active_area: core::option::Option<[u32; 4]>
 pub RawInfo::baseline_exposure: core::option::Option<f64>

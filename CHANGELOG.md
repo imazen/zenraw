@@ -9,6 +9,14 @@
 - Fix `OutputMode::Develop` colour for non-DNG RAW: the camera-to-output matrix applied white balance twice (Bradford adaptation, then a column division by the neutral), which kept greys neutral but shifted every saturated colour (blue skies rendered purple, reds magenta) and darkened the image.
 - RAW demosaic, orientation and conversion buffers explicitly request zeroed allocation while preserving allocation-error policy and nonzero-fill semantics.
 
+### QUEUED BREAKING CHANGES
+
+- Native decode returns zenpixels 0.5 `PixelBuf` with `ImageSpec` and
+  `SampleFacts`. Read typed samples through `pixels.as_view()`. The optional
+  zencodec adapter still serves its pinned 0.2 pixel types.
+- The `ultrahdr` feature remains a compatibility flag. Apple gain-map metadata
+  extraction is available through `apple`.
+
 ### Dependency integration
 
 - Use version requirements for the shared zencodec/zenmeta dependencies so a
