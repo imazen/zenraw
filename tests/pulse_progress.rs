@@ -387,8 +387,8 @@ mod adapter {
                 .decode()
                 .unwrap();
             assert_eq!(
-                base.pixels().contiguous_bytes(),
-                out.pixels().contiguous_bytes()
+                base.pixels().try_contiguous_bytes().unwrap(),
+                out.pixels().try_contiguous_bytes().unwrap()
             );
             assert_eq!(
                 (base.info().width, base.info().height),
@@ -420,44 +420,156 @@ mod adapter {
         }
     }
 
+    #[derive(Default)]
+    struct PaddedSink {
+        storage: Vec<u32>,
+        stride: usize,
+        finished: bool,
+    }
+
+    impl zencodec::decode::DecodeRowSink for PaddedSink {
+        fn begin(
+            &mut self,
+            w: u32,
+            h: u32,
+            spec: zenpixels::ImageSpec,
+        ) -> Result<(), zencodec::decode::SinkError> {
+            let row_bytes = w as usize * spec.layout.bytes_per_pixel();
+            self.stride = (row_bytes + 1).next_multiple_of(4);
+            self.storage
+                .resize(self.stride * h as usize / 4, 0xa5a5_a5a5);
+            Ok(())
+        }
+
+        fn provide_next_buffer(
+            &mut self,
+            y: u32,
+            h: u32,
+            w: u32,
+            spec: zenpixels::ImageSpec,
+        ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
+            let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut self.storage);
+            zenpixels::PixelViewMut::new(
+                &mut bytes[y as usize * self.stride..],
+                w,
+                h,
+                self.stride,
+                spec,
+            )
+            .map_err(|e| e.to_string().into())
+        }
+
+        fn finish(&mut self) -> Result<(), zencodec::decode::SinkError> {
+            self.finished = true;
+            Ok(())
+        }
+    }
+
+    impl PaddedSink {
+        fn assert_pixels(&self, expected: &zenpixels::PixelView<'_>) {
+            assert!(self.finished);
+            let bytes = bytemuck::cast_slice::<u32, u8>(&self.storage);
+            assert_eq!(bytes.len(), self.stride * expected.rows() as usize);
+            for (y, row) in bytes.chunks_exact(self.stride).enumerate() {
+                let (active, padding) = row.split_at(expected.row_bytes());
+                assert_eq!(active, expected.row(y as u32));
+                assert!(!padding.is_empty());
+                assert!(
+                    padding.iter().all(|&byte| byte == 0xa5),
+                    "row {y} padding changed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_and_zencodec_match_for_each_exif_orientation() {
+        use zencodec::Orientation;
+        use zencodec::decode::{Event, Input};
+
+        for exif in 1..=8 {
+            let orientation = Orientation::from_exif(exif).unwrap();
+            let data = fixture(17, 19, false, false, false, u16::from(exif));
+            for (mode, target) in [
+                (OutputMode::Develop, zenraw::OutputPrimaries::DisplayP3),
+                (OutputMode::Linear, zenraw::OutputPrimaries::Bt2020),
+                (OutputMode::CameraRaw, zenraw::OutputPrimaries::Srgb),
+            ] {
+                for (bake, hint) in [
+                    (false, OrientationHint::Preserve),
+                    (true, OrientationHint::Correct),
+                ] {
+                    let config = RawDecodeConfig::new()
+                        .with_output(mode)
+                        .with_target(target)
+                        .with_orientation(bake);
+                    let native = zenraw::decode(&data, &config, None).unwrap();
+                    let adapter = RawDecoderConfig::from_config(config);
+                    let job = adapter.clone().job().with_orientation(hint);
+                    let prediction = job.output_info(&data).unwrap();
+                    let decoded = job
+                        .decoder(Cow::Borrowed(&data), &[])
+                        .unwrap()
+                        .decode()
+                        .unwrap();
+                    let expected = native.pixels.as_view();
+                    let actual = decoded.pixels();
+                    assert_eq!(
+                        (actual.width(), actual.rows()),
+                        (expected.width(), expected.rows())
+                    );
+                    assert_eq!(actual.spec(), expected.spec());
+                    assert_eq!(actual.facts(), expected.facts());
+                    assert_eq!(
+                        actual.try_contiguous_bytes().unwrap(),
+                        expected.try_contiguous_bytes().unwrap()
+                    );
+                    let (pending, applied) = if bake {
+                        (Orientation::Identity, orientation)
+                    } else {
+                        (orientation, Orientation::Identity)
+                    };
+                    assert_eq!(native.info.orientation, u16::from(pending.to_exif()));
+                    assert_eq!(decoded.info().orientation, pending);
+                    assert_eq!(prediction.orientation_applied, applied);
+
+                    let mut sink = PaddedSink::default();
+                    let mut incremental = adapter
+                        .job()
+                        .with_orientation(hint)
+                        .dyn_incremental_decoder(&[])
+                        .unwrap();
+                    let input = || Input::new(0, &data).with_total_len(data.len() as u64);
+                    assert!(matches!(
+                        incremental.step(input(), &mut sink, None).unwrap().event,
+                        Event::Metadata(_)
+                    ));
+                    assert!(matches!(
+                        incremental.step(input(), &mut sink, None).unwrap().event,
+                        Event::Rows { .. }
+                    ));
+                    let Event::Done(info) = incremental
+                        .step(Input::empty(), &mut sink, None)
+                        .unwrap()
+                        .event
+                    else {
+                        panic!("incremental decode must finish after delivering the rows");
+                    };
+                    assert_eq!(info, prediction);
+                    assert_eq!(info.native_format, *expected.spec());
+                    assert_eq!(
+                        (info.width, info.height),
+                        (expected.width(), expected.rows())
+                    );
+                    sink.assert_pixels(&expected);
+                }
+            }
+        }
+    }
+
     #[test]
     fn incremental_decode_retains_shared_progress_and_exact_sink_pixels() {
-        use zencodec::decode::{DecodeRowSink, Event, Input, SinkError};
-        use zenpixels_legacy::{PixelDescriptor, PixelSliceMut};
-        #[derive(Default)]
-        struct Sink {
-            storage: Vec<u32>,
-            stride: usize,
-            finished: bool,
-        }
-        impl DecodeRowSink for Sink {
-            fn begin(&mut self, w: u32, h: u32, desc: PixelDescriptor) -> Result<(), SinkError> {
-                self.stride = (w as usize).div_ceil(4) * 4 * desc.bytes_per_pixel();
-                self.storage.resize(self.stride * h as usize / 4, 0);
-                Ok(())
-            }
-            fn provide_next_buffer(
-                &mut self,
-                y: u32,
-                h: u32,
-                w: u32,
-                desc: PixelDescriptor,
-            ) -> Result<PixelSliceMut<'_>, SinkError> {
-                PixelSliceMut::new(
-                    &mut bytemuck::cast_slice_mut::<u32, u8>(&mut self.storage)
-                        [y as usize * self.stride..],
-                    w,
-                    h,
-                    self.stride,
-                    desc,
-                )
-                .map_err(|e| e.to_string().into())
-            }
-            fn finish(&mut self) -> Result<(), SinkError> {
-                self.finished = true;
-                Ok(())
-            }
-        }
+        use zencodec::decode::{Event, Input};
         let data = fixture(131, 99, false, false, false, 6);
         let config = RawDecoderConfig::new();
         let expected = config
@@ -477,7 +589,7 @@ mod adapter {
             .with_pulse(pulse.share().unwrap())
             .dyn_incremental_decoder(&[])
             .unwrap();
-        let mut sink = Sink::default();
+        let mut sink = PaddedSink::default();
         let input = || Input::new(0, &data).with_total_len(data.len() as u64);
         assert!(matches!(
             decoder.step(input(), &mut sink, None).unwrap().event,
@@ -492,16 +604,7 @@ mod adapter {
             decoder.step(Input::empty(), &mut sink, None).unwrap().event,
             Event::Done(_)
         ));
-        assert!(sink.finished);
-        let bytes = bytemuck::cast_slice::<u32, u8>(&sink.storage);
-        let pixels = expected.pixels();
-        for y in 0..pixels.rows() {
-            let row = pixels.row(y);
-            assert_eq!(
-                &bytes[y as usize * sink.stride..y as usize * sink.stride + row.len()],
-                row
-            );
-        }
+        sink.assert_pixels(&expected.pixels());
         let snap = observer.snapshot();
         assert_eq!(snap.status, Status::Running);
         assert_eq!(snap.children[0].children.len(), 7);
@@ -570,10 +673,10 @@ mod adapter {
             atomic::{AtomicBool, Ordering},
         };
         use zencodec::decode::{DecodeRowSink, Event, Input, SinkError, StepError};
-        use zenpixels_legacy::{PixelDescriptor, PixelSliceMut};
+        use zenpixels::{ImageSpec, PixelViewMut};
         struct NoEffects;
         impl DecodeRowSink for NoEffects {
-            fn begin(&mut self, _: u32, _: u32, _: PixelDescriptor) -> Result<(), SinkError> {
+            fn begin(&mut self, _: u32, _: u32, _: ImageSpec) -> Result<(), SinkError> {
                 panic!("cancelled session published a header")
             }
             fn provide_next_buffer(
@@ -581,8 +684,8 @@ mod adapter {
                 _: u32,
                 _: u32,
                 _: u32,
-                _: PixelDescriptor,
-            ) -> Result<PixelSliceMut<'_>, SinkError> {
+                _: ImageSpec,
+            ) -> Result<PixelViewMut<'_>, SinkError> {
                 panic!("cancelled session requested output storage")
             }
             fn finish(&mut self) -> Result<(), SinkError> {

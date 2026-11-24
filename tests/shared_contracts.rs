@@ -57,7 +57,7 @@ mod incremental_admission {
     use zencodec::decode::{
         DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
     };
-    use zenpixels_legacy::{PixelDescriptor, PixelSliceMut};
+    use zenpixels::{ImageSpec, PixelViewMut};
     use zenraw::{RawError, RawLimitKind};
 
     // Padded caller-owned rows exercise the shared helper's real sink path.
@@ -72,19 +72,13 @@ mod incremental_admission {
     }
 
     impl DecodeRowSink for Sink {
-        fn begin(
-            &mut self,
-            width: u32,
-            height: u32,
-            desc: PixelDescriptor,
-        ) -> Result<(), SinkError> {
+        fn begin(&mut self, width: u32, height: u32, desc: ImageSpec) -> Result<(), SinkError> {
             self.begins += 1;
             self.width = width;
             self.height = height;
-            // zenpixels0.2.16 requires whole-pixel stride. Four pixels also
-            // align the u32-backed storage for either RGB16 or RGBF32.
-            let unit = 4 * desc.bytes_per_pixel();
-            self.stride = (width as usize).div_ceil(4) * unit + unit;
+            // Pad by less than a whole pixel while retaining u32 alignment.
+            let row_bytes = width as usize * desc.layout.bytes_per_pixel();
+            self.stride = (row_bytes + 1).next_multiple_of(4);
             self.storage = vec![0xA5A5_A5A5; self.stride * height as usize / 4];
             Ok(())
         }
@@ -94,10 +88,10 @@ mod incremental_admission {
             y: u32,
             height: u32,
             width: u32,
-            desc: PixelDescriptor,
-        ) -> Result<PixelSliceMut<'_>, SinkError> {
+            desc: ImageSpec,
+        ) -> Result<PixelViewMut<'_>, SinkError> {
             let bytes = bytemuck::cast_slice_mut(&mut self.storage);
-            PixelSliceMut::new(
+            PixelViewMut::new(
                 &mut bytes[y as usize * self.stride..],
                 width,
                 height,
@@ -230,7 +224,7 @@ mod incremental_admission {
             .decode()
             .unwrap();
         let desc = expected.descriptor();
-        let expected_bytes = expected.into_buffer().copy_to_contiguous_bytes();
+        let expected_bytes = expected.pixels().try_contiguous_bytes().unwrap();
         let mut dec = decoder(ResourceLimits::none().with_max_input_bytes(bytes.len() as u64));
         let mut sink = Sink::default();
         let prefix = Input::new(0, &bytes[..bytes.len() - 1]);
@@ -265,15 +259,15 @@ mod incremental_admission {
         let actual: Vec<u8> = bytemuck::cast_slice::<_, u8>(&sink.storage)
             .chunks_exact(sink.stride)
             .flat_map(|row| {
-                row[..sink.width as usize * desc.bytes_per_pixel()]
+                row[..sink.width as usize * desc.layout.bytes_per_pixel()]
                     .iter()
                     .copied()
             })
             .collect();
-        assert_eq!(actual, expected_bytes);
+        assert_eq!(actual.as_slice(), expected_bytes.as_ref());
         for row in bytemuck::cast_slice::<_, u8>(&sink.storage).chunks_exact(sink.stride) {
             assert!(
-                row[sink.width as usize * desc.bytes_per_pixel()..]
+                row[sink.width as usize * desc.layout.bytes_per_pixel()..]
                     .iter()
                     .all(|&b| b == 0xA5),
                 "decoder must leave caller padding untouched"
@@ -302,7 +296,7 @@ mod incremental_admission {
             .unwrap();
         let output = u64::from(expected.width())
             * u64::from(expected.height())
-            * expected.descriptor().bytes_per_pixel() as u64;
+            * expected.descriptor().layout.bytes_per_pixel() as u64;
         let mut dec =
             decoder(ResourceLimits::none().with_max_memory(bytes.len() as u64 + output - 1));
         assert_denial(

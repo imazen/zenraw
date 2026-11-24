@@ -296,59 +296,84 @@ fn remap(
     Ok(out)
 }
 
-/// Apply an adapter orientation directly to rows, preserving padding in the
-/// source and avoiding an intermediate contiguous full-image copy.
+/// Apply an adapter orientation directly to strided source rows. Allocate the
+/// destination in its native sample type so PixelBuf can adopt it without copying.
 #[cfg(feature = "zencodec")]
 pub(crate) fn apply_orientation_pixels(
-    src: &zenpixels_legacy::PixelSlice<'_>,
-    orientation: u16,
+    src: &zenpixels::PixelView<'_>,
+    orientation: zenpixels::Orientation,
     alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
-) -> crate::Result<(Vec<u8>, usize, usize)> {
-    let w = src.width() as usize;
-    let h = src.rows() as usize;
-    let dims = if (5..=8).contains(&orientation) {
-        (h, w)
-    } else {
-        (w, h)
-    };
-    crate::progress::total(pulse, dims.1);
+) -> crate::Result<zenpixels::PixelBuf> {
+    use zenpixels::Orientation::*;
+
+    let (w, h) = (src.width(), src.rows());
+    let dims = orientation.output_dimensions(w, h);
+    crate::progress::total(pulse, dims.1 as usize);
     match orientation {
-        2 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (r, w - 1 - c)),
-        3 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - r, w - 1 - c)),
-        4 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - r, c)),
-        5 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (c, r)),
-        6 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - c, r)),
-        7 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - c, w - 1 - r)),
-        8 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (c, w - 1 - r)),
+        FlipH => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (r, w - 1 - c)),
+        Rotate180 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - r, w - 1 - c)),
+        FlipV => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - r, c)),
+        Transpose => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (c, r)),
+        Rotate90 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - c, r)),
+        Transverse => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (h - 1 - c, w - 1 - r)),
+        Rotate270 => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (c, w - 1 - r)),
         _ => remap_pixels(src, dims, alloc_pref, pulse, |r, c| (r, c)),
     }
 }
 
 #[cfg(feature = "zencodec")]
 fn remap_pixels(
-    src: &zenpixels_legacy::PixelSlice<'_>,
-    (width, height): (usize, usize),
+    src: &zenpixels::PixelView<'_>,
+    (width, height): (u32, u32),
     alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
-    map: impl Fn(usize, usize) -> (usize, usize),
-) -> crate::Result<(Vec<u8>, usize, usize)> {
-    let bpp = src.descriptor().bytes_per_pixel();
-    let mut out = crate::alloc_util::alloc_zeroed(alloc_pref, true, width * height * bpp)?;
+    map: impl Fn(u32, u32) -> (u32, u32),
+) -> crate::Result<zenpixels::PixelBuf> {
+    use crate::alloc_util::alloc_zeroed;
+    use whereat::ResultAtExt;
+    use zenpixels::{PixelBuf, SampleType};
+
+    let spec = src.spec().clone();
+    let bpp = spec.layout.bytes_per_pixel();
+    let samples = width as usize * height as usize * spec.layout.channels();
+    let mut out = match spec.layout.sample {
+        SampleType::U16 => PixelBuf::from_vec(
+            alloc_zeroed::<u16>(alloc_pref, true, samples)?,
+            width,
+            height,
+            spec,
+        ),
+        SampleType::F32 => PixelBuf::from_vec(
+            alloc_zeroed::<f32>(alloc_pref, true, samples)?,
+            width,
+            height,
+            spec,
+        ),
+        _ => {
+            return Err(whereat::at!(crate::RawError::Buffer(
+                zenpixels::BufferError::IncompatibleLayout
+            )));
+        }
+    }
+    .map_err_at(crate::RawError::Buffer)?;
+
+    let mut dst = out.as_view_mut();
     let mut pace = pulse.paced(64);
     for r in 0..height {
-        for c in 0..width {
-            let (sr, sc) = map(r, c);
-            let row = src.row(sr as u32);
-            let dst = (r * width + c) * bpp;
-            out[dst..dst + bpp].copy_from_slice(&row[sc * bpp..(sc + 1) * bpp]);
+        let row = dst.row_mut(r);
+        for (c, pixel) in row.chunks_exact_mut(bpp).enumerate() {
+            let (sr, sc) = map(r, c as u32);
+            let start = sc as usize * bpp;
+            pixel.copy_from_slice(&src.row(sr)[start..start + bpp]);
         }
         pace.step(1)
             .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
     }
     pace.finish()
         .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
-    Ok((out, width, height))
+    out.set_facts(src.facts());
+    Ok(out.with_hdr(src.hdr()))
 }
 
 #[cfg(test)]
@@ -359,12 +384,12 @@ mod tests {
         use how_far::{Complete, Outcome, Total};
         use how_far_along::{Phase, PulseTree};
         for descriptor in [
-            zenpixels_legacy::PixelDescriptor::RGB16_SRGB,
-            zenpixels_legacy::PixelDescriptor::RGBF32_LINEAR,
+            zenpixels::ImageSpec::rgb16_srgb(),
+            zenpixels::ImageSpec::rgbf32_linear(),
         ] {
             let (w, h) = (5usize, 3usize);
-            let bpp = descriptor.bytes_per_pixel();
-            let stride = 8 * bpp;
+            let bpp = descriptor.layout.bytes_per_pixel();
+            let stride = (w * bpp).next_multiple_of(4) + 4;
             let mut storage = vec![0xa5a5_a5a5u32; stride * h / 4];
             let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut storage);
             let mut tight = Vec::new();
@@ -376,12 +401,17 @@ mod tests {
                 }
             }
             let src =
-                zenpixels_legacy::PixelSlice::new(bytes, w as u32, h as u32, stride, descriptor)
-                    .unwrap();
-            for orientation in 1..=8 {
+                zenpixels::PixelView::new(bytes, w as u32, h as u32, stride, descriptor).unwrap();
+            for orientation in zenpixels::Orientation::ALL {
                 let pulse =
                     PulseTree::new(Phase::new("orient", Total::Unknown), how_far::Unstoppable);
-                let expected = super::apply_orientation_bytes(&tight, w, h, bpp, orientation);
+                let expected = super::apply_orientation_bytes(
+                    &tight,
+                    w,
+                    h,
+                    bpp,
+                    u16::from(orientation.to_exif()),
+                );
                 let actual = super::apply_orientation_pixels(
                     &src,
                     orientation,
@@ -389,10 +419,14 @@ mod tests {
                     &pulse,
                 )
                 .unwrap();
-                assert_eq!(actual, expected);
+                assert_eq!(
+                    (actual.width() as usize, actual.height() as usize),
+                    (expected.1, expected.2)
+                );
+                assert_eq!(actual.as_view().as_contiguous_bytes().unwrap(), expected.0);
                 let snap = pulse.observer().snapshot();
-                assert_eq!(snap.total, Total::Exact(actual.2 as u64));
-                assert_eq!(snap.completed, actual.2 as u64);
+                assert_eq!(snap.total, Total::Exact(u64::from(actual.height())));
+                assert_eq!(snap.completed, u64::from(actual.height()));
                 pulse.complete_as(Outcome::Succeeded);
             }
         }

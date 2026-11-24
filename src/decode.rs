@@ -69,6 +69,16 @@ pub enum OutputMode {
     CameraRaw,
 }
 
+impl OutputMode {
+    pub(crate) fn image_spec(self, target: Primaries) -> ImageSpec {
+        match self {
+            Self::Develop => ImageSpec::rgb16_srgb().with_primaries(target),
+            Self::Linear => ImageSpec::rgbf32_linear().with_primaries(target),
+            Self::CameraRaw => ImageSpec::rgbf32_linear().with_primaries(Primaries::Unknown),
+        }
+    }
+}
+
 /// Configuration for RAW/DNG decoding.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -1049,7 +1059,7 @@ fn finish_rawloader_output(
             make_output(
                 samples,
                 info,
-                ImageSpec::rgb16_srgb().with_primaries(config.target.to_color_primaries()),
+                config.output.image_spec(config.target.to_color_primaries()),
             )
         }
         OutputMode::Linear => {

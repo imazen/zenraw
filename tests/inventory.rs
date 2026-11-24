@@ -254,7 +254,7 @@ fn decode_summary(data: &[u8]) -> Result<Summary, String> {
         .decoder(Cow::Borrowed(data), &[])
         .and_then(|d| d.decode())
         .map_err(|e| e.to_string())?;
-    let pixels = out.pixels().contiguous_bytes().into_owned();
+    let pixels = out.pixels().try_contiguous_bytes().unwrap().into_owned();
     let xmp = out
         .info()
         .embedded_metadata

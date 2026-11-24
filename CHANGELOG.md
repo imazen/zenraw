@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Upgrade `archmage` and `magetypes` minimums to `0.9.33` (root and fuzz lockfiles at `0.9.33` while retaining the `zencodec`/`zenpixels` `0.2.17` cohort).
+- Upgrade `archmage` and `magetypes` minimums to `0.9.33`.
 
 - Bump dependency minimums (`enough`, `bytemuck`, `thiserror`, `zenbench`, `zenutils-apidoc`), refresh fuzz/apidoc lockfiles, and set `--security-opt seccomp=unconfined` on CI `i686` cross containers.
 
@@ -13,7 +13,7 @@
 
 - Native decode returns zenpixels 0.5 `PixelBuf` with `ImageSpec` and
   `SampleFacts`. Read typed samples through `pixels.as_view()`. The optional
-  zencodec adapter still serves its pinned 0.2 pixel types.
+  zencodec adapter shares the 0.5 types and adopts the native buffer directly.
 - The `ultrahdr` feature remains a compatibility flag. Apple gain-map metadata
   extraction is available through `apple`.
 

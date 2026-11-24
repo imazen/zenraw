@@ -26,8 +26,6 @@ whereat = { version = "0.1.5", default-features = false }
 enough = { version = "0.4.5", default-features = false }
 how-far = { version = "0.1.0", default-features = false }
 zenpixels = { version = "0.5", default-features = false }
-# The existing zencodec pin still exposes 0.2 pixel types at its trait boundary.
-zenpixels-legacy = { package = "zenpixels", version = "=0.2.17", default-features = false, optional = true }
 zencodec = { version = ">=0.2.0, <0.4.0", optional = true }
 zenmeta = { version = "0.1.0", default-features = false, features = ["inventory"], optional = true }
 archmage = { version = "0.9.33", default-features = false }
@@ -62,7 +60,7 @@ default = ["std", "rawloader", "ultrahdr"]
 std = ["enough/std", "whereat/std"]
 rawloader = ["dep:rawloader"]
 rawler = ["dep:rawler", "std"]
-zencodec = ["dep:zencodec", "dep:zenpixels-legacy"]
+zencodec = ["dep:zencodec"]
 inventory = ["zencodec", "dep:zenmeta"]
 darktable = ["std"]
 # Compatibility feature. RAW decode and Apple metadata parsing need no Ultra HDR math.
@@ -82,14 +80,13 @@ harness = false
 required-features = ["_dev"]
 
 [patch.crates-io]
-zenmeta = { git = "https://github.com/imazen/zencodec", rev = "feb09f9fd25e90e49a30d7161db8f3b558dfb2a6" }
+zenmeta = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
 zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "42a0c5c83c5c418950eb528d92d57788f6700bcf" }
-zenpixels-legacy = { package = "zenpixels", git = "https://github.com/imazen/zenpixels", rev = "283655c5424e0ad7ebc6d2acd94670fac1e29158" }
 garb = { git = "https://github.com/imazen/garb", rev = "457ff8b9153e9d675a39dc098052b2ffeb6206fa" }
 linear-srgb = { git = "https://github.com/imazen/linear-srgb", rev = "ae83f19426737635fee3dd16f228681019f52585" }
 zenpixels-convert = { git = "https://github.com/imazen/zenpixels", rev = "42a0c5c83c5c418950eb528d92d57788f6700bcf" }
-zencodec = { git = "https://github.com/imazen/zencodec", rev = "feb09f9fd25e90e49a30d7161db8f3b558dfb2a6" }
-zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "feb09f9fd25e90e49a30d7161db8f3b558dfb2a6" }
+zencodec = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
+zencodec-testkit = { git = "https://github.com/imazen/zencodec", rev = "037ef59b57ae003f853a5b6624b173edfee22d6a" }
 
 [[test]]
 name = "inventory"

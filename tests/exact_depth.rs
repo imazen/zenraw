@@ -86,14 +86,18 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
                 .decode()
                 .unwrap();
             let pixels = decoded.pixels();
-            if mode == OutputMode::Develop {
-                let exact = pixels
-                    .exact_depth()
-                    .expect("orientation retains integer evidence");
-                assert_eq!(exact.color_bits(), 16);
-                assert!(exact.holds_for(&pixels).unwrap());
-            } else {
-                assert!(pixels.exact_depth().is_none());
+            assert_eq!(decoded.info().source_color.bit_depth, Some(10));
+            assert_eq!(
+                pixels.facts(),
+                native.pixels.facts(),
+                "orientation retains sample evidence"
+            );
+            assert_eq!(pixels.spec(), native.pixels.spec());
+            if hint == OrientationHint::Preserve {
+                assert_eq!(
+                    pixels.try_contiguous_bytes().unwrap(),
+                    native.pixels.as_view().try_contiguous_bytes().unwrap(),
+                );
             }
         }
     }

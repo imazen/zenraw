@@ -149,7 +149,7 @@ gather_from_oklab(&planes, &mut out_rgb, 3, &m1_inv, 1.0);
 
 ### Via zencodec (optional feature)
 
-With the `zencodec` feature, zenraw implements codec traits for automatic format negotiation in the zenpipe pipeline system.
+With the `zencodec` feature, zenraw implements codec traits for automatic format negotiation in the zenpipe pipeline system. One-shot decode moves the native `PixelBuf` into `DecodeOutput`. A requested orientation transform writes into an aligned destination, and the row-sink path copies active rows to caller buffers.
 
 ## Design Principles
 
@@ -168,9 +168,8 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 | archmage 0.9.12 | SIMD dispatch (AVX2+FMA, NEON) | MIT OR Apache-2.0 |
 | magetypes 0.9.12 | Shared SIMD vector types | MIT OR Apache-2.0 |
 | bytemuck 1.25.0 | Safe bit-cast for pixel buffer reinterpretation | MIT OR Apache-2.0 |
-| ultrahdr-core 0.2.0 | UltraHDR gain map support (optional) | Apache-2.0 |
 | kamadak-exif 0.6.1 | EXIF/DNG metadata reading (feature: exif) | BSD-2-Clause |
-| zenpixels 0.2.0 | PixelBuffer, PixelDescriptor | Apache-2.0 OR MIT |
+| zenpixels 0.5 | PixelBuf, PixelView, ImageSpec, SampleFacts | Apache-2.0 OR MIT |
 | how-far / enough | Progress phases and cooperative cancellation | crates.io |
 | whereat 0.1.4 | Location-aware errors | MIT OR Apache-2.0 |
 | thiserror 2.0.18 | Error derives | MIT OR Apache-2.0 |

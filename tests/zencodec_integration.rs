@@ -88,8 +88,8 @@ fn probe_and_output_info() {
     assert!(output_info.width > 0);
     assert!(output_info.height > 0);
     assert_eq!(
-        output_info.native_format.format,
-        zenpixels_legacy::PixelFormat::Rgb16
+        output_info.native_format,
+        zenpixels::ImageSpec::rgb16_srgb()
     );
 }
 
@@ -106,8 +106,8 @@ fn output_info_linear() {
     let job = config.job();
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
-        output_info.native_format.format,
-        zenpixels_legacy::PixelFormat::RgbF32
+        output_info.native_format,
+        zenpixels::ImageSpec::rgbf32_linear()
     );
 }
 
@@ -124,8 +124,8 @@ fn output_info_camera_raw_primaries_unknown() {
     let job = config.job();
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
-        output_info.native_format.primaries,
-        zenpixels_legacy::ColorPrimaries::Unknown
+        output_info.native_format,
+        zenpixels::ImageSpec::rgbf32_linear().with_primaries(zenpixels::Primaries::Unknown)
     );
 }
 
@@ -142,8 +142,8 @@ fn output_info_display_p3_primaries() {
     let job = config.job();
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
-        output_info.native_format.primaries,
-        zenpixels_legacy::ColorPrimaries::DisplayP3
+        output_info.native_format,
+        zenpixels::ImageSpec::rgb16_srgb().with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 
@@ -179,15 +179,12 @@ fn decode_prefers_linear_when_requested() {
     let decoder = job
         .decoder(
             Cow::Borrowed(&data),
-            &[zenpixels_legacy::PixelDescriptor::RGBF32_LINEAR],
+            &[zenpixels::ImageSpec::rgbf32_linear()],
         )
         .expect("decoder creation failed");
     let output = decoder.decode().expect("decode failed");
 
-    assert_eq!(
-        output.descriptor().format,
-        zenpixels_legacy::PixelFormat::RgbF32
-    );
+    assert_eq!(output.descriptor(), zenpixels::ImageSpec::rgbf32_linear());
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────
@@ -286,8 +283,8 @@ fn decode_bt2020_primaries() {
     let output = decoder.decode().expect("decode failed");
 
     assert_eq!(
-        output.descriptor().primaries,
-        zenpixels_legacy::ColorPrimaries::Bt2020
+        output.descriptor(),
+        zenpixels::ImageSpec::rgbf32_linear().with_primaries(zenpixels::Primaries::Bt2020)
     );
 }
 
@@ -308,8 +305,8 @@ fn decode_display_p3_develop() {
     let output = decoder.decode().expect("decode failed");
 
     assert_eq!(
-        output.descriptor().primaries,
-        zenpixels_legacy::ColorPrimaries::DisplayP3
+        output.descriptor(),
+        zenpixels::ImageSpec::rgb16_srgb().with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 
@@ -318,7 +315,7 @@ fn decode_display_p3_develop() {
 #[test]
 fn estimate_decode_resources_scales_and_is_serial() {
     use zencodec::estimate::{ComputeEnvironment, ImageCharacteristics, ThreadingInformation};
-    use zenpixels_legacy::PixelDescriptor;
+    use zenpixels::ImageSpec;
 
     let config = zenraw::RawDecoderConfig::new();
     let compute = ComputeEnvironment::conservative().with_cores(8);
@@ -326,7 +323,7 @@ fn estimate_decode_resources_scales_and_is_serial() {
     // A 6 MP image: the modelled peak is dominated by the RGB-f32 working set
     // (≈ 3 × W·H·12 B) plus fixed overhead — in the right ballpark of the
     // measured 245.9 MiB / 6.12 MP develop anchor (see the impl + CHANGELOG).
-    let img6 = ImageCharacteristics::new(3000, 2000, PixelDescriptor::RGB16_SRGB);
+    let img6 = ImageCharacteristics::new(3000, 2000, ImageSpec::rgb16_srgb());
     let est6 = config.estimate_decode_resources(&img6, &compute);
 
     let peak6 = est6.peak_memory_bytes_est().expect("peak modelled");
@@ -344,7 +341,7 @@ fn estimate_decode_resources_scales_and_is_serial() {
     );
 
     // Larger image → strictly larger peak (monotonic in pixels).
-    let img24 = ImageCharacteristics::new(6000, 4000, PixelDescriptor::RGB16_SRGB);
+    let img24 = ImageCharacteristics::new(6000, 4000, ImageSpec::rgb16_srgb());
     let est24 = config.estimate_decode_resources(&img24, &compute);
     assert!(
         est24.peak_memory_bytes_est().unwrap() > peak6,
@@ -389,7 +386,7 @@ fn fallible_alloc_decode_matches_default() {
             .expect("decoder creation failed")
             .decode()
             .expect("decode failed");
-        out.into_buffer().copy_to_contiguous_bytes()
+        out.pixels().try_contiguous_bytes().unwrap().into_owned()
     };
 
     let default = decode_bytes(None); // CodecDefault
