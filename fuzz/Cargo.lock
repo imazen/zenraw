@@ -416,7 +416,7 @@ checksum = "d107c80dd656e1a2c254dfb1d57ece73b7f515b8a8684c270c23cab68f4a440d"
 [[package]]
 name = "zencodec"
 version = "0.3.0"
-source = "git+https://github.com/imazen/zencodec?rev=06edf44e9e59936f34ca4e4b60679c20291f9d9f#06edf44e9e59936f34ca4e4b60679c20291f9d9f"
+source = "git+https://github.com/imazen/zencodec?rev=3a10011b6b05d2269e29db5e40db71888d0fcfce#3a10011b6b05d2269e29db5e40db71888d0fcfce"
 dependencies = [
  "almost-enough",
  "bytemuck",
@@ -431,7 +431,7 @@ dependencies = [
 [[package]]
 name = "zenmeta"
 version = "0.2.0"
-source = "git+https://github.com/imazen/zencodec?rev=06edf44e9e59936f34ca4e4b60679c20291f9d9f#06edf44e9e59936f34ca4e4b60679c20291f9d9f"
+source = "git+https://github.com/imazen/zencodec?rev=3a10011b6b05d2269e29db5e40db71888d0fcfce#3a10011b6b05d2269e29db5e40db71888d0fcfce"
 dependencies = [
  "zencodec",
  "zenpixels",
