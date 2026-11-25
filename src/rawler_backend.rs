@@ -596,7 +596,7 @@ fn auto_develop_output(
     crate::decode::make_output(
         u16_data,
         info,
-        ImageSpec::rgb16_srgb().with_primaries(config.target.to_color_primaries()),
+        ImageSpec::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
     )
 }
 
@@ -1053,7 +1053,7 @@ fn build_develop_output(
     crate::decode::make_output(
         samples,
         info,
-        ImageSpec::rgb16_srgb().with_primaries(primaries),
+        ImageSpec::RGB16_SRGB.with_primaries(primaries),
     )
 }
 

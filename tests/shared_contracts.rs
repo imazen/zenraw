@@ -91,12 +91,12 @@ mod incremental_admission {
             desc: ImageSpec,
         ) -> Result<PixelViewMut<'_>, SinkError> {
             let bytes = bytemuck::cast_slice_mut(&mut self.storage);
-            PixelViewMut::new(
+            PixelViewMut::new_with_spec_cow(
                 &mut bytes[y as usize * self.stride..],
                 width,
                 height,
                 self.stride,
-                desc,
+                zenpixels::SpecCow::from_owned(desc),
             )
             .map_err(|e| e.to_string().into())
         }
@@ -224,7 +224,7 @@ mod incremental_admission {
             .decode()
             .unwrap();
         let desc = expected.descriptor();
-        let expected_bytes = expected.pixels().try_contiguous_bytes().unwrap();
+        let expected_bytes = expected.pixels().contiguous_bytes().unwrap();
         let mut dec = decoder(ResourceLimits::none().with_max_input_bytes(bytes.len() as u64));
         let mut sink = Sink::default();
         let prefix = Input::new(0, &bytes[..bytes.len() - 1]);

@@ -63,7 +63,7 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
             );
             assert!(facts.all_opaque);
             let view = native.pixels.as_view();
-            let samples = view.as_contiguous_as::<u16>().unwrap();
+            let samples = view.as_contiguous_typed::<u16>().unwrap();
             // An independent full-range reconstruction check rejects every
             // smaller candidate depth for the delivered samples.
             for bits in 1..exact.color_bits() {
@@ -101,8 +101,8 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
             assert_eq!(pixels.spec(), native.pixels.spec());
             if hint == OrientationHint::Preserve {
                 assert_eq!(
-                    pixels.try_contiguous_bytes().unwrap(),
-                    native.pixels.as_view().try_contiguous_bytes().unwrap(),
+                    pixels.contiguous_bytes().unwrap(),
+                    native.pixels.as_view().contiguous_bytes().unwrap(),
                 );
             }
         }
@@ -112,7 +112,7 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
 #[test]
 fn measured_three_bit_grid_does_not_establish_eight_bit_exactness() {
     let pixels =
-        zenpixels::PixelBuf::from_vec(vec![[9362u16; 3]], 1, 1, zenpixels::ImageSpec::rgb16_srgb())
+        zenpixels::PixelBuf::from_typed(vec![[9362u16; 3]], 1, 1, zenpixels::ImageSpec::RGB16_SRGB)
             .unwrap();
     let depth = zenpixels::ExactDepth::measure(&pixels.as_view()).unwrap();
     assert_eq!(depth.color_bits(), 3);

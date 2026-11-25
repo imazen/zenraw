@@ -338,13 +338,13 @@ fn remap_pixels(
     let bpp = spec.layout.bytes_per_pixel();
     let samples = width as usize * height as usize * spec.layout.channels();
     let mut out = match spec.layout.sample {
-        SampleType::U16 => PixelBuf::from_vec(
+        SampleType::U16 => PixelBuf::from_samples(
             alloc_zeroed::<u16>(alloc_pref, true, samples)?,
             width,
             height,
             spec,
         ),
-        SampleType::F32 => PixelBuf::from_vec(
+        SampleType::F32 => PixelBuf::from_samples(
             alloc_zeroed::<f32>(alloc_pref, true, samples)?,
             width,
             height,
@@ -372,7 +372,7 @@ fn remap_pixels(
     }
     pace.finish()
         .map_err(|e| whereat::at!(crate::RawError::from(e)))?;
-    out.set_facts(src.facts());
+    out.assume_facts(src.facts());
     let out = out.with_hdr(src.hdr());
     Ok(match src.origin() {
         Some(origin) => out.with_origin(origin.clone()),
@@ -388,8 +388,8 @@ mod tests {
         use how_far::{Complete, Outcome, Total};
         use how_far_along::{Phase, PulseTree};
         for descriptor in [
-            zenpixels::ImageSpec::rgb16_srgb(),
-            zenpixels::ImageSpec::rgbf32_linear(),
+            zenpixels::ImageSpec::RGB16_SRGB,
+            zenpixels::ImageSpec::RGBF32_LINEAR,
         ] {
             let (w, h) = (5usize, 3usize);
             let bpp = descriptor.layout.bytes_per_pixel();
@@ -405,7 +405,7 @@ mod tests {
                 }
             }
             let src =
-                zenpixels::PixelView::new(bytes, w as u32, h as u32, stride, descriptor).unwrap();
+                zenpixels::PixelView::new(bytes, w as u32, h as u32, stride, &descriptor).unwrap();
             for orientation in zenpixels::Orientation::ALL {
                 let pulse =
                     PulseTree::new(Phase::new("orient", Total::Unknown), how_far::Unstoppable);

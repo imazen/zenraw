@@ -122,7 +122,7 @@ fn decode_with_hint(
 
 /// Contiguous pixel bytes of a decode output.
 fn pixels_of(output: &zencodec::decode::DecodeOutput) -> Vec<u8> {
-    output.pixels().try_contiguous_bytes().unwrap().to_vec()
+    output.pixels().contiguous_bytes().unwrap().to_vec()
 }
 
 // ── Preserve: stored dims + intrinsic tag, pixels unbaked ───────────────

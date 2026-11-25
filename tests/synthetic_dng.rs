@@ -112,7 +112,7 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
         zenraw::decode(&data, &linear_config(OutputMode::CameraRaw, 0.0), None).unwrap();
     assert_eq!(
         camera_raw.pixels.spec(),
-        &zenpixels::ImageSpec::rgbf32_linear().with_primaries(zenpixels::Primaries::Unknown)
+        &zenpixels::ImageSpec::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
     );
 
     // Solve camera = [(X + Y) / 2, Y, Z] by substitution once.
@@ -152,11 +152,11 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
     let extended =
         zenraw::decode(&data, &linear_config(OutputMode::LinearExtended, 0.0), None).unwrap();
     let view = extended.pixels.as_view();
-    let values = view.as_contiguous_as::<f32>().unwrap();
+    let values = view.as_contiguous_typed::<f32>().unwrap();
     assert_eq!((view.width(), view.rows()), (8, 6));
     assert_eq!(extended.info.color_matrix, probe.color_matrix);
     assert_eq!(extended.info.orientation, 6);
-    assert_eq!(view.spec(), &zenpixels::ImageSpec::rgbf32_linear());
+    assert_eq!(view.spec(), &zenpixels::ImageSpec::RGBF32_LINEAR);
     for (&actual, expected) in values.iter().zip(expected) {
         assert!(
             (f64::from(actual) - expected).abs() < 2e-6,
@@ -167,7 +167,7 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
     let exposed =
         zenraw::decode(&data, &linear_config(OutputMode::LinearExtended, 3.0), None).unwrap();
     let exposed_view = exposed.pixels.as_view();
-    let exposed_values = exposed_view.as_contiguous_as::<f32>().unwrap();
+    let exposed_values = exposed_view.as_contiguous_typed::<f32>().unwrap();
     assert_eq!(exposed_values.len(), values.len());
     for (&unexposed, &exposed) in values.iter().zip(exposed_values) {
         assert_eq!(exposed.to_bits(), (unexposed * 8.0).to_bits());
@@ -175,7 +175,7 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
 
     let bounded = zenraw::decode(&data, &linear_config(OutputMode::Linear, 0.0), None).unwrap();
     let bounded_view = bounded.pixels.as_view();
-    let bounded_values = bounded_view.as_contiguous_as::<f32>().unwrap();
+    let bounded_values = bounded_view.as_contiguous_typed::<f32>().unwrap();
     assert!(bounded_values.iter().all(|v| (0.0..=1.0).contains(v)));
     assert_eq!(&bounded_values[..2], &[1.0, 0.0]);
     let bounded_exposed =
@@ -205,10 +205,7 @@ fn extended_dng_correct_consumes_orientation_once_with_a_float_preference() {
         .with_orientation(OrientationHint::Correct);
     let prediction = job.output_info(&data).unwrap();
     let decoded = job
-        .decoder(
-            Cow::Borrowed(&data),
-            &[zenpixels::ImageSpec::rgbf32_linear()],
-        )
+        .decoder(Cow::Borrowed(&data), &[zenpixels::ImageSpec::RGBF32_LINEAR])
         .unwrap()
         .decode()
         .unwrap();
@@ -371,7 +368,7 @@ fn decode_f32(mode: zenraw::OutputMode) -> Vec<f32> {
     let data = dng_full_range();
     let config = RawDecodeConfig::new().with_output(mode);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
+    let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
     bytes
         .as_chunks::<4>()
         .0
@@ -429,7 +426,7 @@ fn exposure_ev_multiplies_after_the_clamp() {
         .with_output(zenraw::OutputMode::Linear)
         .with_exposure_ev(3.0);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
+    let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
     let values: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -556,7 +553,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 6x6 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
+        let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -601,7 +598,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 2x2 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.as_view().try_contiguous_bytes().unwrap();
+        let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -715,7 +712,7 @@ fn decode_with_non_firing_stop_is_byte_identical() {
         .expect("baseline decode")
         .pixels
         .as_view()
-        .try_contiguous_bytes()
+        .contiguous_bytes()
         .unwrap()
         .into_owned();
 
@@ -724,7 +721,7 @@ fn decode_with_non_firing_stop_is_byte_identical() {
         .expect("decode with non-firing stop")
         .pixels
         .as_view()
-        .try_contiguous_bytes()
+        .contiguous_bytes()
         .unwrap()
         .into_owned();
 

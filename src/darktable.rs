@@ -4,7 +4,7 @@
 //! 900+ cameras, advanced demosaicing, highlight recovery, and lens correction.
 //!
 //! Output is linear scene-referred f32 in Rec.709 primaries (sRGB gamut, linear
-//! transfer) by default, matching [`zenpixels::ImageSpec::rgbf32_linear`].
+//! transfer) by default, matching [`zenpixels::ImageSpec::RGBF32_LINEAR`].
 //!
 //! # Requirements
 //!
@@ -32,7 +32,7 @@ use crate::error::{RawError, RawLimitKind, Result};
 #[non_exhaustive]
 pub enum DtColorProfile {
     /// Linear Rec.709 / sRGB primaries, linear transfer.
-    /// Matches `ImageSpec::rgbf32_linear()`.
+    /// Matches `ImageSpec::RGBF32_LINEAR`.
     #[default]
     LinearRec709,
     /// Linear Rec.2020 wide gamut, linear transfer.
@@ -328,15 +328,15 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
                     .into_iter()
                     .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8),
             );
-            crate::decode::make_output(samples, info, ImageSpec::rgb8_srgb())
+            crate::decode::make_output(samples, info, ImageSpec::RGB8_SRGB)
         }
         DtColorProfile::LinearRec709 => {
-            crate::decode::make_output(pixels_f32, info, ImageSpec::rgbf32_linear())
+            crate::decode::make_output(pixels_f32, info, ImageSpec::RGBF32_LINEAR)
         }
         DtColorProfile::LinearRec2020 => crate::decode::make_output(
             pixels_f32,
             info,
-            ImageSpec::rgbf32_linear().with_primaries(Primaries::Bt2020),
+            ImageSpec::RGBF32_LINEAR.with_primaries(Primaries::Bt2020),
         ),
     }
 }

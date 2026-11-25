@@ -133,9 +133,9 @@ pub enum DemosaicMethod {
 /// colour to most sites.
 ///
 /// Allocates the output buffer infallibly (`vec![]`). The
-/// [`decode`](crate::decode) pipeline uses
-/// [`demosaic_to_rgb_f32_fallible`] instead, which honours the caller's
-/// [`AllocPref`](crate::alloc_util::AllocPref).
+/// [`decode`](crate::decode()) pipeline uses
+/// `demosaic_to_rgb_f32_fallible` instead, which honours the caller's
+/// `AllocPref`.
 #[cfg(feature = "rawloader")]
 pub fn demosaic_to_rgb_f32(
     data: &[f32],

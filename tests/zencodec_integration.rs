@@ -87,10 +87,7 @@ fn probe_and_output_info() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert!(output_info.width > 0);
     assert!(output_info.height > 0);
-    assert_eq!(
-        output_info.native_format,
-        zenpixels::ImageSpec::rgb16_srgb()
-    );
+    assert_eq!(output_info.native_format, zenpixels::ImageSpec::RGB16_SRGB);
 }
 
 #[test]
@@ -107,7 +104,7 @@ fn output_info_linear() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format,
-        zenpixels::ImageSpec::rgbf32_linear()
+        zenpixels::ImageSpec::RGBF32_LINEAR
     );
 }
 
@@ -125,7 +122,7 @@ fn output_info_camera_raw_primaries_unknown() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format,
-        zenpixels::ImageSpec::rgbf32_linear().with_primaries(zenpixels::Primaries::Unknown)
+        zenpixels::ImageSpec::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
     );
 }
 
@@ -143,7 +140,7 @@ fn output_info_display_p3_primaries() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format,
-        zenpixels::ImageSpec::rgb16_srgb().with_primaries(zenpixels::Primaries::DisplayP3)
+        zenpixels::ImageSpec::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 
@@ -177,14 +174,11 @@ fn decode_prefers_linear_when_requested() {
     let config = zenraw::RawDecoderConfig::new();
     let job = config.job();
     let decoder = job
-        .decoder(
-            Cow::Borrowed(&data),
-            &[zenpixels::ImageSpec::rgbf32_linear()],
-        )
+        .decoder(Cow::Borrowed(&data), &[zenpixels::ImageSpec::RGBF32_LINEAR])
         .expect("decoder creation failed");
     let output = decoder.decode().expect("decode failed");
 
-    assert_eq!(output.descriptor(), zenpixels::ImageSpec::rgbf32_linear());
+    assert_eq!(output.descriptor(), zenpixels::ImageSpec::RGBF32_LINEAR);
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────
@@ -284,7 +278,7 @@ fn decode_bt2020_primaries() {
 
     assert_eq!(
         output.descriptor(),
-        zenpixels::ImageSpec::rgbf32_linear().with_primaries(zenpixels::Primaries::Bt2020)
+        zenpixels::ImageSpec::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Bt2020)
     );
 }
 
@@ -306,7 +300,7 @@ fn decode_display_p3_develop() {
 
     assert_eq!(
         output.descriptor(),
-        zenpixels::ImageSpec::rgb16_srgb().with_primaries(zenpixels::Primaries::DisplayP3)
+        zenpixels::ImageSpec::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 
@@ -323,7 +317,7 @@ fn estimate_decode_resources_scales_and_is_serial() {
     // A 6 MP image: the modelled peak is dominated by the RGB-f32 working set
     // (≈ 3 × W·H·12 B) plus fixed overhead — in the right ballpark of the
     // measured 245.9 MiB / 6.12 MP develop anchor (see the impl + CHANGELOG).
-    let img6 = ImageCharacteristics::new(3000, 2000, ImageSpec::rgb16_srgb());
+    let img6 = ImageCharacteristics::new(3000, 2000, ImageSpec::RGB16_SRGB);
     let est6 = config.estimate_decode_resources(&img6, &compute);
 
     let peak6 = est6.peak_memory_bytes_est().expect("peak modelled");
@@ -341,7 +335,7 @@ fn estimate_decode_resources_scales_and_is_serial() {
     );
 
     // Larger image → strictly larger peak (monotonic in pixels).
-    let img24 = ImageCharacteristics::new(6000, 4000, ImageSpec::rgb16_srgb());
+    let img24 = ImageCharacteristics::new(6000, 4000, ImageSpec::RGB16_SRGB);
     let est24 = config.estimate_decode_resources(&img24, &compute);
     assert!(
         est24.peak_memory_bytes_est().unwrap() > peak6,
@@ -386,7 +380,7 @@ fn fallible_alloc_decode_matches_default() {
             .expect("decoder creation failed")
             .decode()
             .expect("decode failed");
-        out.pixels().try_contiguous_bytes().unwrap().into_owned()
+        out.pixels().contiguous_bytes().unwrap().into_owned()
     };
 
     let default = decode_bytes(None); // CodecDefault

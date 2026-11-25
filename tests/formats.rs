@@ -39,7 +39,7 @@ fn verify_output(output: &RawDecodeOutput, format_name: &str) {
         "{format_name}: empty camera model"
     );
 
-    let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
+    let bytes = output.pixels.as_view().contiguous_bytes().unwrap();
     assert!(!bytes.is_empty(), "{format_name}: empty pixel data");
 
     eprintln!(
@@ -57,11 +57,11 @@ fn verify_output(output: &RawDecodeOutput, format_name: &str) {
 fn verify_linear_stats(output: &RawDecodeOutput, format_name: &str) {
     assert_eq!(
         output.pixels.spec(),
-        &zenpixels::ImageSpec::rgbf32_linear(),
+        &zenpixels::ImageSpec::RGBF32_LINEAR,
         "{format_name}: expected RGBF32_LINEAR"
     );
 
-    let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
+    let bytes = output.pixels.as_view().contiguous_bytes().unwrap();
     let floats: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -87,11 +87,11 @@ fn verify_linear_stats(output: &RawDecodeOutput, format_name: &str) {
 fn verify_srgb_output(output: &RawDecodeOutput, format_name: &str) {
     assert_eq!(
         output.pixels.spec(),
-        &zenpixels::ImageSpec::rgb16_srgb(),
+        &zenpixels::ImageSpec::RGB16_SRGB,
         "{format_name}: expected RGB16_SRGB"
     );
 
-    let bytes = output.pixels.as_view().try_contiguous_bytes().unwrap();
+    let bytes = output.pixels.as_view().contiguous_bytes().unwrap();
     let pixel_count = output.info.width as usize * output.info.height as usize;
     assert_eq!(
         bytes.len(),
@@ -572,12 +572,12 @@ fn all_formats_bilinear_vs_malvar() {
         );
 
         // Both should be sRGB u16
-        assert_eq!(malvar.pixels.spec(), &zenpixels::ImageSpec::rgb16_srgb());
-        assert_eq!(bilinear.pixels.spec(), &zenpixels::ImageSpec::rgb16_srgb());
+        assert_eq!(malvar.pixels.spec(), &zenpixels::ImageSpec::RGB16_SRGB);
+        assert_eq!(bilinear.pixels.spec(), &zenpixels::ImageSpec::RGB16_SRGB);
 
         // They should differ (different algorithms) but not drastically
-        let m_bytes = malvar.pixels.as_view().try_contiguous_bytes().unwrap();
-        let b_bytes = bilinear.pixels.as_view().try_contiguous_bytes().unwrap();
+        let m_bytes = malvar.pixels.as_view().contiguous_bytes().unwrap();
+        let b_bytes = bilinear.pixels.as_view().contiguous_bytes().unwrap();
         assert_eq!(m_bytes.len(), b_bytes.len());
 
         // Compare as u16 samples

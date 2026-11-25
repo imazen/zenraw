@@ -244,7 +244,7 @@ fn report_probe_for_hint(mut info: ImageInfo, hint: OrientationHint) -> ImageInf
 
 // ── Supported output descriptors ───────────────────────────────────────
 
-static DECODE_DESCRIPTORS: &[ImageSpec] = &[ImageSpec::rgb16_srgb(), ImageSpec::rgbf32_linear()];
+static DECODE_DESCRIPTORS: &[ImageSpec] = &[ImageSpec::RGB16_SRGB, ImageSpec::RGBF32_LINEAR];
 
 // ── Capabilities ───────────────────────────────────────────────────────
 
@@ -849,7 +849,7 @@ pub struct RawDecoder<'a> {
 // Preferences select the full-width RGB f32 layout. RAW color development and
 // target primaries remain controlled by the native config.
 fn preferred_output(configured: OutputMode, preferred: &[ImageSpec]) -> OutputMode {
-    let linear_layout = ImageSpec::rgbf32_linear().layout;
+    let linear_layout = ImageSpec::RGBF32_LINEAR.layout;
     if configured != OutputMode::LinearExtended
         && preferred.iter().any(|spec| spec.layout == linear_layout)
     {
@@ -926,7 +926,7 @@ mod orientation_tests {
                 }
             }
         }
-        let buf = PixelBuf::from_vec(samples, w, h, ImageSpec::rgb16_srgb()).unwrap();
+        let buf = PixelBuf::from_typed(samples, w, h, ImageSpec::RGB16_SRGB).unwrap();
         let info =
             ImageInfo::new(w, h, ImageFormat::Custom(&DNG_FORMAT)).with_orientation(intrinsic);
         DecodeOutput::new(buf, info)
@@ -992,7 +992,7 @@ mod orientation_tests {
     fn preserve_returns_stored_dims_and_intrinsic_tag_unbaked() {
         // 3×2 image, intrinsic Rotate90. Preserve must NOT touch pixels or dims.
         let out = synth_output(3, 2, Orientation::Rotate90);
-        let before: Vec<u8> = out.pixels().try_contiguous_bytes().unwrap().to_vec();
+        let before: Vec<u8> = out.pixels().contiguous_bytes().unwrap().to_vec();
         let baked = apply_orientation_to_output(out, OrientationHint::Preserve);
         assert_eq!((baked.width(), baked.height()), (3, 2), "stored dims");
         assert_eq!(
@@ -1001,7 +1001,7 @@ mod orientation_tests {
             "intrinsic tag preserved"
         );
         assert_eq!(
-            baked.pixels().try_contiguous_bytes().unwrap().as_ref(),
+            baked.pixels().contiguous_bytes().unwrap().as_ref(),
             &before[..],
             "pixels unbaked"
         );
@@ -1016,7 +1016,7 @@ mod orientation_tests {
         assert_eq!(baked.info().orientation, Orientation::Identity);
         // Pixel oracle for Rotate90 CW: display(dr,dc) ← src(h-1-dc, dr).
         // src ids: (0,0)=1 (0,1)=2 (0,2)=3 ; (1,0)=17 (1,1)=18 (1,2)=19.
-        let b = baked.pixels().try_contiguous_bytes().unwrap();
+        let b = baked.pixels().contiguous_bytes().unwrap();
         let w = baked.width();
         assert_eq!(id_at(&b, w, 0, 0), 17); // ← src(1,0)
         assert_eq!(id_at(&b, w, 0, 1), 1); // ← src(0,0)
@@ -1042,8 +1042,8 @@ mod orientation_tests {
         assert_eq!((baked_a.width(), baked_a.height()), (2, 3));
         assert_eq!(baked_a.info().orientation, Orientation::Identity);
         assert_eq!(
-            baked_a.pixels().try_contiguous_bytes().unwrap().as_ref(),
-            baked_b.pixels().try_contiguous_bytes().unwrap().as_ref(),
+            baked_a.pixels().contiguous_bytes().unwrap().as_ref(),
+            baked_b.pixels().contiguous_bytes().unwrap().as_ref(),
             "ExactTransform must ignore the intrinsic EXIF orientation"
         );
     }
@@ -1071,8 +1071,8 @@ mod orientation_tests {
         );
         assert_eq!(composed.info().orientation, Orientation::Identity);
         assert_eq!(
-            composed.pixels().try_contiguous_bytes().unwrap().as_ref(),
-            direct.pixels().try_contiguous_bytes().unwrap().as_ref(),
+            composed.pixels().contiguous_bytes().unwrap().as_ref(),
+            direct.pixels().contiguous_bytes().unwrap().as_ref(),
             "CorrectAndTransform must equal intrinsic.then(extra)"
         );
     }
@@ -1082,14 +1082,14 @@ mod orientation_tests {
         // Intrinsic Identity + Correct: no pixel change, dims unchanged, tag
         // becomes Identity (it already was) — and the buffer is returned as-is.
         let out = synth_output(3, 2, Orientation::Identity);
-        let before: Vec<u8> = out.pixels().try_contiguous_bytes().unwrap().to_vec();
+        let before: Vec<u8> = out.pixels().contiguous_bytes().unwrap().to_vec();
         let first_row = out.pixels().row(0).as_ptr();
         let baked = apply_orientation_to_output(out, OrientationHint::Correct);
         assert_eq!((baked.width(), baked.height()), (3, 2));
         assert_eq!(baked.info().orientation, Orientation::Identity);
         assert_eq!(baked.pixels().row(0).as_ptr(), first_row);
         assert_eq!(
-            baked.pixels().try_contiguous_bytes().unwrap().as_ref(),
+            baked.pixels().contiguous_bytes().unwrap().as_ref(),
             &before[..]
         );
     }
@@ -1100,13 +1100,13 @@ mod orientation_tests {
         use zenpixels::{Cicp, ColorOrigin, FloatFacts, Primaries, SampleFacts};
 
         let origin = ColorOrigin::from_cicp(Cicp::new(9, 13, 0, true));
-        let spec = ImageSpec::rgbf32_linear().with_primaries(Primaries::DisplayP3);
+        let spec = ImageSpec::RGBF32_LINEAR.with_primaries(Primaries::DisplayP3);
         let samples = vec![[2.0f32, -0.25, 0.5], [4.0, 0.5, 0.25]];
-        let mut buf = PixelBuf::from_vec(samples, 1, 2, spec.clone())
+        let mut buf = PixelBuf::from_typed(samples, 1, 2, spec.clone())
             .unwrap()
             .with_origin(origin.clone());
         let facts = SampleFacts::from_float(FloatFacts::FINITE);
-        buf.set_facts(facts);
+        buf.assume_facts(facts);
         let view = buf.as_view();
         assert_eq!(view.origin(), Some(&origin));
         let converted = zenpixels_convert::apply_orientation(&view, Orientation::Rotate90).unwrap();

@@ -74,7 +74,7 @@ let h = output.pixels.height() as usize;
 
 // The native decode buffer is tightly packed and uses aligned f32 storage.
 let view = output.pixels.as_view();
-let rgb = view.as_contiguous_as::<f32>()?; // interleaved R, G, B
+let rgb = view.as_contiguous_typed::<f32>()?; // interleaved R, G, B
 
 assert_eq!(rgb.len(), w * h * 3);
 
@@ -100,7 +100,7 @@ Key facts about the layout and value range (verified against the decode path):
 - **`OutputMode::CameraRaw`** keeps demosaic overshoot in camera coordinates.
   It omits white balance, the color matrix, and exposure compensation.
 - **`OutputMode::Develop` (the default)** is display-ready **u16 sRGB**: read it
-  with `view.as_contiguous_as::<u16>()?` for three samples per pixel in
+  with `view.as_contiguous_typed::<u16>()?` for three samples per pixel in
   `[0, 65535]`. `pixels.facts().depth` describes the delivered integer grid,
   and `info.bit_depth` describes the sensor.
 - **Don't re-apply gamma.** `Develop` output is already sRGB-encoded. The two
@@ -111,9 +111,9 @@ Key facts about the layout and value range (verified against the decode path):
   `apply_srgb_gamma` on `Develop` output double-encodes.
 
 Use `view.row_as::<f32>(y)?` or `view.row_as::<u16>(y)?` for typed access to
-one row. `view.try_contiguous_bytes()?` borrows packed bytes and copies active
+one row. `view.contiguous_bytes()?` borrows packed bytes and copies active
 rows when there is stride padding. To consume the native output allocation, use
-`output.pixels.try_into_vec::<f32>()?` or `try_into_vec::<u16>()?` with the
+`output.pixels.into_vec::<f32>()?` or `into_vec::<u16>()?` with the
 matching sample type.
 
 ## Progress and cancellation

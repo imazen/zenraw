@@ -62,11 +62,9 @@ pub enum OutputMode {
 impl OutputMode {
     pub(crate) fn image_spec(self, target: Primaries) -> ImageSpec {
         match self {
-            Self::Develop => ImageSpec::rgb16_srgb().with_primaries(target),
-            Self::Linear | Self::LinearExtended => {
-                ImageSpec::rgbf32_linear().with_primaries(target)
-            }
-            Self::CameraRaw => ImageSpec::rgbf32_linear().with_primaries(Primaries::Unknown),
+            Self::Develop => ImageSpec::RGB16_SRGB.with_primaries(target),
+            Self::Linear | Self::LinearExtended => ImageSpec::RGBF32_LINEAR.with_primaries(target),
+            Self::CameraRaw => ImageSpec::RGBF32_LINEAR.with_primaries(Primaries::Unknown),
         }
     }
 }
@@ -273,18 +271,18 @@ pub(crate) fn make_output<S: StorageSample>(
     let view = pixels.as_view();
     let grayscale = match pixels.spec().layout.sample {
         SampleType::U8 => rgb_is_gray(
-            view.as_contiguous_as::<u8>()
+            view.as_contiguous_typed::<u8>()
                 .map_err_at(crate::RawError::Buffer)?,
         ),
         SampleType::U16 => rgb_is_gray(
-            view.as_contiguous_as::<u16>()
+            view.as_contiguous_typed::<u16>()
                 .map_err_at(crate::RawError::Buffer)?,
         ),
         _ => return Ok(RawDecodeOutput { pixels, info }),
     };
     let depth = ExactDepth::measure(&view)
         .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
-    pixels.set_facts(
+    pixels.assume_facts(
         SampleFacts::from_depth(depth)
             .with_all_opaque(true)
             .with_all_grayscale(grayscale)
@@ -315,7 +313,7 @@ pub(crate) fn make_linear_output(
     let output = make_output(
         samples,
         info,
-        ImageSpec::rgbf32_linear().with_primaries(primaries),
+        ImageSpec::RGBF32_LINEAR.with_primaries(primaries),
     )?;
     pulse.advance(bytes as u64);
     Ok(output)

@@ -164,12 +164,12 @@ fn tracked_decode_counts_exact_work_and_preserves_pixels() {
                         assert!(!child.overrun(), "{child:?}");
                     }
                     assert_eq!(
-                        base.pixels.as_view().try_contiguous_bytes().unwrap(),
-                        tracked.pixels.as_view().try_contiguous_bytes().unwrap()
+                        base.pixels.as_view().contiguous_bytes().unwrap(),
+                        tracked.pixels.as_view().contiguous_bytes().unwrap()
                     );
                     assert_eq!(
-                        base.pixels.as_view().try_contiguous_bytes().unwrap(),
-                        no_pulse.pixels.as_view().try_contiguous_bytes().unwrap()
+                        base.pixels.as_view().contiguous_bytes().unwrap(),
+                        no_pulse.pixels.as_view().contiguous_bytes().unwrap()
                     );
                     assert_eq!(
                         (base.info.width, base.info.height),
@@ -388,8 +388,8 @@ mod adapter {
                 .decode()
                 .unwrap();
             assert_eq!(
-                base.pixels().try_contiguous_bytes().unwrap(),
-                out.pixels().try_contiguous_bytes().unwrap()
+                base.pixels().contiguous_bytes().unwrap(),
+                out.pixels().contiguous_bytes().unwrap()
             );
             assert_eq!(
                 (base.info().width, base.info().height),
@@ -451,12 +451,12 @@ mod adapter {
             spec: zenpixels::ImageSpec,
         ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
             let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut self.storage);
-            zenpixels::PixelViewMut::new(
+            zenpixels::PixelViewMut::new_with_spec_cow(
                 &mut bytes[y as usize * self.stride..],
                 w,
                 h,
                 self.stride,
-                spec,
+                zenpixels::SpecCow::from_owned(spec),
             )
             .map_err(|e| e.to_string().into())
         }
@@ -552,8 +552,8 @@ mod adapter {
                     assert_eq!(actual.spec(), expected.spec());
                     assert_eq!(actual.facts(), expected.facts());
                     assert_eq!(
-                        actual.try_contiguous_bytes().unwrap(),
-                        expected.try_contiguous_bytes().unwrap()
+                        actual.contiguous_bytes().unwrap(),
+                        expected.contiguous_bytes().unwrap()
                     );
                     let (pending, applied) = if bake {
                         (Orientation::Identity, orientation)
