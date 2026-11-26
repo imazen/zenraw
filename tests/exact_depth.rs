@@ -98,7 +98,7 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
                 native.pixels.facts(),
                 "orientation retains sample evidence"
             );
-            assert_eq!(pixels.spec(), native.pixels.spec());
+            assert_eq!(pixels.format(), native.pixels.format());
             if hint == OrientationHint::Preserve {
                 assert_eq!(
                     pixels.contiguous_bytes().unwrap(),
@@ -111,9 +111,13 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
 
 #[test]
 fn measured_three_bit_grid_does_not_establish_eight_bit_exactness() {
-    let pixels =
-        zenpixels::PixelBuf::from_typed(vec![[9362u16; 3]], 1, 1, zenpixels::ImageSpec::RGB16_SRGB)
-            .unwrap();
+    let pixels = zenpixels::PixelBuf::from_typed(
+        vec![[9362u16; 3]],
+        1,
+        1,
+        zenpixels::PixelFormat::RGB16_SRGB,
+    )
+    .unwrap();
     let depth = zenpixels::ExactDepth::measure(&pixels.as_view()).unwrap();
     assert_eq!(depth.color_bits(), 3);
     assert!(depth.holds_for(&pixels.as_view()).unwrap());

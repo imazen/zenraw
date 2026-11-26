@@ -57,7 +57,7 @@ mod incremental_admission {
     use zencodec::decode::{
         DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
     };
-    use zenpixels::{ImageSpec, PixelViewMut};
+    use zenpixels::{PixelFormat, PixelViewMut};
     use zenraw::{RawError, RawLimitKind};
 
     // Padded caller-owned rows exercise the shared helper's real sink path.
@@ -72,7 +72,7 @@ mod incremental_admission {
     }
 
     impl DecodeRowSink for Sink {
-        fn begin(&mut self, width: u32, height: u32, desc: ImageSpec) -> Result<(), SinkError> {
+        fn begin(&mut self, width: u32, height: u32, desc: PixelFormat) -> Result<(), SinkError> {
             self.begins += 1;
             self.width = width;
             self.height = height;
@@ -88,15 +88,15 @@ mod incremental_admission {
             y: u32,
             height: u32,
             width: u32,
-            desc: ImageSpec,
+            desc: PixelFormat,
         ) -> Result<PixelViewMut<'_>, SinkError> {
             let bytes = bytemuck::cast_slice_mut(&mut self.storage);
-            PixelViewMut::new_with_spec_cow(
+            PixelViewMut::new_with_format_cow(
                 &mut bytes[y as usize * self.stride..],
                 width,
                 height,
                 self.stride,
-                zenpixels::SpecCow::from_owned(desc),
+                zenpixels::FormatCow::from_owned(desc),
             )
             .map_err(|e| e.to_string().into())
         }

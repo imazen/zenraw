@@ -18,7 +18,7 @@ use whereat::ResultAtExt;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use whereat::at;
 use zenpixels::{
-    ExactDepth, ImageSpec, PixelBuf, Primaries, SampleFacts, SampleType, StorageSample,
+    ExactDepth, PixelBuf, PixelFormat, Primaries, SampleFacts, SampleType, StorageSample,
 };
 
 pub use crate::dng_render::OutputPrimaries;
@@ -60,11 +60,13 @@ pub enum OutputMode {
 }
 
 impl OutputMode {
-    pub(crate) fn image_spec(self, target: Primaries) -> ImageSpec {
+    pub(crate) fn pixel_format(self, target: Primaries) -> PixelFormat {
         match self {
-            Self::Develop => ImageSpec::RGB16_SRGB.with_primaries(target),
-            Self::Linear | Self::LinearExtended => ImageSpec::RGBF32_LINEAR.with_primaries(target),
-            Self::CameraRaw => ImageSpec::RGBF32_LINEAR.with_primaries(Primaries::Unknown),
+            Self::Develop => PixelFormat::RGB16_SRGB.with_primaries(target),
+            Self::Linear | Self::LinearExtended => {
+                PixelFormat::RGBF32_LINEAR.with_primaries(target)
+            }
+            Self::CameraRaw => PixelFormat::RGBF32_LINEAR.with_primaries(Primaries::Unknown),
         }
     }
 }
@@ -264,12 +266,12 @@ pub struct RawDecodeOutput {
 pub(crate) fn make_output<S: StorageSample>(
     samples: Vec<S>,
     info: RawInfo,
-    spec: ImageSpec,
+    format: PixelFormat,
 ) -> crate::Result<RawDecodeOutput> {
-    let mut pixels = PixelBuf::from_samples(samples, info.width, info.height, spec)
+    let mut pixels = PixelBuf::from_samples(samples, info.width, info.height, format)
         .map_err_at(crate::RawError::Buffer)?;
     let view = pixels.as_view();
-    let grayscale = match pixels.spec().layout.sample {
+    let grayscale = match pixels.format().layout.sample {
         SampleType::U8 => rgb_is_gray(
             view.as_contiguous_typed::<u8>()
                 .map_err_at(crate::RawError::Buffer)?,
@@ -313,7 +315,7 @@ pub(crate) fn make_linear_output(
     let output = make_output(
         samples,
         info,
-        ImageSpec::RGBF32_LINEAR.with_primaries(primaries),
+        PixelFormat::RGBF32_LINEAR.with_primaries(primaries),
     )?;
     pulse.advance(bytes as u64);
     Ok(output)
@@ -1001,7 +1003,9 @@ fn finish_rawloader_output(
             make_output(
                 samples,
                 info,
-                config.output.image_spec(config.target.to_color_primaries()),
+                config
+                    .output
+                    .pixel_format(config.target.to_color_primaries()),
             )
         }
         OutputMode::Linear | OutputMode::LinearExtended => {

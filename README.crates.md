@@ -60,7 +60,7 @@ wrote (RGB U8 for its sRGB profile, linear RGB F32 otherwise).
 ## Reading the pixels out
 
 [`PixelBuf`](https://docs.rs/zenpixels/0.5/zenpixels/struct.PixelBuf.html) owns
-the samples. Its `spec()` returns the `ImageSpec` with the sample layout and
+the samples. Its `format()` returns the `PixelFormat` with the sample layout and
 color space. `as_view()` borrows the samples and supports direct typed access.
 Choose the Rust sample type that matches your requested output mode.
 

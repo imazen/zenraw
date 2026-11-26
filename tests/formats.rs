@@ -56,8 +56,8 @@ fn verify_output(output: &RawDecodeOutput, format_name: &str) {
 /// Verify linear f32 output has reasonable pixel statistics.
 fn verify_linear_stats(output: &RawDecodeOutput, format_name: &str) {
     assert_eq!(
-        output.pixels.spec(),
-        &zenpixels::ImageSpec::RGBF32_LINEAR,
+        output.pixels.format(),
+        &zenpixels::PixelFormat::RGBF32_LINEAR,
         "{format_name}: expected RGBF32_LINEAR"
     );
 
@@ -86,8 +86,8 @@ fn verify_linear_stats(output: &RawDecodeOutput, format_name: &str) {
 /// Verify sRGB u16 output.
 fn verify_srgb_output(output: &RawDecodeOutput, format_name: &str) {
     assert_eq!(
-        output.pixels.spec(),
-        &zenpixels::ImageSpec::RGB16_SRGB,
+        output.pixels.format(),
+        &zenpixels::PixelFormat::RGB16_SRGB,
         "{format_name}: expected RGB16_SRGB"
     );
 
@@ -572,8 +572,11 @@ fn all_formats_bilinear_vs_malvar() {
         );
 
         // Both should be sRGB u16
-        assert_eq!(malvar.pixels.spec(), &zenpixels::ImageSpec::RGB16_SRGB);
-        assert_eq!(bilinear.pixels.spec(), &zenpixels::ImageSpec::RGB16_SRGB);
+        assert_eq!(malvar.pixels.format(), &zenpixels::PixelFormat::RGB16_SRGB);
+        assert_eq!(
+            bilinear.pixels.format(),
+            &zenpixels::PixelFormat::RGB16_SRGB
+        );
 
         // They should differ (different algorithms) but not drastically
         let m_bytes = malvar.pixels.as_view().contiguous_bytes().unwrap();

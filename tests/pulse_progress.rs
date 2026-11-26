@@ -434,9 +434,9 @@ mod adapter {
             &mut self,
             w: u32,
             h: u32,
-            spec: zenpixels::ImageSpec,
+            format: zenpixels::PixelFormat,
         ) -> Result<(), zencodec::decode::SinkError> {
-            let row_bytes = w as usize * spec.layout.bytes_per_pixel();
+            let row_bytes = w as usize * format.layout.bytes_per_pixel();
             self.stride = (row_bytes + 1).next_multiple_of(4);
             self.storage
                 .resize(self.stride * h as usize / 4, 0xa5a5_a5a5);
@@ -448,15 +448,15 @@ mod adapter {
             y: u32,
             h: u32,
             w: u32,
-            spec: zenpixels::ImageSpec,
+            format: zenpixels::PixelFormat,
         ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
             let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut self.storage);
-            zenpixels::PixelViewMut::new_with_spec_cow(
+            zenpixels::PixelViewMut::new_with_format_cow(
                 &mut bytes[y as usize * self.stride..],
                 w,
                 h,
                 self.stride,
-                zenpixels::SpecCow::from_owned(spec),
+                zenpixels::FormatCow::from_owned(format),
             )
             .map_err(|e| e.to_string().into())
         }
@@ -470,7 +470,7 @@ mod adapter {
             meta: zencodec::decode::BatchMeta,
             height: u32,
             width: u32,
-            spec: zenpixels::ImageSpec,
+            format: zenpixels::PixelFormat,
             metadata: &zencodec::decode::RowMetadata,
         ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
             assert!(meta.is_final && height <= self.max_buffer_rows().get());
@@ -479,7 +479,7 @@ mod adapter {
             } else {
                 self.metadata = Some(metadata.clone());
             }
-            self.provide_next_buffer(meta.y, height, width, spec)
+            self.provide_next_buffer(meta.y, height, width, format)
         }
 
         fn finish(&mut self) -> Result<(), zencodec::decode::SinkError> {
@@ -549,7 +549,7 @@ mod adapter {
                         (actual.width(), actual.rows()),
                         (expected.width(), expected.rows())
                     );
-                    assert_eq!(actual.spec(), expected.spec());
+                    assert_eq!(actual.format(), expected.format());
                     assert_eq!(actual.facts(), expected.facts());
                     assert_eq!(
                         actual.contiguous_bytes().unwrap(),
@@ -587,7 +587,7 @@ mod adapter {
                         panic!("incremental decode must finish after delivering the rows");
                     };
                     assert_eq!(info, prediction);
-                    assert_eq!(info.native_format, *expected.spec());
+                    assert_eq!(info.native_format, *expected.format());
                     assert_eq!(
                         (info.width, info.height),
                         (expected.width(), expected.rows())
@@ -704,10 +704,10 @@ mod adapter {
             atomic::{AtomicBool, Ordering},
         };
         use zencodec::decode::{DecodeRowSink, Event, Input, SinkError, StepError};
-        use zenpixels::{ImageSpec, PixelViewMut};
+        use zenpixels::{PixelFormat, PixelViewMut};
         struct NoEffects;
         impl DecodeRowSink for NoEffects {
-            fn begin(&mut self, _: u32, _: u32, _: ImageSpec) -> Result<(), SinkError> {
+            fn begin(&mut self, _: u32, _: u32, _: PixelFormat) -> Result<(), SinkError> {
                 panic!("cancelled session published a header")
             }
             fn provide_next_buffer(
@@ -715,7 +715,7 @@ mod adapter {
                 _: u32,
                 _: u32,
                 _: u32,
-                _: ImageSpec,
+                _: PixelFormat,
             ) -> Result<PixelViewMut<'_>, SinkError> {
                 panic!("cancelled session requested output storage")
             }

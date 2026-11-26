@@ -13,7 +13,7 @@ use rawler::decoders::RawDecodeParams;
 use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
 use whereat::at;
-use zenpixels::{ImageSpec, Primaries};
+use zenpixels::{PixelFormat, Primaries};
 
 use rawler::imgop::xyz::Illuminant;
 
@@ -596,7 +596,7 @@ fn auto_develop_output(
     crate::decode::make_output(
         u16_data,
         info,
-        ImageSpec::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
+        PixelFormat::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
     )
 }
 
@@ -1053,7 +1053,7 @@ fn build_develop_output(
     crate::decode::make_output(
         samples,
         info,
-        ImageSpec::RGB16_SRGB.with_primaries(primaries),
+        PixelFormat::RGB16_SRGB.with_primaries(primaries),
     )
 }
 

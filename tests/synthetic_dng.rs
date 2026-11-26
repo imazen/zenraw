@@ -111,8 +111,8 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
     let camera_raw =
         zenraw::decode(&data, &linear_config(OutputMode::CameraRaw, 0.0), None).unwrap();
     assert_eq!(
-        camera_raw.pixels.spec(),
-        &zenpixels::ImageSpec::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
+        camera_raw.pixels.format(),
+        &zenpixels::PixelFormat::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
     );
 
     // Solve camera = [(X + Y) / 2, Y, Z] by substitution once.
@@ -156,7 +156,7 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
     assert_eq!((view.width(), view.rows()), (8, 6));
     assert_eq!(extended.info.color_matrix, probe.color_matrix);
     assert_eq!(extended.info.orientation, 6);
-    assert_eq!(view.spec(), &zenpixels::ImageSpec::RGBF32_LINEAR);
+    assert_eq!(view.format(), &zenpixels::PixelFormat::RGBF32_LINEAR);
     for (&actual, expected) in values.iter().zip(expected) {
         assert!(
             (f64::from(actual) - expected).abs() < 2e-6,
@@ -205,7 +205,10 @@ fn extended_dng_correct_consumes_orientation_once_with_a_float_preference() {
         .with_orientation(OrientationHint::Correct);
     let prediction = job.output_info(&data).unwrap();
     let decoded = job
-        .decoder(Cow::Borrowed(&data), &[zenpixels::ImageSpec::RGBF32_LINEAR])
+        .decoder(
+            Cow::Borrowed(&data),
+            &[zenpixels::PixelFormat::RGBF32_LINEAR],
+        )
         .unwrap()
         .decode()
         .unwrap();
@@ -215,7 +218,7 @@ fn extended_dng_correct_consumes_orientation_once_with_a_float_preference() {
     assert_eq!(decoded.info().orientation, Orientation::Identity);
     assert_eq!(prediction.orientation_applied, Orientation::Rotate90);
     assert_eq!((decoded.width(), decoded.height()), (6, 8));
-    assert_eq!(decoded.pixels().spec(), stored_view.spec());
+    assert_eq!(decoded.pixels().format(), stored_view.format());
     let bytes = manual.as_view().as_contiguous_bytes().unwrap();
     assert_eq!(decoded.pixels().as_contiguous_bytes().unwrap(), bytes);
     assert_eq!(

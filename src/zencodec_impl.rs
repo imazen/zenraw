@@ -17,7 +17,7 @@ use zencodec::{
     ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, OrientationHint,
     ResourceLimits,
 };
-use zenpixels::ImageSpec;
+use zenpixels::PixelFormat;
 
 use crate::decode::{self, OutputMode, RawDecodeConfig};
 use crate::error::{RawError, RawLimitKind};
@@ -244,7 +244,7 @@ fn report_probe_for_hint(mut info: ImageInfo, hint: OrientationHint) -> ImageInf
 
 // ── Supported output descriptors ───────────────────────────────────────
 
-static DECODE_DESCRIPTORS: &[ImageSpec] = &[ImageSpec::RGB16_SRGB, ImageSpec::RGBF32_LINEAR];
+static DECODE_DESCRIPTORS: &[PixelFormat] = &[PixelFormat::RGB16_SRGB, PixelFormat::RGBF32_LINEAR];
 
 // ── Capabilities ───────────────────────────────────────────────────────
 
@@ -297,7 +297,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         &FORMATS
     }
 
-    fn supported_descriptors() -> &'static [ImageSpec] {
+    fn supported_descriptors() -> &'static [PixelFormat] {
         DECODE_DESCRIPTORS
     }
 
@@ -473,7 +473,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         let descriptor = self
             .config
             .output
-            .image_spec(self.config.target.to_color_primaries());
+            .pixel_format(self.config.target.to_color_primaries());
 
         // Report the post-orientation output geometry + the transform the decoder
         // will bake. `Preserve` bakes nothing (output = stored dims, `Identity`
@@ -492,7 +492,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn decoder(
         self,
         data: Cow<'a, [u8]>,
-        preferred: &[ImageSpec],
+        preferred: &[PixelFormat],
     ) -> Result<Self::Dec, Self::Error> {
         // Check input size limits
         self.limits
@@ -529,7 +529,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         // Check memory limits — estimate output buffer size
         let bytes_per_pixel = config
             .output
-            .image_spec(config.target.to_color_primaries())
+            .pixel_format(config.target.to_color_primaries())
             .layout
             .bytes_per_pixel() as u64;
         let estimated_bytes = info.width as u64 * info.height as u64 * bytes_per_pixel;
@@ -556,26 +556,26 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         self,
         data: Cow<'a, [u8]>,
         sink: &mut dyn DecodeRowSink,
-        preferred: &[ImageSpec],
+        preferred: &[PixelFormat],
     ) -> Result<OutputInfo, Self::Error> {
         let (output, applied) = self.decoder(data, preferred)?.decode_with_orientation()?;
         let pixels = output.pixels();
         let (w, h) = (pixels.width(), pixels.rows());
-        let spec = pixels.spec().clone();
+        let format = pixels.format().clone();
 
         let wrap = |e: SinkError| at!(RawError::Io(e.to_string()));
-        sink.begin(w, h, spec.clone()).map_err(wrap)?;
+        sink.begin(w, h, format.clone()).map_err(wrap)?;
         zencodec::helpers::copy_rows_to_sink(sink, BatchMeta::final_rows(0), &pixels)
             .map_err(wrap)?;
         sink.finish().map_err(wrap)?;
 
-        Ok(OutputInfo::full_decode(w, h, spec).with_orientation_applied(applied))
+        Ok(OutputInfo::full_decode(w, h, format).with_orientation_applied(applied))
     }
 
     fn streaming_decoder(
         self,
         _data: Cow<'a, [u8]>,
-        _preferred: &[ImageSpec],
+        _preferred: &[PixelFormat],
     ) -> Result<Self::StreamDec, Self::Error> {
         Err(at!(RawError::UnsupportedOperation(
             zencodec::UnsupportedOperation::RowLevelDecode
@@ -585,7 +585,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn animation_frame_decoder(
         self,
         _data: Cow<'a, [u8]>,
-        _preferred: &[ImageSpec],
+        _preferred: &[PixelFormat],
     ) -> Result<Self::AnimationFrameDec, Self::Error> {
         Err(at!(RawError::UnsupportedOperation(
             zencodec::UnsupportedOperation::AnimationDecode
@@ -598,7 +598,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     /// a complete buffer.
     fn dyn_incremental_decoder(
         self,
-        preferred: &[ImageSpec],
+        preferred: &[PixelFormat],
     ) -> Result<
         alloc::boxed::Box<zencodec::decode::DynIncrementalDecoder>,
         zencodec::decode::BoxedError,
@@ -623,11 +623,11 @@ struct RawIncremental {
 }
 
 impl RawIncremental {
-    fn new(mut job: RawDecodeJob, preferred: &[ImageSpec]) -> Self {
+    fn new(mut job: RawDecodeJob, preferred: &[PixelFormat]) -> Self {
         job.incremental_probe = Some(alloc::sync::Arc::new(std::sync::OnceLock::new()));
         let output = preferred_output(job.config.output, preferred);
         let output_bytes_per_pixel = output
-            .image_spec(job.config.target.to_color_primaries())
+            .pixel_format(job.config.target.to_color_primaries())
             .layout
             .bytes_per_pixel() as u64;
         let probe_job = RawDecodeJob {
@@ -826,7 +826,7 @@ impl IncrementalDecode for RawIncremental {
         }
     }
 
-    fn output_descriptor(&self) -> Option<ImageSpec> {
+    fn output_descriptor(&self) -> Option<PixelFormat> {
         self.inner.output_descriptor()
     }
 }
@@ -848,10 +848,10 @@ pub struct RawDecoder<'a> {
 
 // Preferences select the full-width RGB f32 layout. RAW color development and
 // target primaries remain controlled by the native config.
-fn preferred_output(configured: OutputMode, preferred: &[ImageSpec]) -> OutputMode {
-    let linear_layout = ImageSpec::RGBF32_LINEAR.layout;
+fn preferred_output(configured: OutputMode, preferred: &[PixelFormat]) -> OutputMode {
+    let linear_layout = PixelFormat::RGBF32_LINEAR.layout;
     if configured != OutputMode::LinearExtended
-        && preferred.iter().any(|spec| spec.layout == linear_layout)
+        && preferred.iter().any(|fmt| fmt.layout == linear_layout)
     {
         OutputMode::Linear
     } else {
@@ -926,7 +926,7 @@ mod orientation_tests {
                 }
             }
         }
-        let buf = PixelBuf::from_typed(samples, w, h, ImageSpec::RGB16_SRGB).unwrap();
+        let buf = PixelBuf::from_typed(samples, w, h, PixelFormat::RGB16_SRGB).unwrap();
         let info =
             ImageInfo::new(w, h, ImageFormat::Custom(&DNG_FORMAT)).with_orientation(intrinsic);
         DecodeOutput::new(buf, info)
@@ -1100,9 +1100,9 @@ mod orientation_tests {
         use zenpixels::{Cicp, ColorOrigin, FloatFacts, Primaries, SampleFacts};
 
         let origin = ColorOrigin::from_cicp(Cicp::new(9, 13, 0, true));
-        let spec = ImageSpec::RGBF32_LINEAR.with_primaries(Primaries::DisplayP3);
+        let format = PixelFormat::RGBF32_LINEAR.with_primaries(Primaries::DisplayP3);
         let samples = vec![[2.0f32, -0.25, 0.5], [4.0, 0.5, 0.25]];
-        let mut buf = PixelBuf::from_typed(samples, 1, 2, spec.clone())
+        let mut buf = PixelBuf::from_typed(samples, 1, 2, format.clone())
             .unwrap()
             .with_origin(origin.clone());
         let facts = SampleFacts::from_float(FloatFacts::FINITE);
@@ -1117,7 +1117,7 @@ mod orientation_tests {
         let pixels = corrected.pixels();
         assert_eq!((pixels.width(), pixels.rows()), (2, 1));
         assert_eq!(corrected.info().orientation, Orientation::Identity);
-        assert_eq!(pixels.spec(), &spec);
+        assert_eq!(pixels.format(), &format);
         assert_eq!(pixels.origin(), Some(&origin));
         assert_eq!(pixels.facts(), facts);
         assert_eq!(
@@ -1125,7 +1125,7 @@ mod orientation_tests {
             &[4.0, 0.5, 0.25, 2.0, -0.25, 0.5]
         );
         let converted = converted.as_view();
-        assert_eq!(converted.spec(), pixels.spec());
+        assert_eq!(converted.format(), pixels.format());
         assert_eq!(converted.origin(), pixels.origin());
         assert_eq!(converted.facts(), pixels.facts());
         assert_eq!(converted.row(0), pixels.row(0));

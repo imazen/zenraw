@@ -87,7 +87,10 @@ fn probe_and_output_info() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert!(output_info.width > 0);
     assert!(output_info.height > 0);
-    assert_eq!(output_info.native_format, zenpixels::ImageSpec::RGB16_SRGB);
+    assert_eq!(
+        output_info.native_format,
+        zenpixels::PixelFormat::RGB16_SRGB
+    );
 }
 
 #[test]
@@ -104,7 +107,7 @@ fn output_info_linear() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format,
-        zenpixels::ImageSpec::RGBF32_LINEAR
+        zenpixels::PixelFormat::RGBF32_LINEAR
     );
 }
 
@@ -122,7 +125,7 @@ fn output_info_camera_raw_primaries_unknown() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format,
-        zenpixels::ImageSpec::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
+        zenpixels::PixelFormat::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
     );
 }
 
@@ -140,7 +143,7 @@ fn output_info_display_p3_primaries() {
     let output_info = job.output_info(&data).expect("output_info failed");
     assert_eq!(
         output_info.native_format,
-        zenpixels::ImageSpec::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
+        zenpixels::PixelFormat::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 
@@ -174,11 +177,14 @@ fn decode_prefers_linear_when_requested() {
     let config = zenraw::RawDecoderConfig::new();
     let job = config.job();
     let decoder = job
-        .decoder(Cow::Borrowed(&data), &[zenpixels::ImageSpec::RGBF32_LINEAR])
+        .decoder(
+            Cow::Borrowed(&data),
+            &[zenpixels::PixelFormat::RGBF32_LINEAR],
+        )
         .expect("decoder creation failed");
     let output = decoder.decode().expect("decode failed");
 
-    assert_eq!(output.descriptor(), zenpixels::ImageSpec::RGBF32_LINEAR);
+    assert_eq!(output.descriptor(), zenpixels::PixelFormat::RGBF32_LINEAR);
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────
@@ -278,7 +284,7 @@ fn decode_bt2020_primaries() {
 
     assert_eq!(
         output.descriptor(),
-        zenpixels::ImageSpec::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Bt2020)
+        zenpixels::PixelFormat::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Bt2020)
     );
 }
 
@@ -300,7 +306,7 @@ fn decode_display_p3_develop() {
 
     assert_eq!(
         output.descriptor(),
-        zenpixels::ImageSpec::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
+        zenpixels::PixelFormat::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 
@@ -309,7 +315,7 @@ fn decode_display_p3_develop() {
 #[test]
 fn estimate_decode_resources_scales_and_is_serial() {
     use zencodec::estimate::{ComputeEnvironment, ImageCharacteristics, ThreadingInformation};
-    use zenpixels::ImageSpec;
+    use zenpixels::PixelFormat;
 
     let config = zenraw::RawDecoderConfig::new();
     let compute = ComputeEnvironment::conservative().with_cores(8);
@@ -317,7 +323,7 @@ fn estimate_decode_resources_scales_and_is_serial() {
     // A 6 MP image: the modelled peak is dominated by the RGB-f32 working set
     // (≈ 3 × W·H·12 B) plus fixed overhead — in the right ballpark of the
     // measured 245.9 MiB / 6.12 MP develop anchor (see the impl + CHANGELOG).
-    let img6 = ImageCharacteristics::new(3000, 2000, ImageSpec::RGB16_SRGB);
+    let img6 = ImageCharacteristics::new(3000, 2000, PixelFormat::RGB16_SRGB);
     let est6 = config.estimate_decode_resources(&img6, &compute);
 
     let peak6 = est6.peak_memory_bytes_est().expect("peak modelled");
@@ -335,7 +341,7 @@ fn estimate_decode_resources_scales_and_is_serial() {
     );
 
     // Larger image → strictly larger peak (monotonic in pixels).
-    let img24 = ImageCharacteristics::new(6000, 4000, ImageSpec::RGB16_SRGB);
+    let img24 = ImageCharacteristics::new(6000, 4000, PixelFormat::RGB16_SRGB);
     let est24 = config.estimate_decode_resources(&img24, &compute);
     assert!(
         est24.peak_memory_bytes_est().unwrap() > peak6,

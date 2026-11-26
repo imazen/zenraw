@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenraw.txt 207 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
+# files: zenraw.txt 208 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
 
 ## summary
 #
@@ -17,7 +17,8 @@
 #   struct fields                              66
 #   enum variants                              66
 #   trait roster entries (type × trait)        53
-#   auto-trait-complete types                  11
+#   auto-trait-complete types                  10
+#   auto-trait exceptions                       1
 #
 # per-module pub lines:
 #   (root)                           90
@@ -241,4 +242,5 @@ dng_render::OutputPrimaries: Clone, Copy, Debug, Default, Eq, PartialEq
 
 ## auto traits
 
-11 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+10 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+decode::RawDecodeOutput: !RefUnwindSafe !UnwindSafe

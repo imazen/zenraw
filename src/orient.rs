@@ -334,21 +334,21 @@ fn remap_pixels(
     use whereat::ResultAtExt;
     use zenpixels::{PixelBuf, SampleType};
 
-    let spec = src.spec().clone();
-    let bpp = spec.layout.bytes_per_pixel();
-    let samples = width as usize * height as usize * spec.layout.channels();
-    let mut out = match spec.layout.sample {
+    let format = src.format().clone();
+    let bpp = format.layout.bytes_per_pixel();
+    let samples = width as usize * height as usize * format.layout.channels();
+    let mut out = match format.layout.sample {
         SampleType::U16 => PixelBuf::from_samples(
             alloc_zeroed::<u16>(alloc_pref, true, samples)?,
             width,
             height,
-            spec,
+            format,
         ),
         SampleType::F32 => PixelBuf::from_samples(
             alloc_zeroed::<f32>(alloc_pref, true, samples)?,
             width,
             height,
-            spec,
+            format,
         ),
         _ => {
             return Err(whereat::at!(crate::RawError::Buffer(
@@ -388,8 +388,8 @@ mod tests {
         use how_far::{Complete, Outcome, Total};
         use how_far_along::{Phase, PulseTree};
         for descriptor in [
-            zenpixels::ImageSpec::RGB16_SRGB,
-            zenpixels::ImageSpec::RGBF32_LINEAR,
+            zenpixels::PixelFormat::RGB16_SRGB,
+            zenpixels::PixelFormat::RGBF32_LINEAR,
         ] {
             let (w, h) = (5usize, 3usize);
             let bpp = descriptor.layout.bytes_per_pixel();
