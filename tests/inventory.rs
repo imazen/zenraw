@@ -254,7 +254,7 @@ fn decode_summary(data: &[u8]) -> Result<Summary, String> {
         .decoder(Cow::Borrowed(data), &[])
         .and_then(|d| d.decode())
         .map_err(|e| e.to_string())?;
-    let pixels = out.pixels().contiguous_bytes().into_owned();
+    let pixels = out.pixels().to_contiguous_bytes().unwrap().into_owned();
     let xmp = out
         .info()
         .embedded_metadata
@@ -1317,7 +1317,6 @@ fn bigtiff_is_not_decoded() {
 /// `inventory` checks the job's stop token and `max_input_bytes` like
 /// `decoder` does.
 #[test]
-#[allow(deprecated)] // Exercise the retained cancellation-only compatibility API.
 fn inventory_honours_stop_and_input_limit() {
     let data = dng_fixture();
     let limited = RawDecoderConfig::new()
@@ -1333,7 +1332,7 @@ fn inventory_honours_stop_and_input_limit() {
     }
     let stopped = RawDecoderConfig::new()
         .job()
-        .with_stop(zencodec::StopToken::new(Cancelled))
+        .with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(Cancelled)))
         .inventory(&data);
     assert!(stopped.is_err());
 }
@@ -2312,7 +2311,6 @@ fn the_gate_rejects_undecodable_fixtures() {
 }
 
 #[test]
-#[allow(deprecated)] // Exercise the retained cancellation-only compatibility API.
 fn configured_limits_and_cancellation_survive_dispatch() {
     use zencodec::decode::DynDecoderConfig;
     use zencodec::{CategorizedError, CodecErrorExt, ErrorCategory, LimitExceeded, ResourceLimits};
@@ -2342,15 +2340,15 @@ fn configured_limits_and_cancellation_survive_dispatch() {
             Err(enough::StopReason::Cancelled)
         }
     }
-    let stop = zencodec::StopToken::new(Cancelled);
+    let pulse = how_far::SharedPulse::new(how_far::StopOnly::new(Cancelled));
     let native = config
         .clone()
         .job()
-        .with_stop(stop.clone())
+        .with_pulse(pulse.clone())
         .inventory(&data)
         .unwrap_err();
     let mut erased_job = dynamic.dyn_job();
-    erased_job.set_stop(stop);
+    erased_job.set_pulse(pulse);
     let erased = erased_job.inventory(&data).unwrap_err();
     assert_eq!(
         native.category(),
@@ -2360,7 +2358,6 @@ fn configured_limits_and_cancellation_survive_dispatch() {
 }
 
 #[test]
-#[allow(deprecated)] // Exercise the retained cancellation-only compatibility API.
 fn mid_walk_cancellation_preserves_the_first_reason() {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use zencodec::{CategorizedError, ErrorCategory};
@@ -2383,7 +2380,9 @@ fn mid_walk_cancellation_preserves_the_first_reason() {
         let err = config
             .clone()
             .job()
-            .with_stop(zencodec::StopToken::new(StopOnce(AtomicUsize::new(0))))
+            .with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(StopOnce(
+                AtomicUsize::new(0),
+            ))))
             .inventory(&data)
             .unwrap_err();
         assert_eq!(
@@ -2393,7 +2392,9 @@ fn mid_walk_cancellation_preserves_the_first_reason() {
         );
         let dynamic: &dyn zencodec::decode::DynDecoderConfig = &config;
         let mut job = dynamic.dyn_job();
-        job.set_stop(zencodec::StopToken::new(StopOnce(AtomicUsize::new(0))));
+        job.set_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(StopOnce(
+            AtomicUsize::new(0),
+        ))));
         let err = job.inventory(&data).unwrap_err();
         assert_eq!(
             zencodec::CodecErrorExt::error_category(&*err),

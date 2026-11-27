@@ -4,7 +4,7 @@
 //! 900+ cameras, advanced demosaicing, highlight recovery, and lens correction.
 //!
 //! Output is linear scene-referred f32 in Rec.709 primaries (sRGB gamut, linear
-//! transfer) by default, matching [`zenpixels::PixelDescriptor::RGBF32_LINEAR`].
+//! transfer) by default, matching [`zenpixels::PixelFormat::RGBF32_LINEAR`].
 //!
 //! # Requirements
 //!
@@ -21,8 +21,8 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
-use whereat::{ResultAtExt, at};
-use zenpixels::{PixelBuffer, PixelDescriptor};
+use whereat::at;
+use zenpixels::{PixelFormat, Primaries};
 
 use crate::decode::{RawDecodeOutput, RawInfo};
 use crate::error::{RawError, RawLimitKind, Result};
@@ -32,7 +32,7 @@ use crate::error::{RawError, RawLimitKind, Result};
 #[non_exhaustive]
 pub enum DtColorProfile {
     /// Linear Rec.709 / sRGB primaries, linear transfer.
-    /// Matches `PixelDescriptor::RGBF32_LINEAR`.
+    /// Matches `PixelFormat::RGBF32_LINEAR`.
     #[default]
     LinearRec709,
     /// Linear Rec.2020 wide gamut, linear transfer.
@@ -287,24 +287,6 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
         )));
     }
 
-    // Build PixelBuffer
-    let descriptor = match config.color_profile {
-        DtColorProfile::Srgb => PixelDescriptor::RGB8_SRGB,
-        _ => PixelDescriptor::RGBF32_LINEAR,
-    };
-
-    // For sRGB, convert f32 to u8
-    let buf = if matches!(config.color_profile, DtColorProfile::Srgb) {
-        let u8_data: Vec<u8> = pixels_f32
-            .iter()
-            .map(|&v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-            .collect();
-        PixelBuffer::from_vec(u8_data, width, height, descriptor).map_err_at(RawError::Buffer)?
-    } else {
-        let byte_data: Vec<u8> = pixels_f32.iter().flat_map(|&v| v.to_ne_bytes()).collect();
-        PixelBuffer::from_vec(byte_data, width, height, descriptor).map_err_at(RawError::Buffer)?
-    };
-
     // Extract camera info from filename (darktable doesn't emit it in PFM)
     let filename = path
         .file_stem()
@@ -314,29 +296,49 @@ pub fn decode_file(path: &Path, config: &DtConfig) -> Result<RawDecodeOutput> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let is_dng = ext.eq_ignore_ascii_case("dng");
 
-    crate::decode::output_with_exact_depth(
-        buf,
-        RawInfo {
-            width,
-            height,
-            make: String::new(),
-            model: filename,
-            sensor_width: width,
-            sensor_height: height,
-            cfa_pattern: String::new(),
-            is_dng,
-            orientation: 1,
-            bit_depth: None, // darktable outputs processed pixels, not raw sensor data
-            wb_coeffs: [1.0, 1.0, 1.0, 1.0],
-            color_matrix: [[0.0; 3]; 4],
-            black_levels: [0.0; 4],
-            white_levels: [0.0; 4],
-            crop_rect: None,
-            active_area: None,
-            baseline_exposure: None,
-            sensor_layout: crate::decode::SensorLayout::Unknown,
-        },
-    )
+    let info = RawInfo {
+        width,
+        height,
+        make: String::new(),
+        model: filename,
+        sensor_width: width,
+        sensor_height: height,
+        cfa_pattern: String::new(),
+        is_dng,
+        orientation: 1,
+        bit_depth: None, // darktable outputs processed pixels, not raw sensor data
+        wb_coeffs: [1.0, 1.0, 1.0, 1.0],
+        color_matrix: [[0.0; 3]; 4],
+        black_levels: [0.0; 4],
+        white_levels: [0.0; 4],
+        crop_rect: None,
+        active_area: None,
+        baseline_exposure: None,
+        sensor_layout: crate::decode::SensorLayout::Unknown,
+    };
+    match config.color_profile {
+        DtColorProfile::Srgb => {
+            let mut samples = crate::alloc_util::vec_with_capacity(
+                crate::alloc_util::AllocPref::CodecDefault,
+                true,
+                pixels_f32.len(),
+            )?;
+            samples.extend(
+                pixels_f32
+                    .into_iter()
+                    .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8),
+            );
+            crate::decode::make_output(samples, info, PixelFormat::RGB8_SRGB)
+        }
+        DtColorProfile::LinearRec709 => {
+            crate::decode::make_output(pixels_f32, info, PixelFormat::RGBF32_LINEAR)
+        }
+        DtColorProfile::LinearRec2020 => crate::decode::make_output(
+            pixels_f32,
+            info,
+            PixelFormat::RGBF32_LINEAR.with_primaries(Primaries::Bt2020),
+        ),
+    }
 }
 
 /// Decode RAW bytes using darktable-cli (writes to temp file, decodes, cleans up).

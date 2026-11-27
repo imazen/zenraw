@@ -196,6 +196,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "magetypes"
 version = "0.9.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -409,12 +415,14 @@ checksum = "d107c80dd656e1a2c254dfb1d57ece73b7f515b8a8684c270c23cab68f4a440d"
 
 [[package]]
 name = "zencodec"
-version = "0.2.0"
-source = "git+https://github.com/imazen/zencodec?rev=feb09f9fd25e90e49a30d7161db8f3b558dfb2a6#feb09f9fd25e90e49a30d7161db8f3b558dfb2a6"
+version = "0.3.0"
+source = "git+https://github.com/imazen/zencodec?rev=5d4f6c473404c09c95f404543f8a16a1e3cb8477#5d4f6c473404c09c95f404543f8a16a1e3cb8477"
 dependencies = [
  "almost-enough",
+ "bytemuck",
  "enough",
  "how-far",
+ "libm",
  "spin",
  "whereat",
  "zenpixels",
@@ -422,8 +430,8 @@ dependencies = [
 
 [[package]]
 name = "zenmeta"
-version = "0.1.0"
-source = "git+https://github.com/imazen/zencodec?rev=feb09f9fd25e90e49a30d7161db8f3b558dfb2a6#feb09f9fd25e90e49a30d7161db8f3b558dfb2a6"
+version = "0.2.0"
+source = "git+https://github.com/imazen/zencodec?rev=5d4f6c473404c09c95f404543f8a16a1e3cb8477#5d4f6c473404c09c95f404543f8a16a1e3cb8477"
 dependencies = [
  "zencodec",
  "zenpixels",
@@ -431,8 +439,8 @@ dependencies = [
 
 [[package]]
 name = "zenpixels"
-version = "0.2.17"
-source = "git+https://github.com/imazen/zenpixels?rev=283655c5424e0ad7ebc6d2acd94670fac1e29158#283655c5424e0ad7ebc6d2acd94670fac1e29158"
+version = "0.5.0"
+source = "git+https://github.com/imazen/zenpixels?rev=7fa068834f8074c2630a352b25f355f7c90751f8#7fa068834f8074c2630a352b25f355f7c90751f8"
 dependencies = [
  "bytemuck",
  "whereat",
@@ -467,6 +475,16 @@ dependencies = [
 ]
 
 [[patch.unused]]
+name = "garb"
+version = "0.2.9"
+source = "git+https://github.com/imazen/garb?rev=457ff8b9153e9d675a39dc098052b2ffeb6206fa#457ff8b9153e9d675a39dc098052b2ffeb6206fa"
+
+[[patch.unused]]
+name = "linear-srgb"
+version = "0.6.13"
+source = "git+https://github.com/imazen/linear-srgb?rev=ae83f19426737635fee3dd16f228681019f52585#ae83f19426737635fee3dd16f228681019f52585"
+
+[[patch.unused]]
 name = "zenpixels-convert"
-version = "0.2.17"
-source = "git+https://github.com/imazen/zenpixels?rev=283655c5424e0ad7ebc6d2acd94670fac1e29158#283655c5424e0ad7ebc6d2acd94670fac1e29158"
+version = "0.5.0"
+source = "git+https://github.com/imazen/zenpixels?rev=7fa068834f8074c2630a352b25f355f7c90751f8#7fa068834f8074c2630a352b25f355f7c90751f8"

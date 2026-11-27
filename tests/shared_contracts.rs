@@ -32,7 +32,7 @@ fn dng_policy_and_inventory_contracts() {
         .metadata();
     for (policy, accepted) in [
         (DecodePolicy::none(), true),
-        (DecodePolicy::strict(), false),
+        (DecodePolicy::untrusted_minimal(), false),
     ] {
         zencodec_testkit::check_decode_policy_admission(
             dec.clone(),
@@ -55,9 +55,10 @@ mod incremental_admission {
     use enough::{Stop, StopReason};
     use zencodec::ResourceLimits;
     use zencodec::decode::{
-        DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
+        DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, RowStrip, SinkError,
+        StepError,
     };
-    use zenpixels::{PixelDescriptor, PixelSliceMut};
+    use zenpixels::{PixelFormat, PixelViewMut};
     use zenraw::{RawError, RawLimitKind};
 
     // Padded caller-owned rows exercise the shared helper's real sink path.
@@ -72,37 +73,29 @@ mod incremental_admission {
     }
 
     impl DecodeRowSink for Sink {
-        fn begin(
-            &mut self,
-            width: u32,
-            height: u32,
-            desc: PixelDescriptor,
-        ) -> Result<(), SinkError> {
+        fn begin(&mut self, width: u32, height: u32, desc: PixelFormat) -> Result<(), SinkError> {
             self.begins += 1;
             self.width = width;
             self.height = height;
-            // zenpixels0.2.16 requires whole-pixel stride. Four pixels also
-            // align the u32-backed storage for either RGB16 or RGBF32.
-            let unit = 4 * desc.bytes_per_pixel();
-            self.stride = (width as usize).div_ceil(4) * unit + unit;
+            // Pad by less than a whole pixel while retaining u32 alignment.
+            let row_bytes = width as usize * desc.layout.bytes_per_pixel();
+            self.stride = (row_bytes + 1).next_multiple_of(4);
             self.storage = vec![0xA5A5_A5A5; self.stride * height as usize / 4];
             Ok(())
         }
 
         fn provide_next_buffer(
             &mut self,
-            y: u32,
-            height: u32,
-            width: u32,
-            desc: PixelDescriptor,
-        ) -> Result<PixelSliceMut<'_>, SinkError> {
+            strip: RowStrip,
+            format: PixelFormat,
+        ) -> Result<PixelViewMut<'_>, SinkError> {
             let bytes = bytemuck::cast_slice_mut(&mut self.storage);
-            PixelSliceMut::new(
-                &mut bytes[y as usize * self.stride..],
-                width,
-                height,
+            PixelViewMut::new_with_format_cow(
+                &mut bytes[strip.y as usize * self.stride..],
+                strip.width,
+                strip.height,
                 self.stride,
-                desc,
+                zenpixels::FormatCow::from_owned(format),
             )
             .map_err(|e| e.to_string().into())
         }
@@ -229,8 +222,8 @@ mod incremental_admission {
             .unwrap()
             .decode()
             .unwrap();
-        let desc = expected.descriptor();
-        let expected_bytes = expected.into_buffer().copy_to_contiguous_bytes();
+        let desc = expected.pixel_format();
+        let expected_bytes = expected.pixels().to_contiguous_bytes().unwrap();
         let mut dec = decoder(ResourceLimits::none().with_max_input_bytes(bytes.len() as u64));
         let mut sink = Sink::default();
         let prefix = Input::new(0, &bytes[..bytes.len() - 1]);
@@ -265,15 +258,15 @@ mod incremental_admission {
         let actual: Vec<u8> = bytemuck::cast_slice::<_, u8>(&sink.storage)
             .chunks_exact(sink.stride)
             .flat_map(|row| {
-                row[..sink.width as usize * desc.bytes_per_pixel()]
+                row[..sink.width as usize * desc.layout.bytes_per_pixel()]
                     .iter()
                     .copied()
             })
             .collect();
-        assert_eq!(actual, expected_bytes);
+        assert_eq!(actual.as_slice(), expected_bytes.as_ref());
         for row in bytemuck::cast_slice::<_, u8>(&sink.storage).chunks_exact(sink.stride) {
             assert!(
-                row[sink.width as usize * desc.bytes_per_pixel()..]
+                row[sink.width as usize * desc.layout.bytes_per_pixel()..]
                     .iter()
                     .all(|&b| b == 0xA5),
                 "decoder must leave caller padding untouched"
@@ -302,7 +295,7 @@ mod incremental_admission {
             .unwrap();
         let output = u64::from(expected.width())
             * u64::from(expected.height())
-            * expected.descriptor().bytes_per_pixel() as u64;
+            * expected.pixel_format().layout.bytes_per_pixel() as u64;
         let mut dec =
             decoder(ResourceLimits::none().with_max_memory(bytes.len() as u64 + output - 1));
         assert_denial(
@@ -340,7 +333,6 @@ mod incremental_admission {
     }
 
     #[test]
-    #[allow(deprecated)] // Retain coverage of the explicit-stop compatibility path.
     fn transient_job_stop_after_preflight_cannot_be_swallowed_by_a_second_probe() {
         use std::sync::{
             Arc,
@@ -364,20 +356,24 @@ mod incremental_admission {
         let calls = Arc::new(AtomicUsize::new(0));
         RawDecoderConfig::new()
             .job()
-            .with_stop(zencodec::StopToken::new(CountStops {
-                calls: calls.clone(),
-                stop_at: usize::MAX,
-            }))
+            .with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(
+                CountStops {
+                    calls: calls.clone(),
+                    stop_at: usize::MAX,
+                },
+            )))
             .probe(prefix)
             .unwrap();
         let native_probe_calls = calls.swap(0, Ordering::Relaxed);
         assert!(native_probe_calls > 0);
         let mut dec = RawDecoderConfig::new()
             .job()
-            .with_stop(zencodec::StopToken::new(CountStops {
-                calls: calls.clone(),
-                stop_at: native_probe_calls,
-            }))
+            .with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(
+                CountStops {
+                    calls: calls.clone(),
+                    stop_at: native_probe_calls,
+                },
+            )))
             .dyn_incremental_decoder(&[])
             .unwrap();
         let mut sink = Sink::default();

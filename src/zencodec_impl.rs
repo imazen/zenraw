@@ -10,14 +10,14 @@ use alloc::borrow::Cow;
 use whereat::{At, at};
 use zencodec::Unsupported;
 use zencodec::decode::{
-    Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, Event, IncrementalDecode, Input,
-    InputRequest, OutputInfo, Progress, SinkError, StepError,
+    BatchMeta, Decode, DecodeCapabilities, DecodeOutput, DecodeRowSink, Event, IncrementalDecode,
+    Input, InputRequest, OutputInfo, Progress, SinkError, StepError,
 };
 use zencodec::{
     ImageFormat, ImageFormatDefinition, ImageInfo, ImageSequence, Orientation, OrientationHint,
     ResourceLimits,
 };
-use zenpixels::PixelDescriptor;
+use zenpixels::PixelFormat;
 
 use crate::decode::{self, OutputMode, RawDecodeConfig};
 use crate::error::{RawError, RawLimitKind};
@@ -192,65 +192,36 @@ fn resolve_orientation(hint: OrientationHint, intrinsic: Orientation) -> Orienta
 /// path already computed, so it matches what `probe()` reports.
 #[cfg(test)]
 fn apply_orientation_to_output(output: DecodeOutput, hint: OrientationHint) -> DecodeOutput {
+    if !hint_bakes(hint) {
+        return output;
+    }
+    let resolved = resolve_orientation(hint, output.info().orientation);
     apply_orientation_to_output_pulse(
         output,
-        hint,
+        resolved,
         crate::alloc_util::AllocPref::CodecDefault,
         &how_far::NoPulse,
     )
-    .expect("NoPulse cannot cancel")
+    .unwrap()
 }
 
 fn apply_orientation_to_output_pulse(
     output: DecodeOutput,
-    hint: OrientationHint,
+    resolved: Orientation,
     alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
 ) -> crate::Result<DecodeOutput> {
-    if !hint_bakes(hint) {
-        return Ok(output);
-    }
-    let mut info = output.info().clone();
-    let intrinsic = info.orientation;
-    let resolved = resolve_orientation(hint, intrinsic);
-
-    let exact = output.pixels().exact_depth();
-    let buf = output.into_buffer();
-
-    // Even when the resolved transform is Identity (e.g. `Correct` on an upright
-    // image) we still rewrite the reported orientation to Identity so a consumer
-    // never double-applies the (now-stale) intrinsic tag. The pixel copy is
-    // skipped in that case.
-    if resolved.is_identity() {
-        info = info.with_orientation(Orientation::Identity);
+    let (buf, mut details) = output.into_parts();
+    let buf = if resolved.is_identity() {
         crate::progress::total(pulse, 0);
-        return Ok(DecodeOutput::new(buf, info));
-    }
-
-    let descriptor = buf.descriptor();
-    let (baked, nw, nh) = crate::orient::apply_orientation_pixels(
-        &buf.as_slice(),
-        resolved.to_exif() as u16,
-        alloc_pref,
-        pulse,
-    )?;
-
-    let mut baked_buf = zenpixels::PixelBuffer::from_vec(baked, nw as u32, nh as u32, descriptor)
-        .expect("apply_orientation_to_output: baked buffer matches output geometry");
-
-    if let Some(exact) = exact {
-        baked_buf
-            .set_exact_depth(Some(exact))
-            .map_err(|error| whereat::at!(RawError::InvalidBuffer(error.to_string())))?;
-    }
-
-    // `ImageInfo` has no dimension setter; the fields are public. Report the
-    // baked buffer's geometry + Identity (pixels are now final).
-    info.width = nw as u32;
-    info.height = nh as u32;
-    info = info.with_orientation(Orientation::Identity);
-
-    Ok(DecodeOutput::new(baked_buf, info))
+        buf
+    } else {
+        crate::orient::apply_orientation_pixels(&buf.as_view(), resolved, alloc_pref, pulse)?
+    };
+    details.info.width = buf.width();
+    details.info.height = buf.height();
+    details.info = details.info.with_orientation(Orientation::Identity);
+    Ok(DecodeOutput::from_parts(buf, details))
 }
 
 /// Rewrite a probe [`ImageInfo`] (stored dims + intrinsic EXIF tag, as produced
@@ -273,8 +244,7 @@ fn report_probe_for_hint(mut info: ImageInfo, hint: OrientationHint) -> ImageInf
 
 // ── Supported output descriptors ───────────────────────────────────────
 
-static DECODE_DESCRIPTORS: &[PixelDescriptor] =
-    &[PixelDescriptor::RGB16_SRGB, PixelDescriptor::RGBF32_LINEAR];
+static DECODE_DESCRIPTORS: &[PixelFormat] = &[PixelFormat::RGB16_SRGB, PixelFormat::RGBF32_LINEAR];
 
 // ── Capabilities ───────────────────────────────────────────────────────
 
@@ -327,7 +297,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         &FORMATS
     }
 
-    fn supported_descriptors() -> &'static [PixelDescriptor] {
+    fn supported_pixel_formats() -> &'static [PixelFormat] {
         DECODE_DESCRIPTORS
     }
 
@@ -347,7 +317,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         // The RAW develop pipeline's working set is dominated by `RGB f32`
         // buffers (12 B/px): the normalized sensor buffer, the demosaic output,
         // and a transient crop/orientation copy. The output buffer
-        // (`image.descriptor()`, RGB16 6 B/px or RGBF32 12 B/px) is smaller than
+        // (`image.pixel_format()`, RGB16 6 B/px or RGBF32 12 B/px) is smaller than
         // or equal to those.
         //
         // Anchor (heaptrack, `examples/heaptrack_decode.rs`, see CHANGELOG):
@@ -378,7 +348,6 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
     fn job<'a>(self) -> Self::Job<'a> {
         RawDecodeJob {
             config: self.inner,
-            stop: None,
             pulse: None,
             limits: ResourceLimits::default(),
             orientation: OrientationHint::Preserve,
@@ -392,7 +361,6 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
 /// Per-operation decode job for RAW/DNG files.
 pub struct RawDecodeJob {
     config: RawDecodeConfig,
-    stop: Option<zencodec::StopToken>,
     pulse: Option<how_far::SharedPulse>,
     limits: ResourceLimits,
     /// How to resolve the EXIF orientation during decode. Default
@@ -414,11 +382,6 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     type Dec = RawDecoder<'a>;
     type StreamDec = Unsupported<At<RawError>>;
     type AnimationFrameDec = Unsupported<At<RawError>>;
-
-    fn with_stop(mut self, stop: zencodec::StopToken) -> Self {
-        self.stop = Some(stop);
-        self
-    }
 
     fn with_pulse(mut self, pulse: how_far::SharedPulse) -> Self {
         self.pulse = Some(pulse);
@@ -442,7 +405,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         &self,
         data: &[u8],
     ) -> Result<zencodec::inventory::Inventory, At<zencodec::CodecError>> {
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         let stop: &dyn enough::Stop = &observation;
         enough::Stop::check(stop).map_err(|r| zencodec::CodecError::of(at!(RawError::from(r))))?;
         // The same input-size limit `decoder()` enforces.
@@ -473,7 +436,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         if let Some(cache) = &self.incremental_probe
             && let Some(info) = cache.get()
@@ -495,20 +458,15 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
 
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         // Probe for stored dims + intrinsic orientation (independent of hint).
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         let raw_info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &raw_info);
 
-        let descriptor =
-            match self.config.output {
-                OutputMode::Develop => PixelDescriptor::RGB16_SRGB
-                    .with_primaries(self.config.target.to_color_primaries()),
-                OutputMode::Linear => PixelDescriptor::RGBF32_LINEAR
-                    .with_primaries(self.config.target.to_color_primaries()),
-                OutputMode::CameraRaw => PixelDescriptor::RGBF32_LINEAR
-                    .with_primaries(zenpixels::ColorPrimaries::Unknown),
-            };
+        let descriptor = self
+            .config
+            .output
+            .pixel_format(self.config.target.to_color_primaries());
 
         // Report the post-orientation output geometry + the transform the decoder
         // will bake. `Preserve` bakes nothing (output = stored dims, `Identity`
@@ -527,21 +485,15 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn decoder(
         self,
         data: Cow<'a, [u8]>,
-        preferred: &[PixelDescriptor],
+        preferred: &[PixelFormat],
     ) -> Result<Self::Dec, Self::Error> {
         // Check input size limits
         self.limits
             .check_input_size(data.len() as u64)
             .map_err(|e| at!(wrap_limit(e)))?;
 
-        // Check if caller prefers linear f32
         let mut config = self.config.clone();
-        for pref in preferred {
-            if pref.format == zenpixels::PixelFormat::RgbF32 {
-                config.output = OutputMode::Linear;
-                break;
-            }
-        }
+        config.output = preferred_output(config.output, preferred);
 
         // Honor the caller's allocation-fallibility preference at the zencodec
         // boundary. The big untrusted-sized RGB-f32 / sensor buffers default to
@@ -558,7 +510,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         config.apply_orientation = false;
 
         // Probe header for dimensions to check width/height/memory limits
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         let info = crate::probe_inner(&data, &observation)?;
 
@@ -568,10 +520,11 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
             .map_err(|e| at!(wrap_limit(e)))?;
 
         // Check memory limits — estimate output buffer size
-        let bytes_per_pixel: u64 = match config.output {
-            OutputMode::Develop => 6,                         // RGB16
-            OutputMode::Linear | OutputMode::CameraRaw => 12, // RGBF32
-        };
+        let bytes_per_pixel = config
+            .output
+            .pixel_format(config.target.to_color_primaries())
+            .layout
+            .bytes_per_pixel() as u64;
         let estimated_bytes = info.width as u64 * info.height as u64 * bytes_per_pixel;
         self.limits
             .check_memory(estimated_bytes)
@@ -586,7 +539,6 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         Ok(RawDecoder {
             data,
             config,
-            stop: self.stop,
             pulse: self.pulse,
             orientation: self.orientation,
         })
@@ -596,19 +548,26 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         self,
         data: Cow<'a, [u8]>,
         sink: &mut dyn DecodeRowSink,
-        preferred: &[PixelDescriptor],
+        preferred: &[PixelFormat],
     ) -> Result<OutputInfo, Self::Error> {
-        // A `DecodeRowSink` failure is an output-boundary fault (the sink is
-        // caller-supplied — writing decoded rows into it failed), the same
-        // convention `Io` covers for an output sink elsewhere in this crate.
+        let (output, applied) = self.decoder(data, preferred)?.decode_with_orientation()?;
+        let pixels = output.pixels();
+        let (w, h) = (pixels.width(), pixels.height());
+        let format = pixels.format().clone();
+
         let wrap = |e: SinkError| at!(RawError::Io(e.to_string()));
-        zencodec::helpers::copy_decode_to_sink(self, data, sink, preferred, wrap)
+        sink.begin(w, h, format.clone()).map_err(wrap)?;
+        zencodec::helpers::copy_rows_to_sink(sink, BatchMeta::final_rows(0), &pixels)
+            .map_err(wrap)?;
+        sink.finish().map_err(wrap)?;
+
+        Ok(OutputInfo::full_decode(w, h, format).with_orientation_applied(applied))
     }
 
     fn streaming_decoder(
         self,
         _data: Cow<'a, [u8]>,
-        _preferred: &[PixelDescriptor],
+        _preferred: &[PixelFormat],
     ) -> Result<Self::StreamDec, Self::Error> {
         Err(at!(RawError::UnsupportedOperation(
             zencodec::UnsupportedOperation::RowLevelDecode
@@ -618,7 +577,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     fn animation_frame_decoder(
         self,
         _data: Cow<'a, [u8]>,
-        _preferred: &[PixelDescriptor],
+        _preferred: &[PixelFormat],
     ) -> Result<Self::AnimationFrameDec, Self::Error> {
         Err(at!(RawError::UnsupportedOperation(
             zencodec::UnsupportedOperation::AnimationDecode
@@ -631,7 +590,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     /// a complete buffer.
     fn dyn_incremental_decoder(
         self,
-        preferred: &[PixelDescriptor],
+        preferred: &[PixelFormat],
     ) -> Result<
         alloc::boxed::Box<zencodec::decode::DynIncrementalDecoder>,
         zencodec::decode::BoxedError,
@@ -656,20 +615,15 @@ struct RawIncremental {
 }
 
 impl RawIncremental {
-    fn new(mut job: RawDecodeJob, preferred: &[PixelDescriptor]) -> Self {
+    fn new(mut job: RawDecodeJob, preferred: &[PixelFormat]) -> Self {
         job.incremental_probe = Some(alloc::sync::Arc::new(std::sync::OnceLock::new()));
-        let output_bytes_per_pixel = if job.config.output == OutputMode::Develop
-            && !preferred
-                .iter()
-                .any(|p| p.format == zenpixels::PixelFormat::RgbF32)
-        {
-            6
-        } else {
-            12
-        };
+        let output = preferred_output(job.config.output, preferred);
+        let output_bytes_per_pixel = output
+            .pixel_format(job.config.target.to_color_primaries())
+            .layout
+            .bytes_per_pixel() as u64;
         let probe_job = RawDecodeJob {
             config: job.config.clone(),
-            stop: job.stop.clone(),
             pulse: job.pulse.clone(),
             limits: job.limits,
             orientation: job.orientation,
@@ -722,11 +676,8 @@ impl IncrementalDecode for RawIncremental {
     ) -> Result<Progress, StepError<Self::Error>> {
         let observer = pulse.unwrap_or(&how_far::NoPulse);
         observer.check()?;
-        enough::Stop::check(&observation(
-            self.probe_job.pulse.as_ref(),
-            self.probe_job.stop.as_ref(),
-        ))
-        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
+        enough::Stop::check(&observation(self.probe_job.pulse.as_ref(), None))
+            .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         // Length describes the source even when this window starts elsewhere.
         if let Some(total) = input.total_len {
             self.admit_size(total).map_err(StepError::Codec)?;
@@ -791,11 +742,8 @@ impl IncrementalDecode for RawIncremental {
             self.inner.step(input, sink, pulse)?
         };
         observer.check()?;
-        enough::Stop::check(&observation(
-            self.probe_job.pulse.as_ref(),
-            self.probe_job.stop.as_ref(),
-        ))
-        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
+        enough::Stop::check(&observation(self.probe_job.pulse.as_ref(), None))
+            .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         self.header_ready = self.inner.info().is_some();
         self.needs_input = matches!(progress.event, Event::Need);
         if self.needs_input {
@@ -863,8 +811,8 @@ impl IncrementalDecode for RawIncremental {
         }
     }
 
-    fn output_descriptor(&self) -> Option<PixelDescriptor> {
-        self.inner.output_descriptor()
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.inner.output_pixel_format()
     }
 }
 
@@ -874,7 +822,6 @@ impl IncrementalDecode for RawIncremental {
 pub struct RawDecoder<'a> {
     data: Cow<'a, [u8]>,
     config: RawDecodeConfig,
-    stop: Option<zencodec::StopToken>,
     pulse: Option<how_far::SharedPulse>,
     /// Resolved from [`RawDecodeJob::orientation`]; drives the bake path in
     /// [`Decode::decode`](zencodec::decode::Decode::decode). The native decode
@@ -883,11 +830,22 @@ pub struct RawDecoder<'a> {
     orientation: OrientationHint,
 }
 
-impl<'a> Decode for RawDecoder<'a> {
-    type Error = At<RawError>;
+// Preferences select the full-width RGB f32 layout. RAW color development and
+// target primaries remain controlled by the native config.
+fn preferred_output(configured: OutputMode, preferred: &[PixelFormat]) -> OutputMode {
+    let linear_layout = PixelFormat::RGBF32_LINEAR.layout;
+    if configured != OutputMode::LinearExtended
+        && preferred.iter().any(|fmt| fmt.layout == linear_layout)
+    {
+        OutputMode::Linear
+    } else {
+        configured
+    }
+}
 
-    fn decode(self) -> Result<DecodeOutput, Self::Error> {
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+impl RawDecoder<'_> {
+    fn decode_with_orientation(self) -> crate::Result<(DecodeOutput, Orientation)> {
+        let observation = observation(self.pulse.as_ref(), None);
         let mut progress =
             crate::progress::Sequence::new(&observation, &["Decode RAW", "Output orientation"]);
         let result = (|| {
@@ -896,20 +854,30 @@ impl<'a> Decode for RawDecoder<'a> {
             let info = build_image_info(&self.data, &output.info);
             let decoded = DecodeOutput::new(output.pixels, info);
             if hint_bakes(self.orientation) {
-                progress.run(|pulse| {
+                let applied = resolve_orientation(self.orientation, decoded.info().orientation);
+                let baked = progress.run(|pulse| {
                     apply_orientation_to_output_pulse(
                         decoded,
-                        self.orientation,
+                        applied,
                         self.config.alloc_pref,
                         pulse,
                     )
-                })
+                })?;
+                Ok((baked, applied))
             } else {
                 progress.skip();
-                Ok(decoded)
+                Ok((decoded, Orientation::Identity))
             }
         })();
         progress.complete(result)
+    }
+}
+
+impl Decode for RawDecoder<'_> {
+    type Error = At<RawError>;
+
+    fn decode(self) -> Result<DecodeOutput, Self::Error> {
+        self.decode_with_orientation().map(|(output, _)| output)
     }
 }
 
@@ -926,24 +894,23 @@ impl<'a> Decode for RawDecoder<'a> {
 mod orientation_tests {
     use super::*;
     use alloc::vec::Vec;
-    use zenpixels::{PixelBuffer, PixelDescriptor};
+    use zenpixels::PixelBuf;
 
     /// Build a synthetic RGB16 `DecodeOutput`: a `w×h` image whose pixel (r,c)
     /// is three identical u16 channels of value `(r*16 + c) + 1`, with the given
     /// intrinsic EXIF `Orientation` recorded on the `ImageInfo` (mirroring what
     /// the native decode reports when `apply_orientation = false`).
     fn synth_output(w: u32, h: u32, intrinsic: Orientation) -> DecodeOutput {
-        let bpp = 6usize; // RGB16
-        let mut bytes = Vec::with_capacity(w as usize * h as usize * bpp);
+        let mut samples = Vec::with_capacity(w as usize * h as usize * 3);
         for r in 0..h {
             for c in 0..w {
                 let id = ((r * 16 + c) as u16) + 1;
                 for _ in 0..3 {
-                    bytes.extend_from_slice(&id.to_le_bytes());
+                    samples.push(id);
                 }
             }
         }
-        let buf = PixelBuffer::from_vec(bytes, w, h, PixelDescriptor::RGB16_SRGB).unwrap();
+        let buf = PixelBuf::from_typed(samples, w, h, PixelFormat::RGB16_SRGB).unwrap();
         let info =
             ImageInfo::new(w, h, ImageFormat::Custom(&DNG_FORMAT)).with_orientation(intrinsic);
         DecodeOutput::new(buf, info)
@@ -953,10 +920,10 @@ mod orientation_tests {
     fn id_at(bytes: &[u8], width: u32, row: u32, col: u32) -> u16 {
         let bpp = 6usize;
         let i = (row as usize * width as usize + col as usize) * bpp;
-        let id = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+        let id = u16::from_ne_bytes([bytes[i], bytes[i + 1]]);
         // All three channels must match — proves whole-pixel moves.
         for ch in 0..3 {
-            let v = u16::from_le_bytes([bytes[i + ch * 2], bytes[i + ch * 2 + 1]]);
+            let v = u16::from_ne_bytes([bytes[i + ch * 2], bytes[i + ch * 2 + 1]]);
             assert_eq!(v, id, "pixel ({row},{col}) channel {ch} mismatch");
         }
         id
@@ -1009,7 +976,7 @@ mod orientation_tests {
     fn preserve_returns_stored_dims_and_intrinsic_tag_unbaked() {
         // 3×2 image, intrinsic Rotate90. Preserve must NOT touch pixels or dims.
         let out = synth_output(3, 2, Orientation::Rotate90);
-        let before: Vec<u8> = out.pixels().contiguous_bytes().to_vec();
+        let before: Vec<u8> = out.pixels().to_contiguous_bytes().unwrap().to_vec();
         let baked = apply_orientation_to_output(out, OrientationHint::Preserve);
         assert_eq!((baked.width(), baked.height()), (3, 2), "stored dims");
         assert_eq!(
@@ -1018,7 +985,7 @@ mod orientation_tests {
             "intrinsic tag preserved"
         );
         assert_eq!(
-            baked.pixels().contiguous_bytes().as_ref(),
+            baked.pixels().to_contiguous_bytes().unwrap().as_ref(),
             &before[..],
             "pixels unbaked"
         );
@@ -1033,7 +1000,7 @@ mod orientation_tests {
         assert_eq!(baked.info().orientation, Orientation::Identity);
         // Pixel oracle for Rotate90 CW: display(dr,dc) ← src(h-1-dc, dr).
         // src ids: (0,0)=1 (0,1)=2 (0,2)=3 ; (1,0)=17 (1,1)=18 (1,2)=19.
-        let b = baked.pixels().contiguous_bytes();
+        let b = baked.pixels().to_contiguous_bytes().unwrap();
         let w = baked.width();
         assert_eq!(id_at(&b, w, 0, 0), 17); // ← src(1,0)
         assert_eq!(id_at(&b, w, 0, 1), 1); // ← src(0,0)
@@ -1059,8 +1026,8 @@ mod orientation_tests {
         assert_eq!((baked_a.width(), baked_a.height()), (2, 3));
         assert_eq!(baked_a.info().orientation, Orientation::Identity);
         assert_eq!(
-            baked_a.pixels().contiguous_bytes().as_ref(),
-            baked_b.pixels().contiguous_bytes().as_ref(),
+            baked_a.pixels().to_contiguous_bytes().unwrap().as_ref(),
+            baked_b.pixels().to_contiguous_bytes().unwrap().as_ref(),
             "ExactTransform must ignore the intrinsic EXIF orientation"
         );
     }
@@ -1088,8 +1055,8 @@ mod orientation_tests {
         );
         assert_eq!(composed.info().orientation, Orientation::Identity);
         assert_eq!(
-            composed.pixels().contiguous_bytes().as_ref(),
-            direct.pixels().contiguous_bytes().as_ref(),
+            composed.pixels().to_contiguous_bytes().unwrap().as_ref(),
+            direct.pixels().to_contiguous_bytes().unwrap().as_ref(),
             "CorrectAndTransform must equal intrinsic.then(extra)"
         );
     }
@@ -1099,11 +1066,61 @@ mod orientation_tests {
         // Intrinsic Identity + Correct: no pixel change, dims unchanged, tag
         // becomes Identity (it already was) — and the buffer is returned as-is.
         let out = synth_output(3, 2, Orientation::Identity);
-        let before: Vec<u8> = out.pixels().contiguous_bytes().to_vec();
+        let before: Vec<u8> = out.pixels().to_contiguous_bytes().unwrap().to_vec();
+        let first_row = out.pixels().row(0).as_ptr();
         let baked = apply_orientation_to_output(out, OrientationHint::Correct);
         assert_eq!((baked.width(), baked.height()), (3, 2));
         assert_eq!(baked.info().orientation, Orientation::Identity);
-        assert_eq!(baked.pixels().contiguous_bytes().as_ref(), &before[..]);
+        assert_eq!(baked.pixels().row(0).as_ptr(), first_row);
+        assert_eq!(
+            baked.pixels().to_contiguous_bytes().unwrap().as_ref(),
+            &before[..]
+        );
+    }
+
+    #[test]
+    fn correct_keeps_source_origin_and_extended_samples() {
+        use zencodec::decode::RowMetadata;
+        use zenpixels::{Cicp, ColorOrigin, FloatFacts, Primaries, SampleFacts};
+
+        let origin = ColorOrigin::from_cicp(Cicp::new(9, 13, 0, true));
+        let format = PixelFormat::RGBF32_LINEAR.with_primaries(Primaries::DisplayP3);
+        let samples = vec![[2.0f32, -0.25, 0.5], [4.0, 0.5, 0.25]];
+        let mut buf = PixelBuf::from_typed(samples, 1, 2, format.clone())
+            .unwrap()
+            .with_origin(origin.clone());
+        let facts = SampleFacts::from_float(FloatFacts::FINITE);
+        buf.assume_facts(facts);
+        let view = buf.as_view();
+        assert_eq!(view.origin(), Some(&origin));
+        let converted = zenpixels_convert::apply_orientation(&view, Orientation::Rotate90).unwrap();
+        let info = ImageInfo::new(1, 2, ImageFormat::Custom(&DNG_FORMAT))
+            .with_orientation(Orientation::Rotate90);
+        let corrected =
+            apply_orientation_to_output(DecodeOutput::new(buf, info), OrientationHint::Correct);
+        let pixels = corrected.pixels();
+        assert_eq!((pixels.width(), pixels.height()), (2, 1));
+        assert_eq!(corrected.info().orientation, Orientation::Identity);
+        assert_eq!(pixels.format(), &format);
+        assert_eq!(pixels.origin(), Some(&origin));
+        assert_eq!(pixels.facts(), facts);
+        assert_eq!(
+            pixels.row_as::<f32>(0).unwrap(),
+            &[4.0, 0.5, 0.25, 2.0, -0.25, 0.5]
+        );
+        let converted = converted.as_view();
+        assert_eq!(converted.format(), pixels.format());
+        assert_eq!(converted.origin(), pixels.origin());
+        assert_eq!(converted.facts(), pixels.facts());
+        assert_eq!(converted.row(0), pixels.row(0));
+
+        let row_ptr = pixels.row(0).as_ptr();
+        let twice = apply_orientation_to_output(corrected, OrientationHint::Correct);
+        assert_eq!(twice.pixels().row(0).as_ptr(), row_ptr);
+        assert_eq!(twice.info().orientation, Orientation::Identity);
+        let metadata = RowMetadata::from_view(&twice.pixels());
+        assert_eq!(metadata.origin, Some(origin));
+        assert_eq!(metadata.facts, facts);
     }
 
     #[test]

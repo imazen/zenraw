@@ -40,7 +40,7 @@ Raw file bytes (&[u8])
                 │       [3] demosaic_to_rgb_f32() → Vec<f32> [R,G,B,R,G,B,...]
                 │           (CFA pattern → interleaved RGB, SIMD-accelerated)
                 │       [4] apply_color_pipeline() → in-place
-                │           (WB × cam_to_srgb matrix, clamp [0,1])
+                │           (WB × cam_to_srgb matrix, range follows output mode)
                 │           or DngPipeline (PGTM, ForwardMatrix, ToneCurve)
                 │       [5] apply_crop() + apply_orientation()
                 │
@@ -57,7 +57,8 @@ Raw file bytes (&[u8])
 
                 Final output conversion (RawDecodeConfig::output):
                     OutputMode::Develop   → RGB16_SRGB u16 (default; sRGB gamma + quantise)
-                    OutputMode::Linear    → RGBF32_LINEAR f32 (scene-referred TF, clamped [0,1])
+                    OutputMode::Linear         → linear RGB F32, bounded before exposure
+                    OutputMode::LinearExtended → linear RGB F32, extended range
                     OutputMode::CameraRaw → RGBF32_LINEAR f32, primaries Unknown (no WB/matrix)
                     (darktable backend: RGB8_SRGB or RGBF32_LINEAR, whatever darktable-cli wrote)
 ```
@@ -149,7 +150,7 @@ gather_from_oklab(&planes, &mut out_rgb, 3, &m1_inv, 1.0);
 
 ### Via zencodec (optional feature)
 
-With the `zencodec` feature, zenraw implements codec traits for automatic format negotiation in the zenpipe pipeline system.
+With the `zencodec` feature, zenraw implements codec traits for automatic format negotiation in the zenpipe pipeline system. One-shot decode moves the native `PixelBuf` into `DecodeOutput`. A requested orientation transform writes into an aligned destination, and the row-sink path copies active rows to caller buffers.
 
 ## Design Principles
 
@@ -157,7 +158,7 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 2. **`no_std + alloc`** — std opt-in for I/O (rawloader requires std)
 3. **Progress and cancellation** — optional `how_far::Pulse` with completed batches and child phases
 4. **Non-exhaustive types** — future-proof public API
-5. **Display-ready default, scene-referred opt-in** — `OutputMode::Develop` (u16 sRGB) by default; `OutputMode::Linear` for linear f32 (no tone curve or gamma, but clamped to `[0,1]` by the colour matrix); `OutputMode::CameraRaw` when the demosaic overshoot above `1.0` must survive
+5. **Display-ready default, scene-referred opt-in** — `Develop` produces U16 sRGB. `Linear` clamps the color matrix result before exposure, while `LinearExtended` preserves the full signed F32 result. `CameraRaw` retains camera-space values and demosaic overshoot.
 
 ## Dependencies
 
@@ -168,9 +169,8 @@ With the `zencodec` feature, zenraw implements codec traits for automatic format
 | archmage 0.9.12 | SIMD dispatch (AVX2+FMA, NEON) | MIT OR Apache-2.0 |
 | magetypes 0.9.12 | Shared SIMD vector types | MIT OR Apache-2.0 |
 | bytemuck 1.25.0 | Safe bit-cast for pixel buffer reinterpretation | MIT OR Apache-2.0 |
-| ultrahdr-core 0.2.0 | UltraHDR gain map support (optional) | Apache-2.0 |
 | kamadak-exif 0.6.1 | EXIF/DNG metadata reading (feature: exif) | BSD-2-Clause |
-| zenpixels 0.2.0 | PixelBuffer, PixelDescriptor | Apache-2.0 OR MIT |
+| zenpixels 0.5 | PixelBuf, PixelView, PixelFormat, SampleFacts | Apache-2.0 OR MIT |
 | how-far / enough | Progress phases and cooperative cancellation | crates.io |
 | whereat 0.1.4 | Location-aware errors | MIT OR Apache-2.0 |
 | thiserror 2.0.18 | Error derives | MIT OR Apache-2.0 |

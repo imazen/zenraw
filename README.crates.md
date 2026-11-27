@@ -4,7 +4,7 @@
 
 Camera RAW and DNG decoder in pure Rust (`#![forbid(unsafe_code)]`).
 Display-ready sRGB output by default (`OutputMode::Develop`, u16); scene-referred
-linear f32 is opt-in (`OutputMode::Linear`). Three swappable backends trade camera
+linear f32 is opt-in (`OutputMode::Linear` and `OutputMode::LinearExtended`). Three swappable backends trade camera
 coverage against dependency weight.
 
 ## Quick start
@@ -14,8 +14,7 @@ coverage against dependency weight.
 zenraw = "0.2.0"
 # Helper crates the zenraw API hands you types from — add the ones you touch:
 how-far = "0.1.0"   # optional: progress and cancellation via `Pulse`
-zenpixels = "0.2.10" # `PixelBuffer` (what `output.pixels` is)
-bytemuck = "1.25.0"  # only for the `cast_slice` byte→f32/u16 views shown below
+zenpixels = "0.5"    # `PixelBuf` (what `output.pixels` is)
 ```
 
 ```rust
@@ -25,7 +24,7 @@ let data: &[u8] = &[/* RAW file bytes */];
 let output = decode(data, &RawDecodeConfig::default(), None)?;
 println!("{}x{} {} {}", output.info.width, output.info.height,
     output.info.make, output.info.model);
-// output.pixels is a `zenpixels::PixelBuffer`. The default OutputMode::Develop
+// output.pixels is a `zenpixels::PixelBuf`. The default OutputMode::Develop
 // produces display-ready u16 sRGB (3×u16 per pixel) — NOT 8-bit and NOT linear.
 ```
 
@@ -37,7 +36,7 @@ literal):
 use zenraw::OutputMode;
 
 // Scene-referred linear f32 (white-balanced, color-matrixed):
-let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
+let config = RawDecodeConfig::default().with_output(OutputMode::LinearExtended);
 let output = decode(data, &config, None)?;
 // output.pixels is now f32 linear RGB. (OutputMode::Develop = u16 sRGB [default],
 //  OutputMode::CameraRaw = raw camera values as f32, no color processing.)
@@ -45,44 +44,39 @@ let output = decode(data, &config, None)?;
 
 ## Output modes
 
-| `OutputMode` | Pixel format (`PixelDescriptor`) | Bytes/channel | Values |
+| `OutputMode` | Sample layout and color | Bytes/channel | Values |
 |---|---|---|---|
-| `Develop` (default) | `RGB16_SRGB` — display-ready sRGB-encoded | **2 (u16)** | `[0, 65535]`, gamma-encoded, in `with_target` primaries |
-| `Linear` | `RGBF32_LINEAR` — scene-referred linear | 4 (f32) | white-balanced + colour-matrixed, clamped to `[0, 1]` (see below) |
-| `CameraRaw` | `RGBF32_LINEAR` (primaries `Unknown`) | 4 (f32) | raw camera values, no WB / matrix, **not** clamped to `1.0` |
+| `Develop` (default) | RGB U16, sRGB transfer | **2 (u16)** | `[0, 65535]`, gamma-encoded, in `with_target` primaries |
+| `Linear` | RGB F32, linear transfer | 4 (f32) | matrix output clamped to `[0, 1]` before exposure |
+| `LinearExtended` | RGB F32, linear transfer | 4 (f32) | matrix output retains negative values and highlights above `1.0` |
+| `CameraRaw` | RGB F32, linear transfer, unknown primaries | 4 (f32) | raw camera values, no WB / matrix, **not** clamped to `1.0` |
 
 There is **no 8-bit output mode**: `Develop` is `u16`, so a thumbnail/web
 pipeline that wants `u8` sRGB must narrow the u16 samples itself (`v >> 8`, or
 `(v as u32 * 255 + 32767) / 65535` for rounding). The
 `darktable` backend is the one exception — it returns whatever `darktable-cli`
-wrote (`RGB8_SRGB` for its sRGB profile, f32 linear otherwise).
+wrote (RGB U8 for its sRGB profile, linear RGB F32 otherwise).
 
 ## Reading the pixels out
 
-`output.pixels` is a
-[`zenpixels::PixelBuffer`](https://docs.rs/zenpixels/latest/zenpixels/struct.PixelBuffer.html)
-— an *untyped* buffer: the element type is not in the Rust type, it is decided
-by the `OutputMode` you asked for (table above) and reported by
-`output.pixels.descriptor()`. So `into_vec()` / `as_contiguous_bytes()` give you
-`u8` bytes whose meaning changes with the mode: pairs of bytes per `u16` sample
-under `Develop`, four bytes per `f32` under `Linear` / `CameraRaw`. Reinterpret
-them for the channel type the mode produced — interleaved **f32 RGB** for
-`Linear` (and `CameraRaw`), interleaved **u16 sRGB** for the default `Develop`.
+[`PixelBuf`](https://docs.rs/zenpixels/0.5/zenpixels/struct.PixelBuf.html) owns
+the samples. Its `format()` returns the `PixelFormat` with the sample layout and
+color space. `as_view()` borrows the samples and supports direct typed access.
+Choose the Rust sample type that matches your requested output mode.
 
 ```rust
 use zenraw::{decode, OutputMode, RawDecodeConfig};
 
 let data: &[u8] = &[/* RAW file bytes */];
-let config = RawDecodeConfig::default().with_output(OutputMode::Linear);
+let config = RawDecodeConfig::default().with_output(OutputMode::LinearExtended);
 let output = decode(data, &config, None)?;
 
 let w = output.pixels.width() as usize;
 let h = output.pixels.height() as usize;
 
-// The RGB-f32 buffer is tightly packed (stride == width * 12 bytes), so the
-// zero-copy `as_contiguous_bytes()` always returns `Some` for this format.
-let bytes: &[u8] = output.pixels.as_contiguous_bytes().unwrap();
-let rgb: &[f32] = bytemuck::cast_slice(bytes); // 3 floats per pixel, R,G,B
+// The native decode buffer is tightly packed and uses aligned f32 storage.
+let view = output.pixels.as_view();
+let rgb = view.as_contiguous_typed::<f32>()?; // interleaved R, G, B
 
 assert_eq!(rgb.len(), w * h * 3);
 
@@ -98,25 +92,19 @@ Key facts about the layout and value range (verified against the decode path):
 
 - **Channel order is interleaved `R, G, B`** — three samples per pixel, no
   alpha, in `width * height * 3` order (row-major, top-to-bottom). The pixel
-  format is `PixelDescriptor::RGBF32_LINEAR` (`ChannelType::F32`,
-  `ChannelLayout::Rgb`, `TransferFunction::Linear`).
-- **`OutputMode::Linear` is scene-referred in its transfer function, not in
-  its dynamic range** — white-balanced and colour-matrixed, with no tone curve
-  and no gamma, but **clamped to `[0, 1]`**. Sensor samples are normalised with
-  `clamp(0.0, 1.0)` against the black/white levels, and the combined WB +
-  camera→output matrix clamps every component again as it writes it, so
-  highlights above the sensor's white level are not preserved and negative
-  out-of-gamut components are floored at zero. Values above `1.0` reach the
-  output only via `exposure_ev`, which multiplies after the clamp.
-- **`OutputMode::CameraRaw` is the mode that keeps values above `1.0`.** Sensor
-  samples are normalised with `clamp(0.0, 1.0)`, but demosaicing runs next and
-  the Malvar-He-Cutler Laplacian correction floors at zero without a ceiling, so
-  high-contrast neighbourhoods overshoot. `Linear` and `Develop` lose that
-  overshoot to the colour matrix's clamp; `CameraRaw` skips the colour pipeline
-  and keeps it. Samples are always finite and never negative.
+  layout is RGB with `SampleType::F32` and `Transfer::Linear` in linear modes.
+- **`OutputMode::Linear`** clamps the white-balanced matrix result to
+  `[0, 1]` before any exposure adjustment.
+- **`OutputMode::LinearExtended`** keeps the full matrix result, including
+  negative out-of-gamut values and highlights above `1.0`. Exposure scales
+  that result directly. Sensor normalization in both modes still uses the
+  recorded black and white levels and clamps sensor values to `[0, 1]`.
+- **`OutputMode::CameraRaw`** keeps demosaic overshoot in camera coordinates.
+  It omits white balance, the color matrix, and exposure compensation.
 - **`OutputMode::Develop` (the default)** is display-ready **u16 sRGB**: read it
-  the same way but `bytemuck::cast_slice::<u8, u16>(bytes)` for 3×`u16` per pixel
-  in `[0, 65535]`.
+  with `view.as_contiguous_typed::<u16>()?` for three samples per pixel in
+  `[0, 65535]`. `pixels.facts().depth` describes the delivered integer grid,
+  and `info.bit_depth` describes the sensor.
 - **Don't re-apply gamma.** `Develop` output is already sRGB-encoded. The two
   public helpers in `zenraw::color` split the job in two: `apply_srgb_gamma`
   (linear f32 → sRGB-encoded f32, still `[0, 1]`) and `f32_to_u8_srgb` (a
@@ -124,13 +112,11 @@ Key facts about the layout and value range (verified against the decode path):
   **no** transfer function). Run them in that order on `Linear` output; running
   `apply_srgb_gamma` on `Develop` output double-encodes.
 
-If you'd rather own the bytes (e.g. to hand off to a thread or FFI), use
-`output.pixels.copy_to_contiguous_bytes()` for a fresh `Vec<u8>` with stride
-padding stripped, or `output.pixels.into_vec()` to consume the buffer. To walk
-row by row, `output.pixels.as_slice().row(y)` returns one row's
-`width * bytes_per_pixel` bytes. (`width()` / `height()` / `stride()` /
-`descriptor()` / `as_contiguous_bytes()` / `copy_to_contiguous_bytes()` /
-`as_slice()` are all on `PixelBuffer`.)
+Use `view.row_as::<f32>(y)?` or `view.row_as::<u16>(y)?` for typed access to
+one row. `view.to_contiguous_bytes()?` borrows packed bytes and copies active
+rows when there is stride padding. To consume the native output allocation, use
+`output.pixels.into_vec::<f32>()?` or `into_vec::<u16>()?` with the
+matching sample type.
 
 ## Progress and cancellation
 
@@ -174,7 +160,7 @@ no interior hook: each parser call is indivisible for cancellation and progress.
 The zencodec adapter forwards `DecodeJob::with_pulse` to native decode and
 its final output-orientation pass, including whole-file incremental decode.
 Repeated metadata probes check cancellation without consuming the decode's
-progress plan. `with_stop` and `with_pulse` preserve both stop policies.
+progress plan. Cancellation-only callers can wrap any `Stop` token in `how_far::StopOnly` via `with_pulse`.
 
 See the [how-far integration guide](https://github.com/imazen/how-far/blob/main/docs/how-far-integration.md)
 for observers, callbacks and result ownership.
@@ -319,7 +305,7 @@ Plus many more via rawler. Detection works on file content, not extension.
 |---------|---------|-------------|
 | `std` | yes | Enable std (required for darktable, rawler) |
 | `rawloader` | yes | rawloader decode backend |
-| `ultrahdr` | yes | UltraHDR gain map support via ultrahdr-core |
+| `ultrahdr` | yes | Compatibility flag. Apple gain-map metadata parsing is under `apple`. |
 | `rawler` | no | rawler decode backend (broader camera support) |
 | `darktable` | no | darktable-cli backend (requires darktable installed) |
 | `exif` | no | EXIF metadata extraction via kamadak-exif |
@@ -337,7 +323,7 @@ use zenraw::{RawDecodeConfig, DemosaicMethod, OutputMode, OutputPrimaries};
 
 let config = RawDecodeConfig::default()
     .with_demosaic(DemosaicMethod::MalvarHeCutler) // or Bilinear
-    .with_output(OutputMode::Linear)               // Develop (u16 sRGB, default) | Linear (f32) | CameraRaw (f32)
+    .with_output(OutputMode::LinearExtended)       // Preserve the extended linear matrix result
     .with_target(OutputPrimaries::DisplayP3)       // Srgb (default) | DisplayP3 | Bt2020 (Develop/Linear only)
     .with_exposure_ev(0.0)                          // exposure compensation in stops (2^ev); Develop/Linear only
     .with_wb([1.0, 1.0, 1.0])                       // override the as-shot white balance (RGB multipliers)

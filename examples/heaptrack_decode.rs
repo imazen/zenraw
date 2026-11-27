@@ -2,7 +2,7 @@
 //!
 //! Profiles the production-critical path: `zenraw::decode(&bytes, &config, stop)` —
 //! decoding a camera RAW / DNG file (untrusted input) all the way to a developed
-//! `PixelBuffer` (white balance + color matrix + tone curve + gamma, the default
+//! `PixelBuf` (white balance + color matrix + tone curve + gamma, the default
 //! `OutputMode::Develop`). The goal is to surface allocation *pathologies* that
 //! don't show up in a wall-clock benchmark: a high allocation *count* relative to
 //! image size, per-pixel or per-row mallocs, large transient peaks, or unbounded
@@ -84,7 +84,7 @@ fn main() {
         });
         total_pixels += u64::from(out.pixels.width()) * u64::from(out.pixels.height());
         // Consume the decoded buffer so the optimizer can't elide the decode or the
-        // allocation of the output PixelBuffer.
+        // allocation of the output PixelBuf.
         black_box(out.pixels.width());
         black_box(out.pixels.height());
         black_box(&out.pixels);

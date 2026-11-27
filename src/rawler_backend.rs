@@ -12,8 +12,8 @@ use alloc::vec::Vec;
 use rawler::decoders::RawDecodeParams;
 use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
-use whereat::{ResultAtExt, at};
-use zenpixels::{PixelBuffer, PixelDescriptor};
+use whereat::at;
+use zenpixels::{PixelFormat, Primaries};
 
 use rawler::imgop::xyz::Illuminant;
 
@@ -375,7 +375,7 @@ fn decode_inner(
                     pulse,
                 )
             }
-            OutputMode::Linear => {
+            OutputMode::Linear | OutputMode::LinearExtended => {
                 crate::progress::total(
                     pulse,
                     final_rgb.len() * (5 + usize::from(config.exposure_ev.abs() > 1e-6)),
@@ -397,6 +397,7 @@ fn decode_inner(
                     wb,
                     xyz_to_cam,
                     config.target,
+                    config.output != OutputMode::LinearExtended,
                     pulse,
                 )
                 .map_err(|r| at!(RawError::from(r)))?;
@@ -436,7 +437,7 @@ fn decode_inner(
                     xyz_to_cam,
                     is_dng,
                     final_orient,
-                    zenpixels::ColorPrimaries::Unknown,
+                    Primaries::Unknown,
                     pulse,
                 )
             }
@@ -558,7 +559,7 @@ fn auto_develop_output(
             .map_err(|r| at!(RawError::from(r)))?;
 
         // 5. sRGB gamma → u16
-        crate::dng_render::linear_to_srgb_u16(&pixels, pulse).map_err(|r| at!(RawError::from(r)))?
+        crate::dng_render::linear_to_srgb_u16(&pixels, config.alloc_pref, pulse)?
     } else {
         // Fallback: basic color pipeline + gamma if DngPipeline can't be built
         crate::progress::total(
@@ -566,8 +567,15 @@ fn auto_develop_output(
             camera_linear.len() * (3 + usize::from(config.exposure_ev.abs() > 1e-6)),
         );
         let mut rgb = camera_linear;
-        color::apply_color_pipeline_stop(&mut rgb, raw.wb_coeffs, xyz_to_cam, config.target, pulse)
-            .map_err(|r| at!(RawError::from(r)))?;
+        color::apply_color_pipeline_stop(
+            &mut rgb,
+            raw.wb_coeffs,
+            xyz_to_cam,
+            config.target,
+            true,
+            pulse,
+        )
+        .map_err(|r| at!(RawError::from(r)))?;
 
         // Apply exposure_ev if nonzero
         if config.exposure_ev.abs() > 1e-6 {
@@ -582,18 +590,14 @@ fn auto_develop_output(
         }
 
         color::apply_srgb_gamma_stop(&mut rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
-        color::f32_to_u16(&rgb, pulse).map_err(|r| at!(RawError::from(r)))?
+        color::f32_to_u16(&rgb, config.alloc_pref, pulse)?
     };
 
-    let buf = PixelBuffer::from_vec(
+    crate::decode::make_output(
         u16_data,
-        width as u32,
-        height as u32,
-        PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
+        info,
+        PixelFormat::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
     )
-    .map_err_at(RawError::Buffer)?;
-
-    crate::decode::output_with_exact_depth(buf, info)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
@@ -848,8 +852,15 @@ fn decode_non_bayer(
             } else {
                 raw.wb_coeffs
             };
-            color::apply_color_pipeline_stop(&mut rgb, wb, xyz_to_cam, config.target, pulse)
-                .map_err(|r| at!(RawError::from(r)))?;
+            color::apply_color_pipeline_stop(
+                &mut rgb,
+                wb,
+                xyz_to_cam,
+                config.target,
+                config.output != OutputMode::LinearExtended,
+                pulse,
+            )
+            .map_err(|r| at!(RawError::from(r)))?;
 
             // Apply exposure_ev if nonzero
             if config.exposure_ev.abs() > 1e-6 {
@@ -918,20 +929,27 @@ fn decode_non_bayer(
                     is_dng,
                     final_orient,
                     primaries,
+                    config.alloc_pref,
                     pulse,
                 )
             }
-            OutputMode::Linear | OutputMode::CameraRaw => build_linear_output(
-                final_rgb,
-                final_w,
-                final_h,
-                &raw,
-                xyz_to_cam,
-                is_dng,
-                final_orient,
-                primaries,
-                pulse,
-            ),
+            OutputMode::Linear | OutputMode::LinearExtended | OutputMode::CameraRaw => {
+                build_linear_output(
+                    final_rgb,
+                    final_w,
+                    final_h,
+                    &raw,
+                    xyz_to_cam,
+                    is_dng,
+                    final_orient,
+                    if config.output == OutputMode::CameraRaw {
+                        Primaries::Unknown
+                    } else {
+                        primaries
+                    },
+                    pulse,
+                )
+            }
         }
     })
 }
@@ -1007,22 +1025,11 @@ fn build_linear_output(
     xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
-    primaries: zenpixels::ColorPrimaries,
+    primaries: Primaries,
     pulse: &dyn how_far::Pulse,
 ) -> Result<RawDecodeOutput> {
     let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
-    let byte_data: Vec<u8> =
-        crate::alloc_util::copy_with_stop(bytemuck::cast_slice::<f32, u8>(&rgb), pulse)?;
-
-    let buf = PixelBuffer::from_vec(
-        byte_data,
-        width as u32,
-        height as u32,
-        PixelDescriptor::RGBF32_LINEAR.with_primaries(primaries),
-    )
-    .map_err_at(RawError::Buffer)?;
-
-    crate::decode::output_with_exact_depth(buf, info)
+    crate::decode::make_linear_output(rgb, info, primaries, pulse)
 }
 
 /// Build display-ready u16 output (simple path without DngPipeline).
@@ -1035,23 +1042,19 @@ fn build_develop_output(
     xyz_to_cam: [[f32; 3]; 4],
     is_dng: bool,
     orientation: u16,
-    primaries: zenpixels::ColorPrimaries,
+    primaries: Primaries,
+    alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
 ) -> Result<RawDecodeOutput> {
     let info = build_raw_info(width, height, raw, xyz_to_cam, is_dng, orientation);
     let mut gamma_rgb = rgb;
     color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
-    let u16_data = color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
-
-    let buf = PixelBuffer::from_vec(
-        u16_data,
-        width as u32,
-        height as u32,
-        PixelDescriptor::RGB16_SRGB.with_primaries(primaries),
+    let samples = color::f32_to_u16(&gamma_rgb, alloc_pref, pulse)?;
+    crate::decode::make_output(
+        samples,
+        info,
+        PixelFormat::RGB16_SRGB.with_primaries(primaries),
     )
-    .map_err_at(RawError::Buffer)?;
-
-    crate::decode::output_with_exact_depth(buf, info)
 }
 
 /// Convert rawler Orientation to EXIF u16 value.

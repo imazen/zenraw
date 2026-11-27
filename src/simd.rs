@@ -22,8 +22,7 @@ use magetypes::simd::generic::f32x8 as GenericF32x8;
 /// non-CFA data (cpp > 1) or when all CFA channels have identical levels.
 ///
 /// Allocates the output buffer infallibly (`vec![]`). The decode pipeline uses
-/// [`normalize_uniform_fallible`], which honours the caller's
-/// [`AllocPref`](crate::alloc_util::AllocPref).
+/// `normalize_uniform_fallible`, which honours the caller's `AllocPref`.
 #[allow(dead_code)]
 pub fn normalize_uniform(data: &[f32], black: f32, inv_range: f32) -> Vec<f32> {
     let mut out = vec![0.0f32; data.len()];

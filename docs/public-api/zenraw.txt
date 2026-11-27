@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenraw.txt 205 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
+# files: zenraw.txt 208 lines (supported surface) | zenraw.features.txt 166 added (features: apple,darktable,exif,inventory,rawler,rawloader,std,ultrahdr,xmp,zencodec) | zenraw.internal.txt 10 lines (7 hidden + 3 excluded-feature)
 
 ## summary
 #
@@ -15,19 +15,20 @@
 #   free functions                              9
 #   inherent methods                           37
 #   struct fields                              66
-#   enum variants                              64
+#   enum variants                              66
 #   trait roster entries (type × trait)        53
-#   auto-trait-complete types                  11
+#   auto-trait-complete types                  10
+#   auto-trait exceptions                       1
 #
 # per-module pub lines:
-#   (root)                           89
+#   (root)                           90
 #   classify                         18
 #   color                             3
-#   decode                           65
+#   decode                           66
 #   demosaic                          4
 #   dng_render                       24
 
-## items (193 lines)
+## items (195 lines)
 
 pub mod zenraw
 pub mod classify
@@ -52,10 +53,11 @@ pub mod decode
 pub decode::OutputMode::CameraRaw
 pub decode::OutputMode::Develop
 pub decode::OutputMode::Linear
+pub decode::OutputMode::LinearExtended
 pub decode::OutputPrimaries::Bt2020
 pub decode::OutputPrimaries::DisplayP3
 pub decode::OutputPrimaries::Srgb
-pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descriptor::ColorPrimaries
+pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::color::Primaries
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 pub decode::SensorLayout::Bayer
 pub decode::SensorLayout::LinearRaw
@@ -81,7 +83,7 @@ pub fn decode::RawDecodeConfig::with_output(self, decode::OutputMode) -> Self
 pub fn decode::RawDecodeConfig::with_target(self, dng_render::OutputPrimaries) -> Self
 pub fn decode::RawDecodeConfig::with_wb(self, [f32; 3]) -> Self
 pub decode::RawDecodeOutput::info: decode::RawInfo
-pub decode::RawDecodeOutput::pixels: zenpixels::buffer::PixelBuffer
+pub decode::RawDecodeOutput::pixels: zenpixels::buffer::PixelBuf
 pub decode::RawInfo::active_area: core::option::Option<[u32; 4]>
 pub decode::RawInfo::baseline_exposure: core::option::Option<f64>
 pub decode::RawInfo::bit_depth: core::option::Option<u8>
@@ -108,7 +110,7 @@ pub mod dng_render
 pub dng_render::OutputPrimaries::Bt2020
 pub dng_render::OutputPrimaries::DisplayP3
 pub dng_render::OutputPrimaries::Srgb
-pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descriptor::ColorPrimaries
+pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::color::Primaries
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 pub struct dng_render::DngPipeline
 pub dng_render::DngPipeline::analog_balance: [f64; 3]
@@ -145,11 +147,12 @@ pub fn classify::FileFormat::is_raw(self) -> bool
 pub OutputMode::CameraRaw
 pub OutputMode::Develop
 pub OutputMode::Linear
+pub OutputMode::LinearExtended
 pub enum OutputPrimaries [also: decode, dng_render]
 pub OutputPrimaries::Bt2020
 pub OutputPrimaries::DisplayP3
 pub OutputPrimaries::Srgb
-pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::descriptor::ColorPrimaries
+pub fn dng_render::OutputPrimaries::to_color_primaries(self) -> zenpixels::color::Primaries
 pub fn dng_render::OutputPrimaries::to_xyz_d50(&self) -> &[[f64; 3]; 3]
 #[non_exhaustive] pub enum RawError
 pub RawError::Buffer(zenpixels::buffer::BufferError)
@@ -197,7 +200,7 @@ pub fn decode::RawDecodeConfig::with_target(self, dng_render::OutputPrimaries) -
 pub fn decode::RawDecodeConfig::with_wb(self, [f32; 3]) -> Self
 #[non_exhaustive] pub struct RawDecodeOutput [also: decode]
 pub RawDecodeOutput::info: decode::RawInfo
-pub RawDecodeOutput::pixels: zenpixels::buffer::PixelBuffer
+pub RawDecodeOutput::pixels: zenpixels::buffer::PixelBuf
 #[non_exhaustive] pub struct RawInfo [also: decode]
 pub RawInfo::active_area: core::option::Option<[u32; 4]>
 pub RawInfo::baseline_exposure: core::option::Option<f64>
@@ -239,4 +242,5 @@ dng_render::OutputPrimaries: Clone, Copy, Debug, Default, Eq, PartialEq
 
 ## auto traits
 
-11 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+10 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+decode::RawDecodeOutput: !RefUnwindSafe !UnwindSafe

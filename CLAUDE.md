@@ -2,6 +2,14 @@
 
 ## Known Bugs
 
+### Fixed: RAW color range and calibration claims
+
+`RawInfo::color_matrix` stores XYZ-to-camera coefficients. The synthetic DNG
+fixture checks that direction and rendered values with both backends.
+`OutputMode::LinearExtended` preserves signed matrix output and scales that
+result with exposure. Bounded `Linear` retains the pre-exposure clamp.
+The rawler non-Bayer CameraRaw path labels the primaries unknown.
+
 ### Retained Pulse follow-up (focused qualification, 2026-10-29)
 
 The current native pipeline and adapter already support full decode progress.

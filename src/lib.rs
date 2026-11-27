@@ -7,7 +7,8 @@
 //!
 //! Output is controlled by [`OutputMode`]:
 //! - **Develop** (default): display-ready u16 sRGB
-//! - **Linear**: scene-referred linear f32
+//! - **Linear**: bounded linear f32
+//! - **LinearExtended**: scene-linear f32 preserving negative components and highlights
 //! - **CameraRaw**: raw camera f32 values
 //!
 //! # Supported formats

@@ -2,12 +2,25 @@
 
 ## [Unreleased]
 
-- Upgrade `archmage` and `magetypes` minimums to `0.9.33` (root and fuzz lockfiles at `0.9.33` while retaining the `zencodec`/`zenpixels` `0.2.17` cohort).
+- Upgrade `archmage` and `magetypes` minimums to `0.9.33`.
 
 - Bump dependency minimums (`enough`, `bytemuck`, `thiserror`, `zenbench`, `zenutils-apidoc`), refresh fuzz/apidoc lockfiles, and set `--security-opt seccomp=unconfined` on CI `i686` cross containers.
 
 - Fix `OutputMode::Develop` colour for non-DNG RAW: the camera-to-output matrix applied white balance twice (Bradford adaptation, then a column division by the neutral), which kept greys neutral but shifted every saturated colour (blue skies rendered purple, reds magenta) and darkened the image.
 - RAW demosaic, orientation and conversion buffers explicitly request zeroed allocation while preserving allocation-error policy and nonzero-fill semantics.
+
+### QUEUED BREAKING CHANGES
+
+- Native decode returns zenpixels 0.5 `PixelBuf` with `ImageSpec` and
+  `SampleFacts`. Read typed samples through `pixels.as_view()`. The optional
+  zencodec adapter shares the 0.5 types and adopts the native buffer directly.
+- The `ultrahdr` feature remains a compatibility flag. Apple gain-map metadata
+  extraction is available through `apple`.
+
+### Added
+
+- `OutputMode::LinearExtended` retains highlights above one and negative
+  out-of-gamut components through the camera color matrix and exposure stage.
 
 ### Dependency integration
 
@@ -16,6 +29,12 @@
   keeps the existing pinned root patches. Codec behavior is unchanged.
 
 ### Fixed
+
+- Document the XYZ-to-camera direction of `RawInfo::color_matrix`.
+  A shared DNG fixture checks the direction and the renderer's inverse
+  with both RAW backends.
+- Report unknown primaries for camera-space pixels from rawler's
+  non-Bayer path.
 
 - Measure the delivered U8/U16 grid after RAW development and retain its
   `ExactDepth` through byte-only orientation. Sensor depth stays separate;

@@ -1,9 +1,12 @@
-#![cfg(all(feature = "zencodec", any(feature = "rawloader", feature = "rawler")))]
+#![cfg(any(feature = "rawloader", feature = "rawler"))]
 #[path = "support/dng_builder.rs"]
 mod dng_builder;
 use dng_builder::*;
+#[cfg(feature = "zencodec")]
 use std::borrow::Cow;
+#[cfg(feature = "zencodec")]
 use zencodec::decode::{Decode, DecodeJob, DecoderConfig};
+#[cfg(feature = "zencodec")]
 use zencodec::{Orientation, OrientationHint};
 use zenraw::{OutputMode, RawDecodeConfig};
 
@@ -44,25 +47,36 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
     for mode in [
         OutputMode::Develop,
         OutputMode::Linear,
+        OutputMode::LinearExtended,
         OutputMode::CameraRaw,
     ] {
         let config = RawDecodeConfig::new().with_output(mode).with_crop(false);
         let native = zenraw::decode(&data, &config, None).unwrap();
         assert_eq!(native.info.bit_depth, Some(10));
+        let facts = native.pixels.facts();
         if mode == OutputMode::Develop {
-            let exact = native
-                .pixels
-                .exact_depth()
-                .expect("developed integer samples have evidence");
+            let exact = facts.depth.expect("measured integer depth");
             assert_eq!(
                 exact.color_bits(),
                 16,
                 "demosaicing/color processing do not inherit the sensor grid"
             );
-            assert!(exact.holds_for(&native.pixels.as_slice()).unwrap());
+            assert!(facts.all_opaque);
+            let view = native.pixels.as_view();
+            let samples = view.as_contiguous_typed::<u16>().unwrap();
+            // An independent full-range reconstruction check rejects every
+            // smaller candidate depth for the delivered samples.
+            for bits in 1..exact.color_bits() {
+                let max = f64::from((1u16 << bits) - 1);
+                assert!(samples.iter().any(|&v| {
+                    let code = (f64::from(v) * max / 65535.0).round();
+                    (code * 65535.0 / max).round() as u16 != v
+                }));
+            }
         } else {
-            assert!(native.pixels.exact_depth().is_none());
+            assert!(facts.depth.is_none());
         }
+        #[cfg(feature = "zencodec")]
         for hint in [
             OrientationHint::Preserve,
             OrientationHint::ExactTransform(Orientation::FlipH),
@@ -75,15 +89,37 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
                 .decode()
                 .unwrap();
             let pixels = decoded.pixels();
-            if mode == OutputMode::Develop {
-                let exact = pixels
-                    .exact_depth()
-                    .expect("orientation retains integer evidence");
-                assert_eq!(exact.color_bits(), 16);
-                assert!(exact.holds_for(&pixels).unwrap());
-            } else {
-                assert!(pixels.exact_depth().is_none());
+            if let Some(depth) = pixels.facts().depth {
+                assert!(depth.holds_for(&pixels).unwrap());
+            }
+            assert_eq!(decoded.info().source_color.bit_depth, Some(10));
+            assert_eq!(
+                pixels.facts(),
+                native.pixels.facts(),
+                "orientation retains sample evidence"
+            );
+            assert_eq!(pixels.format(), native.pixels.format());
+            if hint == OrientationHint::Preserve {
+                assert_eq!(
+                    pixels.to_contiguous_bytes().unwrap(),
+                    native.pixels.as_view().to_contiguous_bytes().unwrap(),
+                );
             }
         }
     }
+}
+
+#[test]
+fn measured_three_bit_grid_does_not_establish_eight_bit_exactness() {
+    let pixels = zenpixels::PixelBuf::from_typed(
+        vec![[9362u16; 3]],
+        1,
+        1,
+        zenpixels::PixelFormat::RGB16_SRGB,
+    )
+    .unwrap();
+    let depth = zenpixels::ExactDepth::measure(&pixels.as_view()).unwrap();
+    assert_eq!(depth.color_bits(), 3);
+    assert!(depth.holds_for(&pixels.as_view()).unwrap());
+    assert!(!depth.color_exact_at(8));
 }

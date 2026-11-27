@@ -4,7 +4,7 @@
 //! 1. White balance application
 //! 2. Camera-to-XYZ color matrix transform
 //! 3. XYZ-to-output-primaries conversion
-//! 4. Clamp to [0, 1]
+//! 4. Clamp to [0, 1] for bounded output
 //!
 //! This module performs steps 1-4 in a single pass over the pixel data.
 
@@ -15,7 +15,8 @@ use crate::dng_render::OutputPrimaries;
 
 /// Apply the full color pipeline to demosaiced camera RGB data in-place.
 ///
-/// Transforms camera RGB → white-balanced camera RGB → XYZ → linear output primaries.
+/// Transforms camera RGB → white-balanced camera RGB → XYZ → linear output
+/// primaries, with the final components clamped to `[0, 1]`.
 ///
 /// `rgb`: interleaved f32 RGB data (3 components per pixel)
 /// `wb_coeffs`: white balance multipliers [R, G, B, E] from rawloader
@@ -28,7 +29,7 @@ pub fn apply_color_pipeline(
     target: OutputPrimaries,
 ) {
     // `NoPulse` never fires, so the Result is structurally `Ok`.
-    let _ = apply_color_pipeline_stop(rgb, wb_coeffs, xyz_to_cam, target, &how_far::NoPulse);
+    let _ = apply_color_pipeline_stop(rgb, wb_coeffs, xyz_to_cam, target, true, &how_far::NoPulse);
 }
 
 /// [`apply_color_pipeline`] with cooperative cancellation — checked every
@@ -39,17 +40,22 @@ pub(crate) fn apply_color_pipeline_stop(
     wb_coeffs: [f32; 4],
     xyz_to_cam: [[f32; 3]; 4],
     target: OutputPrimaries,
+    clip_to_unit: bool,
     pulse: &dyn how_far::Pulse,
 ) -> Result<(), StopReason> {
     let cam_to_output = compute_cam_to_output_matrix(wb_coeffs, xyz_to_cam, target);
-    apply_color_matrix_stop(rgb, cam_to_output, pulse)
+    if clip_to_unit {
+        apply_color_matrix_stop::<true>(rgb, cam_to_output, pulse)
+    } else {
+        apply_color_matrix_stop::<false>(rgb, cam_to_output, pulse)
+    }
 }
 
-/// Apply a 3×3 color matrix to interleaved RGB data with clamping.
+/// Apply a 3×3 color matrix to interleaved RGB data with optional clamping.
 ///
 /// Autoversioned: compiles for AVX2/NEON/scalar and dispatches at runtime.
 #[autoversion(v3, neon, wasm128, scalar)]
-fn apply_color_matrix_stop(
+fn apply_color_matrix_stop<const CLIP: bool>(
     rgb: &mut [f32],
     mat: [[f32; 3]; 3],
     pulse: &dyn how_far::Pulse,
@@ -67,9 +73,12 @@ fn apply_color_matrix_stop(
             let sg = mat[1][0] * r + mat[1][1] * g + mat[1][2] * b;
             let sb = mat[2][0] * r + mat[2][1] * g + mat[2][2] * b;
 
-            rgb[idx] = sr.clamp(0.0, 1.0);
-            rgb[idx + 1] = sg.clamp(0.0, 1.0);
-            rgb[idx + 2] = sb.clamp(0.0, 1.0);
+            let output = if CLIP {
+                [sr.clamp(0.0, 1.0), sg.clamp(0.0, 1.0), sb.clamp(0.0, 1.0)]
+            } else {
+                [sr, sg, sb]
+            };
+            rgb[idx..idx + 3].copy_from_slice(&output);
         }
         pulse.advance(((pixel_count - batch_start).min(1 << 16) * 3) as u64);
     }
@@ -274,14 +283,17 @@ fn f32_to_u8_inner(src: &[f32]) -> alloc::vec::Vec<u8> {
 /// Convert f32 \[0,1\] RGB data to u16 \[0,65535\] data.
 pub(crate) fn f32_to_u16(
     src: &[f32],
+    alloc_pref: crate::alloc_util::AllocPref,
     pulse: &dyn how_far::Pulse,
-) -> Result<alloc::vec::Vec<u8>, StopReason> {
-    let mut out = alloc::vec::Vec::with_capacity(src.len() * 2);
+) -> crate::Result<alloc::vec::Vec<u16>> {
+    let mut out = crate::alloc_util::vec_with_capacity(alloc_pref, true, src.len())?;
     for batch in src.chunks(1 << 18) {
-        pulse.check()?;
+        pulse
+            .check()
+            .map_err(|reason| whereat::at!(crate::RawError::from(reason)))?;
         for &v in batch {
             let val = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
-            out.extend_from_slice(&val.to_ne_bytes());
+            out.push(val);
         }
         pulse.advance(batch.len() as u64);
     }

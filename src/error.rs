@@ -107,7 +107,7 @@ pub enum RawError {
 
     /// Pixel buffer construction failed. Every call site in this crate
     /// builds both the byte buffer and the dimensions passed to
-    /// [`zenpixels::PixelBuffer::from_vec`] itself (never directly from
+    /// [`zenpixels::PixelBuf::from_samples`] itself (never directly from
     /// caller-supplied geometry), so
     /// [`AllocationFailed`](zenpixels::BufferError::AllocationFailed) is
     /// genuine memory exhaustion — every other variant reflects a
@@ -243,7 +243,7 @@ pub type Result<T> = core::result::Result<T, whereat::At<RawError>>;
 /// `RawDecoder`) keep `type Error = At<RawError>` — the concrete native
 /// error, unchanged by this migration — so this bridge is for a *consumer*
 /// that wants the shared, codec-agnostic envelope instead: `.start_at()`
-/// begins the location trace; [`CodecError::of`] then reads the
+/// begins the location trace; [`CodecError::of`](zencodec::CodecError::of) then reads the
 /// [`category`](zencodec::CategorizedError::category) *and* the
 /// [`codec_name`](zencodec::CategorizedError::codec_name) from the value,
 /// keeping the trace on the outside.

@@ -1,8 +1,7 @@
 //! Behaviour pinned against a hand-built DNG, so it needs no external corpus.
 //!
-//! Two things are covered: `zenraw::probe` must be panic-isolated on the
-//! rawloader backend, and the documented clamping of the f32 output modes must
-//! stay true.
+//! Covers rawloader panic isolation, camera matrix direction, and the
+//! bounded and extended f32 output contracts.
 //!
 //! # Panic isolation
 //!
@@ -34,7 +33,7 @@
 //! panic cases below return `RawError::Malformed`; with it removed they unwind
 //! through the caller while `decode_contains_rawloader_panic` keeps passing.
 
-#![cfg(all(feature = "rawloader", not(feature = "rawler")))]
+#![cfg(any(feature = "rawloader", feature = "rawler"))]
 
 use zenraw::{OutputMode, RawDecodeConfig};
 
@@ -42,8 +41,201 @@ use zenraw::{OutputMode, RawDecodeConfig};
 mod dng_builder;
 use dng_builder::*;
 
+const XYZ_TO_CAMERA: [[f32; 3]; 4] = [
+    [0.5, 0.5, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, 0.0],
+];
+
+fn calibrated_linear_dng() -> Vec<u8> {
+    let (width, height) = (8u16, 6u16);
+    let signed_matrix = [1i32, 1, 0, 0, 2, 0, 0, 0, 2];
+    let entries = vec![
+        short(0x0100, width),
+        short(0x0101, height),
+        short(0x0102, 16),
+        short(0x0103, 1),
+        short(0x0106, 34892), // LinearRaw, so the oracle has no CFA interpolation.
+        ascii(0x010f, "ZenRaw"),
+        ascii(0x0110, "AsymmetricMatrix"),
+        long(0x0111, 0),
+        short(0x0112, 6), // Rotate 90° clockwise.
+        short(0x0115, 3),
+        long(0x0116, u32::from(height)),
+        long(0x0117, u32::from(width) * u32::from(height) * 6),
+        short(0x011c, 1),
+        bytes(0xc612, &[1, 4, 0, 0]),
+        long(0xc61d, 1024),
+        Entry {
+            tag: 0xc621, // ColorMatrix1, row-major.
+            kind: 10,    // SRATIONAL.
+            count: 9,
+            value: signed_matrix
+                .into_iter()
+                .flat_map(|n| n.to_le_bytes().into_iter().chain(2i32.to_le_bytes()))
+                .collect(),
+        },
+        Entry {
+            tag: 0xc628, // AsShotNeutral.
+            kind: 5,     // RATIONAL.
+            count: 3,
+            value: [1u32; 6].into_iter().flat_map(u32::to_le_bytes).collect(),
+        },
+        short(0xc65a, 21), // CalibrationIlluminant1: D65.
+    ];
+    let mut strip: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).flat_map(move |x| [1024 - 16 * x - 32 * y, 256, 512]))
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    strip.extend_from_slice(&[0; 64]);
+    build_tiff(entries, &strip, 0x0111)
+}
+
+fn linear_config(mode: OutputMode, exposure_ev: f32) -> RawDecodeConfig {
+    RawDecodeConfig::new()
+        .with_output(mode)
+        .with_crop(false)
+        .with_orientation(false)
+        .with_wb([1.0; 3])
+        .with_exposure_ev(exposure_ev)
+}
+
+#[test]
+fn probe_matrix_direction_and_extended_linear_highlights() {
+    let data = calibrated_linear_dng();
+    let probe = zenraw::probe(&data, None).unwrap();
+    assert_eq!(probe.color_matrix, XYZ_TO_CAMERA);
+    assert_eq!(probe.orientation, 6);
+
+    let camera_raw =
+        zenraw::decode(&data, &linear_config(OutputMode::CameraRaw, 0.0), None).unwrap();
+    assert_eq!(
+        camera_raw.pixels.format(),
+        &zenpixels::PixelFormat::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Unknown)
+    );
+
+    // Solve camera = [(X + Y) / 2, Y, Z] by substitution once.
+    // The top-left sensor pixel has unity white balance with codes
+    // [1024, 256, 512] at white level 1024 and black level zero.
+    let camera = [1.0f64, 0.25, 0.5];
+    let xyz = [2.0 * camera[0] - camera[1], camera[1], camera[2]];
+    assert_eq!(xyz, [1.75, 0.25, 0.5]);
+    for (row, value) in probe.color_matrix.iter().take(3).zip(camera) {
+        let mapped: f64 = row.iter().zip(xyz).map(|(&a, b)| f64::from(a) * b).sum();
+        assert_eq!(mapped, value);
+    }
+
+    // Reference evaluation used exact rational Bradford cone scaling from
+    // equal-energy XYZ to D50 and Gaussian elimination against the D50 sRGB
+    // matrix. The input XYZ was solved above by substitution.
+    let pipeline =
+        zenraw::dng_render::DngPipeline::from_raw_info(&probe, zenraw::OutputPrimaries::Srgb)
+            .unwrap();
+    let d50_expected = [4.84921275069852, -1.233107103329011, 0.6333115326714663];
+    for (row, wanted) in pipeline.camera_to_output.iter().zip(d50_expected) {
+        let value: f64 = row.iter().zip(camera).map(|(a, b)| a * b).sum();
+        assert!((value - wanted).abs() < 5e-12, "{value} vs {wanted}");
+    }
+
+    // IEC sRGB D65 XYZ→RGB coefficients. Since the authored camera matrix
+    // and its inverse preserve [1,1,1], the renderer's neutral normalization
+    // is the sum of each XYZ→sRGB row.
+    let expected = [
+        [3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660, 1.8760108, 0.0415560],
+        [0.0556434, -0.2040259, 1.0572252],
+    ]
+    .map(|row| row.iter().zip(xyz).map(|(&a, b)| a * b).sum::<f64>() / row.iter().sum::<f64>());
+    assert!(expected[0] > 1.0 && expected[1] < 0.0);
+
+    let extended =
+        zenraw::decode(&data, &linear_config(OutputMode::LinearExtended, 0.0), None).unwrap();
+    let view = extended.pixels.as_view();
+    let values = view.as_contiguous_typed::<f32>().unwrap();
+    assert_eq!((view.width(), view.height()), (8, 6));
+    assert_eq!(extended.info.color_matrix, probe.color_matrix);
+    assert_eq!(extended.info.orientation, 6);
+    assert_eq!(view.format(), &zenpixels::PixelFormat::RGBF32_LINEAR);
+    for (&actual, expected) in values.iter().zip(expected) {
+        assert!(
+            (f64::from(actual) - expected).abs() < 2e-6,
+            "{actual} vs {expected}"
+        );
+    }
+
+    let exposed =
+        zenraw::decode(&data, &linear_config(OutputMode::LinearExtended, 3.0), None).unwrap();
+    let exposed_view = exposed.pixels.as_view();
+    let exposed_values = exposed_view.as_contiguous_typed::<f32>().unwrap();
+    assert_eq!(exposed_values.len(), values.len());
+    for (&unexposed, &exposed) in values.iter().zip(exposed_values) {
+        assert_eq!(exposed.to_bits(), (unexposed * 8.0).to_bits());
+    }
+
+    let bounded = zenraw::decode(&data, &linear_config(OutputMode::Linear, 0.0), None).unwrap();
+    let bounded_view = bounded.pixels.as_view();
+    let bounded_values = bounded_view.as_contiguous_typed::<f32>().unwrap();
+    assert!(bounded_values.iter().all(|v| (0.0..=1.0).contains(v)));
+    assert_eq!(&bounded_values[..2], &[1.0, 0.0]);
+    let bounded_exposed =
+        zenraw::decode(&data, &linear_config(OutputMode::Linear, 3.0), None).unwrap();
+    assert_eq!(
+        bounded_exposed.pixels.as_view().row_as::<f32>(0).unwrap()[0].to_bits(),
+        8.0f32.to_bits()
+    );
+}
+
+#[cfg(feature = "zencodec")]
+#[test]
+fn extended_dng_correct_consumes_orientation_once_with_a_float_preference() {
+    use std::borrow::Cow;
+    use zencodec::decode::{Decode, DecodeJob, DecoderConfig};
+    use zencodec::{Orientation, OrientationHint};
+
+    let data = calibrated_linear_dng();
+    let config = linear_config(OutputMode::LinearExtended, 0.0);
+    let stored = zenraw::decode(&data, &config, None).unwrap();
+    assert_eq!(stored.info.orientation, 6);
+    let stored_view = stored.pixels.as_view();
+    let manual = zenpixels_convert::apply_orientation(&stored_view, Orientation::Rotate90).unwrap();
+
+    let job = zenraw::RawDecoderConfig::from_config(config.clone())
+        .job()
+        .with_orientation(OrientationHint::Correct);
+    let prediction = job.output_info(&data).unwrap();
+    let decoded = job
+        .decoder(
+            Cow::Borrowed(&data),
+            &[zenpixels::PixelFormat::RGBF32_LINEAR],
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+    let corrected = zenraw::decode(&data, &config.with_orientation(true), None).unwrap();
+    assert_eq!(corrected.info.color_matrix, stored.info.color_matrix);
+    assert_eq!(corrected.info.orientation, 1);
+    assert_eq!(decoded.info().orientation, Orientation::Identity);
+    assert_eq!(prediction.orientation_applied, Orientation::Rotate90);
+    assert_eq!((decoded.width(), decoded.height()), (6, 8));
+    assert_eq!(decoded.pixels().format(), stored_view.format());
+    let bytes = manual.as_view().as_contiguous_bytes().unwrap();
+    assert_eq!(decoded.pixels().as_contiguous_bytes().unwrap(), bytes);
+    assert_eq!(
+        corrected.pixels.as_view().as_contiguous_bytes().unwrap(),
+        bytes
+    );
+
+    let row = decoded.pixels().row_as::<f32>(0).unwrap();
+    let first_sensor_pixel = stored_view.row_as::<f32>(0).unwrap();
+    // Sensor (0,0) maps to display (5,0).
+    assert_eq!(row[15].to_bits(), first_sensor_pixel[0].to_bits());
+    assert!(row[15] > 1.0 && row[16] < 0.0);
+}
+
 /// A 4×4, 16-bit, uncompressed DNG whose `CFAPattern` has `pattern_len`
 /// entries. Five is not a CFA size rawloader knows, so it panics.
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn dng_with_cfa_pattern_len(pattern_len: usize) -> Vec<u8> {
     const W: u32 = 4;
     const H: u32 = 4;
@@ -76,6 +268,7 @@ fn dng_with_cfa_pattern_len(pattern_len: usize) -> Vec<u8> {
 /// The file must be a *valid* TIFF that rawloader parses — otherwise the test
 /// would prove nothing about panic isolation, only about format sniffing.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn synthetic_dng_is_recognised_as_raw() {
     let data = dng_with_cfa_pattern_len(4);
     assert!(
@@ -93,6 +286,7 @@ fn synthetic_dng_is_recognised_as_raw() {
 /// **The regression.** A 5-entry `CFAPattern` panics inside rawloader; `probe`
 /// must turn that into an error instead of unwinding through the caller.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn probe_contains_rawloader_panic() {
     let data = dng_with_cfa_pattern_len(5);
     let err = zenraw::probe(&data, None)
@@ -106,6 +300,7 @@ fn probe_contains_rawloader_panic() {
 /// The same file through `decode`, which has always caught. Pinning both here
 /// keeps the two entry points from drifting apart again.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn decode_contains_rawloader_panic() {
     let data = dng_with_cfa_pattern_len(5);
     let err = zenraw::decode(&data, &RawDecodeConfig::default(), None)
@@ -118,6 +313,7 @@ fn decode_contains_rawloader_panic() {
 
 /// Other CFA lengths rawloader rejects, so the guard is not tuned to one input.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn probe_contains_panic_for_several_bad_cfa_sizes() {
     for len in [1usize, 2, 3, 5, 7, 9, 35, 37] {
         let data = dng_with_cfa_pattern_len(len);
@@ -141,6 +337,7 @@ fn probe_contains_panic_for_several_bad_cfa_sizes() {
 /// clamp shows up as out-of-range output rather than staying accidentally
 /// inside `[0, 1]`. The default colour matrix has negative off-diagonal terms,
 /// so saturated and near-saturated sites drive components past both ends.
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn dng_full_range() -> Vec<u8> {
     const W: u32 = 4;
     const H: u32 = 4;
@@ -169,11 +366,12 @@ fn dng_full_range() -> Vec<u8> {
     build_tiff(entries, &strip, 0x0111)
 }
 
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn decode_f32(mode: zenraw::OutputMode) -> Vec<f32> {
     let data = dng_full_range();
     let config = RawDecodeConfig::new().with_output(mode);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.copy_to_contiguous_bytes();
+    let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
     bytes
         .as_chunks::<4>()
         .0
@@ -185,6 +383,7 @@ fn decode_f32(mode: zenraw::OutputMode) -> Vec<f32> {
 /// `OutputMode::Linear` is clamped — the colour matrix writes clamped
 /// components, so nothing escapes `[0, 1]`.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn linear_output_is_clamped_to_unit_range() {
     let values = decode_f32(zenraw::OutputMode::Linear);
     assert!(!values.is_empty(), "no samples decoded");
@@ -196,7 +395,7 @@ fn linear_output_is_clamped_to_unit_range() {
     }
 }
 
-/// `CameraRaw` is the mode that is genuinely not clamped above `1.0`.
+/// CameraRaw retains demosaic overshoot in camera coordinates.
 ///
 /// Sensor samples are normalised with `clamp(0.0, 1.0)`, but demosaicing runs
 /// next and the Malvar-He-Cutler kernels apply a Laplacian correction that only
@@ -205,6 +404,7 @@ fn linear_output_is_clamped_to_unit_range() {
 /// overshoot to the colour matrix's clamp; `CameraRaw` skips the colour
 /// pipeline entirely and keeps it.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn camera_raw_preserves_demosaic_overshoot_above_one() {
     let values = decode_f32(zenraw::OutputMode::CameraRaw);
     assert!(!values.is_empty(), "no samples decoded");
@@ -215,20 +415,21 @@ fn camera_raw_preserves_demosaic_overshoot_above_one() {
     assert!(
         values.iter().any(|v| *v > 1.0),
         "CameraRaw is documented as unclamped above 1.0, but every sample was \
-         inside [0, 1] — either the demosaic overshoot or the mode changed"
+     inside [0, 1] — either the demosaic overshoot or the mode changed"
     );
 }
 
-/// `exposure_ev` is the one documented way past `1.0`: it multiplies *after*
+/// In bounded Linear mode `exposure_ev` multiplies *after*
 /// the clamp, so it is what a caller reaches for to get headroom back.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn exposure_ev_multiplies_after_the_clamp() {
     let data = dng_full_range();
     let config = RawDecodeConfig::new()
         .with_output(zenraw::OutputMode::Linear)
         .with_exposure_ev(3.0);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.copy_to_contiguous_bytes();
+    let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
     let values: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -247,6 +448,7 @@ fn exposure_ev_multiplies_after_the_clamp() {
 /// report `Bayer` for every `cpp == 1` sensor, so an X-Trans file was described
 /// as Bayer to callers.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn sensor_layout_distinguishes_bayer_from_xtrans() {
     let bayer = zenraw::probe(&dng_with_cfa_pattern_len(4), None).expect("probe 2x2");
     assert_eq!(bayer.sensor_layout, zenraw::SensorLayout::Bayer);
@@ -266,6 +468,7 @@ fn sensor_layout_distinguishes_bayer_from_xtrans() {
 ///
 /// Sample values are chosen well inside the black/white range so normalisation
 /// (`(v - black) / (white - black)`, clamped) is exact and distinct per colour.
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn dng_with_cfa_tile(tile: &[u8], tile_size: usize) -> (Vec<u8>, Vec<f32>) {
     assert_eq!(tile.len(), tile_size * tile_size);
     const W: u32 = 24;
@@ -312,13 +515,14 @@ fn dng_with_cfa_tile(tile: &[u8], tile_size: usize) -> (Vec<u8>, Vec<f32>) {
 
 /// The standard Fujifilm X-Trans 6×6 tile, in rawloader's colour encoding.
 #[rustfmt::skip]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 const XTRANS_TILE: [u8; 36] = [
-    1, 2, 1, 1, 0, 1,
-    0, 1, 0, 2, 1, 2,
-    1, 2, 1, 1, 0, 1,
-    1, 0, 1, 1, 2, 1,
-    2, 1, 2, 0, 1, 0,
-    1, 0, 1, 1, 2, 1,
+1, 2, 1, 1, 0, 1,
+0, 1, 0, 2, 1, 2,
+1, 2, 1, 1, 0, 1,
+1, 0, 1, 1, 2, 1,
+2, 1, 2, 0, 1, 0,
+1, 0, 1, 1, 2, 1,
 ];
 
 /// **The X-Trans regression, end to end.** `zenraw::decode` on the default
@@ -335,6 +539,7 @@ const XTRANS_TILE: [u8; 36] = [
 /// (6×6) `color_pattern` — every X-Trans Fujifilm it supports — so this was
 /// reachable on real files, not only on synthetic ones.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn decode_preserves_measured_channel_for_xtrans_cfa() {
     let (data, expected) = dng_with_cfa_tile(&XTRANS_TILE, 6);
 
@@ -351,7 +556,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 6x6 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.copy_to_contiguous_bytes();
+        let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -368,7 +573,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
                 assert!(
                     (got - want).abs() < 1e-4,
                     "{method:?}: measured channel {known} clobbered at ({row},{col}): \
-                     got {got}, sensor said {want}"
+                 got {got}, sensor said {want}"
                 );
             }
         }
@@ -378,6 +583,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
 /// The same end-to-end path on a 2×2 Bayer tile must be unchanged — this is the
 /// byte-level guard that the dispatch did not disturb Bayer sensors.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn decode_preserves_measured_channel_for_bayer_cfa() {
     let tile: [u8; 4] = [0, 1, 1, 2]; // RGGB
     let (data, expected) = dng_with_cfa_tile(&tile, 2);
@@ -395,7 +601,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 2x2 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.copy_to_contiguous_bytes();
+        let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -426,6 +632,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
 // not only at the pre-existing phase boundaries.
 
 /// A DNG with a plain ascending gradient at `w`×`h`, Bayer RGGB.
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn dng_sized(w: u16, h: u16) -> Vec<u8> {
     let entries = vec![
         short(0x0100, w),
@@ -452,10 +659,12 @@ fn dng_sized(w: u16, h: u16) -> Vec<u8> {
 
 /// `Stop` that cancels once `check()` has been called `budget` times.
 /// `budget = u64::MAX` records calls without ever firing.
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 struct CountdownStop {
     remaining: std::sync::atomic::AtomicU64,
 }
 
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 impl CountdownStop {
     fn new(budget: u64) -> Self {
         Self {
@@ -467,6 +676,7 @@ impl CountdownStop {
     }
 }
 
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 impl enough::Stop for CountdownStop {
     fn check(&self) -> Result<(), enough::StopReason> {
         use std::sync::atomic::Ordering::Relaxed;
@@ -496,6 +706,7 @@ impl enough::Stop for CountdownStop {
 /// A token that never fires must not perturb output bytes anywhere in the
 /// pipeline — the checks are a pure observation point.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn decode_with_non_firing_stop_is_byte_identical() {
     let data = dng_sized(1024, 1024);
     let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
@@ -503,19 +714,25 @@ fn decode_with_non_firing_stop_is_byte_identical() {
     let base = zenraw::decode(&data, &config, None)
         .expect("baseline decode")
         .pixels
-        .copy_to_contiguous_bytes();
+        .as_view()
+        .to_contiguous_bytes()
+        .unwrap()
+        .into_owned();
 
     let metered = CountdownStop::new(u64::MAX);
     let out = zenraw::decode(&data, &config, Some(&how_far::StopOnly::borrowed(&metered)))
         .expect("decode with non-firing stop")
         .pixels
-        .copy_to_contiguous_bytes();
+        .as_view()
+        .to_contiguous_bytes()
+        .unwrap()
+        .into_owned();
 
     assert_eq!(base, out, "stop checks changed the output bytes");
     assert!(
         metered.calls() > 10,
         "only {} interior checks fired on a 1 MP decode — the pipeline polls \
-         far more often than that",
+     far more often than that",
         metered.calls()
     );
 }
@@ -524,6 +741,7 @@ fn decode_with_non_firing_stop_is_byte_identical() {
 /// partial image. Small budgets land inside normalize/demosaic — the spans
 /// that were unpolled before this work.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn decode_cancelled_mid_pipeline_returns_stopped() {
     let data = dng_sized(1024, 1024);
     let config = RawDecodeConfig::new().with_output(OutputMode::Develop);
@@ -544,6 +762,7 @@ fn decode_cancelled_mid_pipeline_returns_stopped() {
 
 /// Cancellation is an error even when the token only reports it once.
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn single_poll_cancellation_is_never_lost() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct FireOnce {
@@ -585,6 +804,7 @@ fn single_poll_cancellation_is_never_lost() {
 /// testkit's incremental contract on synthetic Bayer and X-Trans DNGs.
 #[cfg(feature = "zencodec")]
 #[test]
+#[cfg(all(feature = "rawloader", not(feature = "rawler")))]
 fn incremental_contract_holds() {
     use zencodec::decode::DecoderConfig as _;
     use zenraw::RawDecoderConfig;

@@ -5,26 +5,21 @@
 //!
 //! Output mode is controlled by [`OutputMode`]:
 //! - [`Develop`](OutputMode::Develop) (default): display-ready u16 sRGB with tone mapping
-//! - [`Linear`](OutputMode::Linear): scene-referred linear f32 with WB + color matrix
+//! - [`Linear`](OutputMode::Linear): bounded linear f32
+//! - [`LinearExtended`](OutputMode::LinearExtended): extended scene-linear f32
 //! - [`CameraRaw`](OutputMode::CameraRaw): raw camera values, f32, no color processing
 
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 extern crate std;
 
-// These three are only used by the rawloader-backend functions in this
-// module; the rawler backend lives in `rawler_backend.rs`. Gating them on
-// `rawloader` keeps a rawler-only build warning-free.
-#[cfg(feature = "rawloader")]
 use alloc::vec::Vec;
 
-#[cfg(feature = "rawloader")]
-#[cfg(feature = "rawloader")]
 use whereat::ResultAtExt;
 #[cfg(any(feature = "rawloader", feature = "rawler"))]
 use whereat::at;
-use zenpixels::PixelBuffer;
-#[cfg(feature = "rawloader")]
-use zenpixels::PixelDescriptor;
+use zenpixels::{
+    ExactDepth, PixelBuf, PixelFormat, Primaries, SampleFacts, SampleType, StorageSample,
+};
 
 pub use crate::dng_render::OutputPrimaries;
 
@@ -41,43 +36,39 @@ use crate::error::{RawError, RawLimitKind, Result};
 #[non_exhaustive]
 pub enum OutputMode {
     /// Full develop: WB + color matrix + tone curve + gamma.
-    /// Produces display-ready, sRGB-encoded **u16** RGB
-    /// (`PixelDescriptor::RGB16_SRGB`) in target primaries — never u8, never
-    /// f32. Narrow to u8 yourself if you need 8-bit output.
+    /// Produces display-ready **u16** RGB with the sRGB transfer in the target primaries.
     #[default]
     Develop,
-    /// Linear scene-referred: WB + color matrix only.
-    /// Produces **f32** linear RGB (`PixelDescriptor::RGBF32_LINEAR`) in
-    /// target primaries.
+    /// Bounded linear f32 RGB in the target primaries.
     ///
-    /// **Clamped to `[0, 1]` by the colour pipeline.** The combined
-    /// white-balance + camera→output matrix is applied by
-    /// [`color::apply_color_pipeline`](crate::color::apply_color_pipeline),
-    /// which clamps every component as it writes it, so highlights that
-    /// exceeded the sensor's white level are not preserved and negative
-    /// out-of-gamut components are floored at zero. Values above `1.0` reach
-    /// the output only through [`exposure_ev`](RawDecodeConfig::exposure_ev),
-    /// which is a plain multiplier applied *after* the clamp.
-    ///
-    /// This mode is therefore scene-referred in its *transfer function* (no
-    /// tone curve, no gamma — unlike [`Develop`](Self::Develop)) but not in its
-    /// dynamic range. [`CameraRaw`](Self::CameraRaw) is the mode that keeps
-    /// values above `1.0`: it skips the colour pipeline, so the demosaic
-    /// overshoot survives.
+    /// The white-balance and color matrix result is clamped to `[0, 1]`
+    /// before applying optional exposure compensation.
     Linear,
-    /// Raw camera values: no WB, no color matrix.
-    /// Produces **f32** RGB (`PixelDescriptor::RGBF32_LINEAR`, primaries
-    /// `Unknown`) in camera color space.
+    /// Extended scene-linear f32 RGB in the target primaries.
     ///
-    /// The only mode that is **not clamped to `1.0`**. Sensor samples are
-    /// normalised against the black/white levels with `clamp(0.0, 1.0)`, but
-    /// demosaicing runs afterwards and the Malvar-He-Cutler kernels' Laplacian
-    /// correction has a floor (`.max(0.0)`) and no ceiling, so high-contrast
-    /// neighbourhoods overshoot past `1.0`. [`Linear`](Self::Linear) and
-    /// [`Develop`](Self::Develop) lose that overshoot to the colour matrix's
-    /// clamp; this mode skips the colour pipeline and keeps it. Values are
-    /// always finite and never negative.
+    /// White balance and the color matrix can produce negative components or
+    /// highlights above `1.0`. Both survive, and exposure scales that full
+    /// result. Sensor normalization still clamps to the recorded black and
+    /// white levels before demosaicing.
+    LinearExtended,
+    /// Linear f32 camera RGB with unknown output primaries.
+    ///
+    /// Sensor normalization and demosaicing run, with white balance, the
+    /// color matrix, and exposure compensation omitted. This retains
+    /// demosaic overshoots above `1.0` in camera space.
     CameraRaw,
+}
+
+impl OutputMode {
+    pub(crate) fn pixel_format(self, target: Primaries) -> PixelFormat {
+        match self {
+            Self::Develop => PixelFormat::RGB16_SRGB.with_primaries(target),
+            Self::Linear | Self::LinearExtended => {
+                PixelFormat::RGBF32_LINEAR.with_primaries(target)
+            }
+            Self::CameraRaw => PixelFormat::RGBF32_LINEAR.with_primaries(Primaries::Unknown),
+        }
+    }
 }
 
 /// Configuration for RAW/DNG decoding.
@@ -103,16 +94,15 @@ pub struct RawDecodeConfig {
     ///
     /// - [`Develop`](OutputMode::Develop) (default): display-ready u16 sRGB
     ///   with WB, color matrix, tone curve, and sRGB gamma.
-    /// - [`Linear`](OutputMode::Linear): scene-referred f32 linear with WB
-    ///   and color matrix applied.
+    /// - [`Linear`](OutputMode::Linear): bounded linear f32 with WB and color matrix.
+    /// - [`LinearExtended`](OutputMode::LinearExtended): the same linear transform with extended range.
     /// - [`CameraRaw`](OutputMode::CameraRaw): raw camera values as f32,
     ///   no WB or color matrix.
     pub output: OutputMode,
     /// Target output color primaries.
     ///
-    /// Controls the RGB primaries of the output buffer. Only affects
-    /// [`Develop`](OutputMode::Develop) and [`Linear`](OutputMode::Linear)
-    /// modes; [`CameraRaw`](OutputMode::CameraRaw) ignores this.
+    /// Controls the RGB primaries of Develop, Linear, and LinearExtended output.
+    /// CameraRaw keeps camera-space samples with unknown primaries.
     ///
     /// Default: [`Srgb`](OutputPrimaries::Srgb).
     pub target: OutputPrimaries,
@@ -120,7 +110,7 @@ pub struct RawDecodeConfig {
     ///
     /// Applied as a linear multiplier (`2^exposure_ev`) after WB + color matrix,
     /// before tone mapping and gamma. Positive values brighten; negative darken.
-    /// Only affects [`Develop`](OutputMode::Develop) and [`Linear`](OutputMode::Linear).
+    /// Applies to Develop, Linear, and LinearExtended.
     ///
     /// Default: `0.0` (no adjustment).
     pub exposure_ev: f32,
@@ -135,8 +125,7 @@ pub struct RawDecodeConfig {
     /// Override white balance coefficients (RGB multipliers).
     ///
     /// When set, these multipliers replace the camera's as-shot WB
-    /// during the color pipeline. Only has effect in [`Develop`](OutputMode::Develop)
-    /// and [`Linear`](OutputMode::Linear) modes.
+    /// during the color pipeline for Develop, Linear, and LinearExtended.
     ///
     /// Values are relative multipliers (e.g., `[1.0, 1.0, 1.0]` = no WB,
     /// `[2.0, 1.0, 1.5]` = boost red, slight blue).
@@ -204,7 +193,8 @@ impl RawDecodeConfig {
     /// Set the output rendering mode.
     ///
     /// - [`Develop`](OutputMode::Develop) (default): display-ready u16 sRGB
-    /// - [`Linear`](OutputMode::Linear): scene-referred f32 linear
+    /// - [`Linear`](OutputMode::Linear): bounded linear f32
+    /// - [`LinearExtended`](OutputMode::LinearExtended): extended scene-linear f32
     /// - [`CameraRaw`](OutputMode::CameraRaw): raw camera f32 values
     #[must_use]
     pub fn with_output(mut self, mode: OutputMode) -> Self {
@@ -214,8 +204,7 @@ impl RawDecodeConfig {
 
     /// Set the target output color primaries.
     ///
-    /// Affects [`Develop`](OutputMode::Develop) and [`Linear`](OutputMode::Linear);
-    /// ignored for [`CameraRaw`](OutputMode::CameraRaw).
+    /// Applies to Develop, Linear, and LinearExtended.
     #[must_use]
     pub fn with_target(mut self, primaries: OutputPrimaries) -> Self {
         self.target = primaries;
@@ -252,7 +241,7 @@ impl RawDecodeConfig {
     /// Override white balance with custom RGB multipliers.
     ///
     /// Replaces the camera's as-shot WB during color pipeline processing.
-    /// Only effective in [`Develop`](OutputMode::Develop) and [`Linear`](OutputMode::Linear) modes.
+    /// Applies to Develop, Linear, and LinearExtended.
     #[must_use]
     pub fn with_wb(mut self, rgb: [f32; 3]) -> Self {
         self.wb_override = Some(rgb);
@@ -265,31 +254,71 @@ impl RawDecodeConfig {
 #[non_exhaustive]
 pub struct RawDecodeOutput {
     /// Decoded pixel buffer. The format follows [`RawDecodeConfig::output`]:
-    /// [`Develop`](OutputMode::Develop) produces `RGB16_SRGB` (u16 sRGB), while
-    /// [`Linear`](OutputMode::Linear) and [`CameraRaw`](OutputMode::CameraRaw)
-    /// produce `RGBF32_LINEAR` (f32 linear).
-    pub pixels: PixelBuffer,
+    /// [`Develop`](OutputMode::Develop) produces u16 RGB with the sRGB transfer, while
+    /// Linear, LinearExtended, and CameraRaw produce linear f32 RGB.
+    /// CameraRaw has unknown primaries.
+    pub pixels: PixelBuf,
     /// Decoded image metadata.
     pub info: RawInfo,
 }
 
-/// Describe the delivered integer grid, after every value-changing operation.
-/// Sensor precision does not establish this property after development.
-pub(crate) fn output_with_exact_depth(
-    mut pixels: PixelBuffer,
+/// Wrap the samples and describe the delivered grid after all value changes.
+pub(crate) fn make_output<S: StorageSample>(
+    samples: Vec<S>,
     info: RawInfo,
+    format: PixelFormat,
 ) -> crate::Result<RawDecodeOutput> {
-    if matches!(
-        pixels.descriptor().channel_type(),
-        zenpixels::ChannelType::U8 | zenpixels::ChannelType::U16
-    ) {
-        let exact = zenpixels::sample::ExactDepth::measure(&pixels.as_slice())
-            .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
-        pixels
-            .set_exact_depth(Some(exact))
-            .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
-    }
+    let mut pixels = PixelBuf::from_samples(samples, info.width, info.height, format)
+        .map_err_at(crate::RawError::Buffer)?;
+    let view = pixels.as_view();
+    let grayscale = match pixels.format().layout.sample {
+        SampleType::U8 => rgb_is_gray(
+            view.as_contiguous_typed::<u8>()
+                .map_err_at(crate::RawError::Buffer)?,
+        ),
+        SampleType::U16 => rgb_is_gray(
+            view.as_contiguous_typed::<u16>()
+                .map_err_at(crate::RawError::Buffer)?,
+        ),
+        _ => return Ok(RawDecodeOutput { pixels, info }),
+    };
+    let depth = ExactDepth::measure(&view)
+        .map_err(|error| whereat::at!(crate::RawError::InvalidBuffer(error.to_string())))?;
+    pixels.assume_facts(
+        SampleFacts::from_depth(depth)
+            .with_all_opaque(true)
+            .with_all_grayscale(grayscale)
+            .with_binary_alpha(true),
+    );
     Ok(RawDecodeOutput { pixels, info })
+}
+
+fn rgb_is_gray(samples: &[impl PartialEq]) -> bool {
+    samples
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .all(|[r, g, b]| r == g && g == b)
+}
+
+#[cfg(any(feature = "rawloader", feature = "rawler"))]
+pub(crate) fn make_linear_output(
+    samples: Vec<f32>,
+    info: RawInfo,
+    primaries: Primaries,
+    pulse: &dyn how_far::Pulse,
+) -> Result<RawDecodeOutput> {
+    pulse
+        .check()
+        .map_err(|reason| at!(RawError::from(reason)))?;
+    let bytes = core::mem::size_of_val(samples.as_slice());
+    let output = make_output(
+        samples,
+        info,
+        PixelFormat::RGBF32_LINEAR.with_primaries(primaries),
+    )?;
+    pulse.advance(bytes as u64);
+    Ok(output)
 }
 
 /// Reject the decode early if image dimensions blow past `max_pixels` OR the
@@ -384,8 +413,9 @@ pub struct RawInfo {
     /// White balance coefficients as-shot (RGBE, 4 channels).
     /// These are the multipliers the camera recorded for the scene illuminant.
     pub wb_coeffs: [f32; 4],
-    /// Camera→XYZ color matrix (4×3, row-major).
-    /// Maps camera RGB to CIE XYZ. Used with WB to produce sRGB output.
+    /// XYZ-to-camera color matrix (4×3, row-major). Each row maps CIE XYZ
+    /// to one camera channel. The three-channel renderer inverts the first
+    /// three rows to transform camera RGB back to XYZ.
     pub color_matrix: [[f32; 3]; 4],
     /// Black level per channel (RGBE order, sensor DN units).
     pub black_levels: [f32; 4],
@@ -561,7 +591,7 @@ fn rawloader_sensor_layout(raw: &rawloader::RawImage) -> SensorLayout {
 /// 4. Apply white balance + camera→sRGB color matrix
 /// 5. Optionally apply sRGB gamma curve
 /// 6. Optionally crop to the camera's recommended region
-/// 7. Return as a PixelBuffer
+/// 7. Return as a PixelBuf
 #[cfg(feature = "rawloader")]
 pub(crate) fn decode(
     data: &[u8],
@@ -675,8 +705,15 @@ fn decode_inner(
             } else {
                 raw.wb_coeffs
             };
-            color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, pulse)
-                .map_err(|r| at!(RawError::from(r)))?;
+            color::apply_color_pipeline_stop(
+                &mut rgb,
+                wb,
+                raw.xyz_to_cam,
+                config.target,
+                config.output != OutputMode::LinearExtended,
+                pulse,
+            )
+            .map_err(|r| at!(RawError::from(r)))?;
 
             // Apply exposure_ev if nonzero
             if config.exposure_ev.abs() > 1e-6 {
@@ -769,70 +806,7 @@ fn decode_inner(
         sensor_layout: rawloader_sensor_layout(&raw),
     };
 
-    progress.run(|pulse| {
-        crate::progress::total(
-            pulse,
-            final_rgb.len()
-                * if config.output == OutputMode::Develop {
-                    2
-                } else {
-                    4
-                },
-        );
-        match config.output {
-            OutputMode::Develop => {
-                let mut gamma_rgb = final_rgb;
-                color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
-                    .map_err(|r| at!(RawError::from(r)))?;
-                let u16_data =
-                    color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
-
-                let buf = PixelBuffer::from_vec(
-                    u16_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::Linear => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::CameraRaw => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(zenpixels::ColorPrimaries::Unknown),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-        }
-    })
+    progress.run(|pulse| finish_rawloader_output(final_rgb, info, config, pulse))
 }
 
 /// Handle non-Bayer data (cpp > 1, e.g., Foveon or some DNGs with embedded RGB).
@@ -906,8 +880,15 @@ fn decode_non_bayer(
             } else {
                 raw.wb_coeffs
             };
-            color::apply_color_pipeline_stop(&mut rgb, wb, raw.xyz_to_cam, config.target, pulse)
-                .map_err(|r| at!(RawError::from(r)))?;
+            color::apply_color_pipeline_stop(
+                &mut rgb,
+                wb,
+                raw.xyz_to_cam,
+                config.target,
+                config.output != OutputMode::LinearExtended,
+                pulse,
+            )
+            .map_err(|r| at!(RawError::from(r)))?;
 
             // Apply exposure_ev if nonzero
             if config.exposure_ev.abs() > 1e-6 {
@@ -994,70 +975,44 @@ fn decode_non_bayer(
         sensor_layout: SensorLayout::LinearRaw,
     };
 
-    progress.run(|pulse| {
-        crate::progress::total(
-            pulse,
-            final_rgb.len()
-                * if config.output == OutputMode::Develop {
-                    2
-                } else {
-                    4
-                },
-        );
-        match config.output {
-            OutputMode::Develop => {
-                let mut gamma_rgb = final_rgb;
-                color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
-                    .map_err(|r| at!(RawError::from(r)))?;
-                let u16_data =
-                    color::f32_to_u16(&gamma_rgb, pulse).map_err(|r| at!(RawError::from(r)))?;
+    progress.run(|pulse| finish_rawloader_output(final_rgb, info, config, pulse))
+}
 
-                let buf = PixelBuffer::from_vec(
-                    u16_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGB16_SRGB.with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::Linear => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(config.target.to_color_primaries()),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
-            OutputMode::CameraRaw => {
-                let byte_data: Vec<u8> = crate::alloc_util::copy_with_stop(
-                    bytemuck::cast_slice::<f32, u8>(&final_rgb),
-                    pulse,
-                )?;
-
-                let buf = PixelBuffer::from_vec(
-                    byte_data,
-                    final_w as u32,
-                    final_h as u32,
-                    PixelDescriptor::RGBF32_LINEAR
-                        .with_primaries(zenpixels::ColorPrimaries::Unknown),
-                )
-                .map_err_at(RawError::Buffer)?;
-
-                output_with_exact_depth(buf, info)
-            }
+#[cfg(feature = "rawloader")]
+fn finish_rawloader_output(
+    final_rgb: Vec<f32>,
+    info: RawInfo,
+    config: &RawDecodeConfig,
+    pulse: &dyn how_far::Pulse,
+) -> Result<RawDecodeOutput> {
+    crate::progress::total(
+        pulse,
+        final_rgb.len()
+            * if config.output == OutputMode::Develop {
+                2
+            } else {
+                4
+            },
+    );
+    match config.output {
+        OutputMode::Develop => {
+            let mut gamma_rgb = final_rgb;
+            color::apply_srgb_gamma_stop(&mut gamma_rgb, pulse)
+                .map_err(|r| at!(RawError::from(r)))?;
+            let samples = color::f32_to_u16(&gamma_rgb, config.alloc_pref, pulse)?;
+            make_output(
+                samples,
+                info,
+                config
+                    .output
+                    .pixel_format(config.target.to_color_primaries()),
+            )
         }
-    })
+        OutputMode::Linear | OutputMode::LinearExtended => {
+            make_linear_output(final_rgb, info, config.target.to_color_primaries(), pulse)
+        }
+        OutputMode::CameraRaw => make_linear_output(final_rgb, info, Primaries::Unknown, pulse),
+    }
 }
 
 /// Normalize raw sensor data to f32 \[0, 1\] using black/white levels.
