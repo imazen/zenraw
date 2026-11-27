@@ -32,7 +32,7 @@ fn dng_policy_and_inventory_contracts() {
         .metadata();
     for (policy, accepted) in [
         (DecodePolicy::none(), true),
-        (DecodePolicy::strict(), false),
+        (DecodePolicy::untrusted_minimal(), false),
     ] {
         zencodec_testkit::check_decode_policy_admission(
             dec.clone(),
@@ -55,7 +55,8 @@ mod incremental_admission {
     use enough::{Stop, StopReason};
     use zencodec::ResourceLimits;
     use zencodec::decode::{
-        DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, SinkError, StepError,
+        DecodeRowSink, DynIncrementalDecoder, Event, Input, InputRequest, RowStrip, SinkError,
+        StepError,
     };
     use zenpixels::{PixelFormat, PixelViewMut};
     use zenraw::{RawError, RawLimitKind};
@@ -85,18 +86,16 @@ mod incremental_admission {
 
         fn provide_next_buffer(
             &mut self,
-            y: u32,
-            height: u32,
-            width: u32,
-            desc: PixelFormat,
+            strip: RowStrip,
+            format: PixelFormat,
         ) -> Result<PixelViewMut<'_>, SinkError> {
             let bytes = bytemuck::cast_slice_mut(&mut self.storage);
             PixelViewMut::new_with_format_cow(
-                &mut bytes[y as usize * self.stride..],
-                width,
-                height,
+                &mut bytes[strip.y as usize * self.stride..],
+                strip.width,
+                strip.height,
                 self.stride,
-                zenpixels::FormatCow::from_owned(desc),
+                zenpixels::FormatCow::from_owned(format),
             )
             .map_err(|e| e.to_string().into())
         }
@@ -223,7 +222,7 @@ mod incremental_admission {
             .unwrap()
             .decode()
             .unwrap();
-        let desc = expected.descriptor();
+        let desc = expected.pixel_format();
         let expected_bytes = expected.pixels().to_contiguous_bytes().unwrap();
         let mut dec = decoder(ResourceLimits::none().with_max_input_bytes(bytes.len() as u64));
         let mut sink = Sink::default();
@@ -296,7 +295,7 @@ mod incremental_admission {
             .unwrap();
         let output = u64::from(expected.width())
             * u64::from(expected.height())
-            * expected.descriptor().layout.bytes_per_pixel() as u64;
+            * expected.pixel_format().layout.bytes_per_pixel() as u64;
         let mut dec =
             decoder(ResourceLimits::none().with_max_memory(bytes.len() as u64 + output - 1));
         assert_denial(
@@ -334,7 +333,6 @@ mod incremental_admission {
     }
 
     #[test]
-    #[allow(deprecated)] // Retain coverage of the explicit-stop compatibility path.
     fn transient_job_stop_after_preflight_cannot_be_swallowed_by_a_second_probe() {
         use std::sync::{
             Arc,
@@ -358,20 +356,24 @@ mod incremental_admission {
         let calls = Arc::new(AtomicUsize::new(0));
         RawDecoderConfig::new()
             .job()
-            .with_stop(zencodec::StopToken::new(CountStops {
-                calls: calls.clone(),
-                stop_at: usize::MAX,
-            }))
+            .with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(
+                CountStops {
+                    calls: calls.clone(),
+                    stop_at: usize::MAX,
+                },
+            )))
             .probe(prefix)
             .unwrap();
         let native_probe_calls = calls.swap(0, Ordering::Relaxed);
         assert!(native_probe_calls > 0);
         let mut dec = RawDecoderConfig::new()
             .job()
-            .with_stop(zencodec::StopToken::new(CountStops {
-                calls: calls.clone(),
-                stop_at: native_probe_calls,
-            }))
+            .with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(
+                CountStops {
+                    calls: calls.clone(),
+                    stop_at: native_probe_calls,
+                },
+            )))
             .dyn_incremental_decoder(&[])
             .unwrap();
         let mut sink = Sink::default();

@@ -243,7 +243,7 @@ fn correct_bakes_pixels_matching_manual_orientation() {
         // Manually bake the intrinsic orientation onto the Preserve pixels using
         // the same coordinate model, then compare to the adapter's Correct
         // output bit-for-bit (pixels are SACRED — exact, no resampling).
-        let bpp = preserved.descriptor().layout.bytes_per_pixel();
+        let bpp = preserved.pixel_format().layout.bytes_per_pixel();
         let sw = preserved.width() as usize;
         let sh = preserved.height() as usize;
         let src = pixels_of(&preserved);
@@ -281,7 +281,7 @@ fn exact_transform_ignores_exif_and_correct_and_transform_composes() {
     for (name, data) in &files {
         let (preserved, probe_preserve) = decode_with_hint(data, OrientationHint::Preserve);
         let intrinsic = preserved.info().orientation;
-        let bpp = preserved.descriptor().layout.bytes_per_pixel();
+        let bpp = preserved.pixel_format().layout.bytes_per_pixel();
         let sw = preserved.width() as usize;
         let sh = preserved.height() as usize;
         let (pw, ph) = (probe_preserve.width, probe_preserve.height);

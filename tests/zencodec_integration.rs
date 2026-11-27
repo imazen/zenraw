@@ -45,8 +45,8 @@ fn formats_returns_dng_and_raw() {
 }
 
 #[test]
-fn supported_descriptors_non_empty() {
-    let descs = zenraw::RawDecoderConfig::supported_descriptors();
+fn supported_pixel_formats_non_empty() {
+    let descs = zenraw::RawDecoderConfig::supported_pixel_formats();
     assert!(descs.len() >= 2);
 }
 
@@ -184,7 +184,10 @@ fn decode_prefers_linear_when_requested() {
         .expect("decoder creation failed");
     let output = decoder.decode().expect("decode failed");
 
-    assert_eq!(output.descriptor(), zenpixels::PixelFormat::RGBF32_LINEAR);
+    assert_eq!(
+        output.pixel_format(),
+        &zenpixels::PixelFormat::RGBF32_LINEAR
+    );
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────
@@ -283,8 +286,8 @@ fn decode_bt2020_primaries() {
     let output = decoder.decode().expect("decode failed");
 
     assert_eq!(
-        output.descriptor(),
-        zenpixels::PixelFormat::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Bt2020)
+        output.pixel_format(),
+        &zenpixels::PixelFormat::RGBF32_LINEAR.with_primaries(zenpixels::Primaries::Bt2020)
     );
 }
 
@@ -305,8 +308,8 @@ fn decode_display_p3_develop() {
     let output = decoder.decode().expect("decode failed");
 
     assert_eq!(
-        output.descriptor(),
-        zenpixels::PixelFormat::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
+        output.pixel_format(),
+        &zenpixels::PixelFormat::RGB16_SRGB.with_primaries(zenpixels::Primaries::DisplayP3)
     );
 }
 

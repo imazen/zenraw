@@ -160,7 +160,7 @@ no interior hook: each parser call is indivisible for cancellation and progress.
 The zencodec adapter forwards `DecodeJob::with_pulse` to native decode and
 its final output-orientation pass, including whole-file incremental decode.
 Repeated metadata probes check cancellation without consuming the decode's
-progress plan. `with_stop` and `with_pulse` preserve both stop policies.
+progress plan. Cancellation-only callers can wrap any `Stop` token in `how_far::StopOnly` via `with_pulse`.
 
 See the [how-far integration guide](https://github.com/imazen/how-far/blob/main/docs/how-far-integration.md)
 for observers, callbacks and result ownership.

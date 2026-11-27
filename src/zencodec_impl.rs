@@ -297,7 +297,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         &FORMATS
     }
 
-    fn supported_descriptors() -> &'static [PixelFormat] {
+    fn supported_pixel_formats() -> &'static [PixelFormat] {
         DECODE_DESCRIPTORS
     }
 
@@ -317,7 +317,7 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
         // The RAW develop pipeline's working set is dominated by `RGB f32`
         // buffers (12 B/px): the normalized sensor buffer, the demosaic output,
         // and a transient crop/orientation copy. The output buffer
-        // (`image.descriptor()`, RGB16 6 B/px or RGBF32 12 B/px) is smaller than
+        // (`image.pixel_format()`, RGB16 6 B/px or RGBF32 12 B/px) is smaller than
         // or equal to those.
         //
         // Anchor (heaptrack, `examples/heaptrack_decode.rs`, see CHANGELOG):
@@ -348,7 +348,6 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
     fn job<'a>(self) -> Self::Job<'a> {
         RawDecodeJob {
             config: self.inner,
-            stop: None,
             pulse: None,
             limits: ResourceLimits::default(),
             orientation: OrientationHint::Preserve,
@@ -362,7 +361,6 @@ impl zencodec::decode::DecoderConfig for RawDecoderConfig {
 /// Per-operation decode job for RAW/DNG files.
 pub struct RawDecodeJob {
     config: RawDecodeConfig,
-    stop: Option<zencodec::StopToken>,
     pulse: Option<how_far::SharedPulse>,
     limits: ResourceLimits,
     /// How to resolve the EXIF orientation during decode. Default
@@ -384,11 +382,6 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     type Dec = RawDecoder<'a>;
     type StreamDec = Unsupported<At<RawError>>;
     type AnimationFrameDec = Unsupported<At<RawError>>;
-
-    fn with_stop(mut self, stop: zencodec::StopToken) -> Self {
-        self.stop = Some(stop);
-        self
-    }
 
     fn with_pulse(mut self, pulse: how_far::SharedPulse) -> Self {
         self.pulse = Some(pulse);
@@ -412,7 +405,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         &self,
         data: &[u8],
     ) -> Result<zencodec::inventory::Inventory, At<zencodec::CodecError>> {
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         let stop: &dyn enough::Stop = &observation;
         enough::Stop::check(stop).map_err(|r| zencodec::CodecError::of(at!(RawError::from(r))))?;
         // The same input-size limit `decoder()` enforces.
@@ -443,7 +436,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
     }
 
     fn probe(&self, data: &[u8]) -> Result<ImageInfo, Self::Error> {
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         if let Some(cache) = &self.incremental_probe
             && let Some(info) = cache.get()
@@ -465,7 +458,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
 
     fn output_info(&self, data: &[u8]) -> Result<OutputInfo, Self::Error> {
         // Probe for stored dims + intrinsic orientation (independent of hint).
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         let raw_info = crate::probe_inner(data, &observation)?;
         let info = build_image_info(data, &raw_info);
@@ -517,7 +510,7 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         config.apply_orientation = false;
 
         // Probe header for dimensions to check width/height/memory limits
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         enough::Stop::check(&observation).map_err(|r| at!(RawError::from(r)))?;
         let info = crate::probe_inner(&data, &observation)?;
 
@@ -546,7 +539,6 @@ impl<'a> zencodec::decode::DecodeJob<'a> for RawDecodeJob {
         Ok(RawDecoder {
             data,
             config,
-            stop: self.stop,
             pulse: self.pulse,
             orientation: self.orientation,
         })
@@ -632,7 +624,6 @@ impl RawIncremental {
             .bytes_per_pixel() as u64;
         let probe_job = RawDecodeJob {
             config: job.config.clone(),
-            stop: job.stop.clone(),
             pulse: job.pulse.clone(),
             limits: job.limits,
             orientation: job.orientation,
@@ -685,11 +676,8 @@ impl IncrementalDecode for RawIncremental {
     ) -> Result<Progress, StepError<Self::Error>> {
         let observer = pulse.unwrap_or(&how_far::NoPulse);
         observer.check()?;
-        enough::Stop::check(&observation(
-            self.probe_job.pulse.as_ref(),
-            self.probe_job.stop.as_ref(),
-        ))
-        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
+        enough::Stop::check(&observation(self.probe_job.pulse.as_ref(), None))
+            .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         // Length describes the source even when this window starts elsewhere.
         if let Some(total) = input.total_len {
             self.admit_size(total).map_err(StepError::Codec)?;
@@ -754,11 +742,8 @@ impl IncrementalDecode for RawIncremental {
             self.inner.step(input, sink, pulse)?
         };
         observer.check()?;
-        enough::Stop::check(&observation(
-            self.probe_job.pulse.as_ref(),
-            self.probe_job.stop.as_ref(),
-        ))
-        .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
+        enough::Stop::check(&observation(self.probe_job.pulse.as_ref(), None))
+            .map_err(|reason| StepError::Codec(at!(RawError::from(reason))))?;
         self.header_ready = self.inner.info().is_some();
         self.needs_input = matches!(progress.event, Event::Need);
         if self.needs_input {
@@ -826,8 +811,8 @@ impl IncrementalDecode for RawIncremental {
         }
     }
 
-    fn output_descriptor(&self) -> Option<PixelFormat> {
-        self.inner.output_descriptor()
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.inner.output_pixel_format()
     }
 }
 
@@ -837,7 +822,6 @@ impl IncrementalDecode for RawIncremental {
 pub struct RawDecoder<'a> {
     data: Cow<'a, [u8]>,
     config: RawDecodeConfig,
-    stop: Option<zencodec::StopToken>,
     pulse: Option<how_far::SharedPulse>,
     /// Resolved from [`RawDecodeJob::orientation`]; drives the bake path in
     /// [`Decode::decode`](zencodec::decode::Decode::decode). The native decode
@@ -861,7 +845,7 @@ fn preferred_output(configured: OutputMode, preferred: &[PixelFormat]) -> Output
 
 impl RawDecoder<'_> {
     fn decode_with_orientation(self) -> crate::Result<(DecodeOutput, Orientation)> {
-        let observation = observation(self.pulse.as_ref(), self.stop.as_ref());
+        let observation = observation(self.pulse.as_ref(), None);
         let mut progress =
             crate::progress::Sequence::new(&observation, &["Decode RAW", "Output orientation"]);
         let result = (|| {

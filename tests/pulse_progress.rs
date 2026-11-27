@@ -445,16 +445,14 @@ mod adapter {
 
         fn provide_next_buffer(
             &mut self,
-            y: u32,
-            h: u32,
-            w: u32,
+            strip: zencodec::decode::RowStrip,
             format: zenpixels::PixelFormat,
         ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
             let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut self.storage);
             zenpixels::PixelViewMut::new_with_format_cow(
-                &mut bytes[y as usize * self.stride..],
-                w,
-                h,
+                &mut bytes[strip.y as usize * self.stride..],
+                strip.width,
+                strip.height,
                 self.stride,
                 zenpixels::FormatCow::from_owned(format),
             )
@@ -468,18 +466,17 @@ mod adapter {
         fn provide_buffer_with_metadata(
             &mut self,
             meta: zencodec::decode::BatchMeta,
-            height: u32,
-            width: u32,
+            size: zencodec::decode::StripDimensions,
             format: zenpixels::PixelFormat,
             metadata: &zencodec::decode::RowMetadata,
         ) -> Result<zenpixels::PixelViewMut<'_>, zencodec::decode::SinkError> {
-            assert!(meta.is_final && height <= self.max_buffer_rows().get());
+            assert!(meta.is_final && size.height <= self.max_buffer_rows().get());
             if let Some(held) = &mut self.metadata {
                 held.merge(metadata)?;
             } else {
                 self.metadata = Some(metadata.clone());
             }
-            self.provide_next_buffer(meta.y, height, width, format)
+            self.provide_next_buffer(size.at_row(meta.y), format)
         }
 
         fn finish(&mut self) -> Result<(), zencodec::decode::SinkError> {
@@ -647,8 +644,7 @@ mod adapter {
     }
 
     #[test]
-    #[allow(deprecated)] // Exercise the retained explicit-stop compatibility path.
-    fn either_pulse_or_explicit_stop_cancels_the_adapter() {
+    fn either_pulse_or_stop_only_cancels_the_adapter() {
         let data = fixture(131, 99, false, false, false, 6);
         for (explicit_stop, target) in [
             (false, "Normalize"),
@@ -682,7 +678,7 @@ mod adapter {
                 }
             }
             if explicit_stop {
-                job = job.with_stop(zencodec::StopToken::new(Cancelled));
+                job = job.with_pulse(how_far::SharedPulse::new(how_far::StopOnly::new(Cancelled)));
             }
             let result = job
                 .decoder(Cow::Borrowed(&data), &[])
@@ -703,7 +699,7 @@ mod adapter {
             Arc,
             atomic::{AtomicBool, Ordering},
         };
-        use zencodec::decode::{DecodeRowSink, Event, Input, SinkError, StepError};
+        use zencodec::decode::{DecodeRowSink, Event, Input, RowStrip, SinkError, StepError};
         use zenpixels::{PixelFormat, PixelViewMut};
         struct NoEffects;
         impl DecodeRowSink for NoEffects {
@@ -712,9 +708,7 @@ mod adapter {
             }
             fn provide_next_buffer(
                 &mut self,
-                _: u32,
-                _: u32,
-                _: u32,
+                _: RowStrip,
                 _: PixelFormat,
             ) -> Result<PixelViewMut<'_>, SinkError> {
                 panic!("cancelled session requested output storage")
