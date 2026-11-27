@@ -307,7 +307,7 @@ pub(crate) fn apply_orientation_pixels(
 ) -> crate::Result<zenpixels::PixelBuf> {
     use zenpixels::Orientation::*;
 
-    let (w, h) = (src.width(), src.rows());
+    let (w, h) = (src.width(), src.height());
     let dims = orientation.output_dimensions(w, h);
     crate::progress::total(pulse, dims.1 as usize);
     match orientation {

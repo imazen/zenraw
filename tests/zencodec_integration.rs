@@ -386,7 +386,7 @@ fn fallible_alloc_decode_matches_default() {
             .expect("decoder creation failed")
             .decode()
             .expect("decode failed");
-        out.pixels().contiguous_bytes().unwrap().into_owned()
+        out.pixels().to_contiguous_bytes().unwrap().into_owned()
     };
 
     let default = decode_bytes(None); // CodecDefault

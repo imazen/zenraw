@@ -113,7 +113,7 @@ Key facts about the layout and value range (verified against the decode path):
   `apply_srgb_gamma` on `Develop` output double-encodes.
 
 Use `view.row_as::<f32>(y)?` or `view.row_as::<u16>(y)?` for typed access to
-one row. `view.contiguous_bytes()?` borrows packed bytes and copies active
+one row. `view.to_contiguous_bytes()?` borrows packed bytes and copies active
 rows when there is stride padding. To consume the native output allocation, use
 `output.pixels.into_vec::<f32>()?` or `into_vec::<u16>()?` with the
 matching sample type.

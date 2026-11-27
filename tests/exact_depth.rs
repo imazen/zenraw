@@ -101,8 +101,8 @@ fn developed_grid_is_measured_and_float_modes_carry_no_integer_statement() {
             assert_eq!(pixels.format(), native.pixels.format());
             if hint == OrientationHint::Preserve {
                 assert_eq!(
-                    pixels.contiguous_bytes().unwrap(),
-                    native.pixels.as_view().contiguous_bytes().unwrap(),
+                    pixels.to_contiguous_bytes().unwrap(),
+                    native.pixels.as_view().to_contiguous_bytes().unwrap(),
                 );
             }
         }

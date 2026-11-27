@@ -164,12 +164,12 @@ fn tracked_decode_counts_exact_work_and_preserves_pixels() {
                         assert!(!child.overrun(), "{child:?}");
                     }
                     assert_eq!(
-                        base.pixels.as_view().contiguous_bytes().unwrap(),
-                        tracked.pixels.as_view().contiguous_bytes().unwrap()
+                        base.pixels.as_view().to_contiguous_bytes().unwrap(),
+                        tracked.pixels.as_view().to_contiguous_bytes().unwrap()
                     );
                     assert_eq!(
-                        base.pixels.as_view().contiguous_bytes().unwrap(),
-                        no_pulse.pixels.as_view().contiguous_bytes().unwrap()
+                        base.pixels.as_view().to_contiguous_bytes().unwrap(),
+                        no_pulse.pixels.as_view().to_contiguous_bytes().unwrap()
                     );
                     assert_eq!(
                         (base.info.width, base.info.height),
@@ -388,8 +388,8 @@ mod adapter {
                 .decode()
                 .unwrap();
             assert_eq!(
-                base.pixels().contiguous_bytes().unwrap(),
-                out.pixels().contiguous_bytes().unwrap()
+                base.pixels().to_contiguous_bytes().unwrap(),
+                out.pixels().to_contiguous_bytes().unwrap()
             );
             assert_eq!(
                 (base.info().width, base.info().height),
@@ -496,7 +496,7 @@ mod adapter {
                 Some(&zencodec::decode::RowMetadata::from_view(expected))
             );
             let bytes = bytemuck::cast_slice::<u32, u8>(&self.storage);
-            assert_eq!(bytes.len(), self.stride * expected.rows() as usize);
+            assert_eq!(bytes.len(), self.stride * expected.height() as usize);
             for (y, row) in bytes.chunks_exact(self.stride).enumerate() {
                 let (active, padding) = row.split_at(expected.row_bytes());
                 assert_eq!(active, expected.row(y as u32));
@@ -546,14 +546,14 @@ mod adapter {
                     let expected = native.pixels.as_view();
                     let actual = decoded.pixels();
                     assert_eq!(
-                        (actual.width(), actual.rows()),
-                        (expected.width(), expected.rows())
+                        (actual.width(), actual.height()),
+                        (expected.width(), expected.height())
                     );
                     assert_eq!(actual.format(), expected.format());
                     assert_eq!(actual.facts(), expected.facts());
                     assert_eq!(
-                        actual.contiguous_bytes().unwrap(),
-                        expected.contiguous_bytes().unwrap()
+                        actual.to_contiguous_bytes().unwrap(),
+                        expected.to_contiguous_bytes().unwrap()
                     );
                     let (pending, applied) = if bake {
                         (Orientation::Identity, orientation)
@@ -590,7 +590,7 @@ mod adapter {
                     assert_eq!(info.native_format, *expected.format());
                     assert_eq!(
                         (info.width, info.height),
-                        (expected.width(), expected.rows())
+                        (expected.width(), expected.height())
                     );
                     sink.assert_pixels(&expected);
                 }

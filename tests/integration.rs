@@ -398,7 +398,7 @@ mod darktable_tests {
         );
 
         // Verify output is reasonable (not all zeros or all ones)
-        let data = output.pixels.as_view().contiguous_bytes().unwrap();
+        let data = output.pixels.as_view().to_contiguous_bytes().unwrap();
         let floats: Vec<f32> = data
             .as_chunks::<4>()
             .0

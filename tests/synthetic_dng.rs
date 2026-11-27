@@ -153,7 +153,7 @@ fn probe_matrix_direction_and_extended_linear_highlights() {
         zenraw::decode(&data, &linear_config(OutputMode::LinearExtended, 0.0), None).unwrap();
     let view = extended.pixels.as_view();
     let values = view.as_contiguous_typed::<f32>().unwrap();
-    assert_eq!((view.width(), view.rows()), (8, 6));
+    assert_eq!((view.width(), view.height()), (8, 6));
     assert_eq!(extended.info.color_matrix, probe.color_matrix);
     assert_eq!(extended.info.orientation, 6);
     assert_eq!(view.format(), &zenpixels::PixelFormat::RGBF32_LINEAR);
@@ -371,7 +371,7 @@ fn decode_f32(mode: zenraw::OutputMode) -> Vec<f32> {
     let data = dng_full_range();
     let config = RawDecodeConfig::new().with_output(mode);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
+    let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
     bytes
         .as_chunks::<4>()
         .0
@@ -429,7 +429,7 @@ fn exposure_ev_multiplies_after_the_clamp() {
         .with_output(zenraw::OutputMode::Linear)
         .with_exposure_ev(3.0);
     let out = zenraw::decode(&data, &config, None).expect("synthetic DNG should decode");
-    let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
+    let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
     let values: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -556,7 +556,7 @@ fn decode_preserves_measured_channel_for_xtrans_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 6x6 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
+        let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -601,7 +601,7 @@ fn decode_preserves_measured_channel_for_bayer_cfa() {
         let out = zenraw::decode(&data, &config, None).expect("decode 2x2 DNG");
         let w = out.info.width as usize;
         let h = out.info.height as usize;
-        let bytes = out.pixels.as_view().contiguous_bytes().unwrap();
+        let bytes = out.pixels.as_view().to_contiguous_bytes().unwrap();
         let px: Vec<f32> = bytes
             .as_chunks::<4>()
             .0
@@ -715,7 +715,7 @@ fn decode_with_non_firing_stop_is_byte_identical() {
         .expect("baseline decode")
         .pixels
         .as_view()
-        .contiguous_bytes()
+        .to_contiguous_bytes()
         .unwrap()
         .into_owned();
 
@@ -724,7 +724,7 @@ fn decode_with_non_firing_stop_is_byte_identical() {
         .expect("decode with non-firing stop")
         .pixels
         .as_view()
-        .contiguous_bytes()
+        .to_contiguous_bytes()
         .unwrap()
         .into_owned();
 

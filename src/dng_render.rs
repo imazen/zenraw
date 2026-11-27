@@ -1235,7 +1235,7 @@ mod tests {
 
         let dw = output.pixels.width();
         let dh = output.pixels.height();
-        let raw_bytes = output.pixels.as_view().contiguous_bytes().unwrap();
+        let raw_bytes = output.pixels.as_view().to_contiguous_bytes().unwrap();
         let camera_raw: &[f32] = bytemuck::cast_slice(&raw_bytes);
         eprintln!(
             "Camera-space raw: {}x{}, {} floats",
@@ -1374,7 +1374,7 @@ mod tests {
         if let Ok(output) = crate::decode(&data, &config, None) {
             let w = output.pixels.width();
             let h = output.pixels.height();
-            let bytes = output.pixels.as_view().contiguous_bytes().unwrap();
+            let bytes = output.pixels.as_view().to_contiguous_bytes().unwrap();
             let raw: &[f32] = bytemuck::cast_slice(&bytes);
             let npix = (w as usize) * (h as usize);
             let (mut r, mut g, mut b) = (0.0f64, 0.0f64, 0.0f64);

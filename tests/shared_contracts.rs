@@ -224,7 +224,7 @@ mod incremental_admission {
             .decode()
             .unwrap();
         let desc = expected.descriptor();
-        let expected_bytes = expected.pixels().contiguous_bytes().unwrap();
+        let expected_bytes = expected.pixels().to_contiguous_bytes().unwrap();
         let mut dec = decoder(ResourceLimits::none().with_max_input_bytes(bytes.len() as u64));
         let mut sink = Sink::default();
         let prefix = Input::new(0, &bytes[..bytes.len() - 1]);
